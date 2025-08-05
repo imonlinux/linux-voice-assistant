@@ -72,7 +72,6 @@ class ServerState:
     wake_word: MicroWakeWord
     stop_word: MicroWakeWord
     music_player: MpvMediaPlayer
-    announce_player: MpvMediaPlayer
     tts_player: MpvMediaPlayer
     media_player_entity: Optional[MediaPlayerEntity] = None
     satellite: "Optional[VoiceSatelliteProtocol]" = None
@@ -93,7 +92,7 @@ class VoiceSatelliteProtocol(APIServer):
                 name="Media Player",
                 object_id="hav_sat_media_player",
                 music_player=state.music_player,
-                announce_player=state.announce_player,
+                announce_player=state.tts_player,
             )
             self.state.entities.append(self.state.media_player_entity)
 
@@ -143,6 +142,7 @@ class VoiceSatelliteProtocol(APIServer):
             if not self._timer_finished:
                 self.state.stop_word.is_active = True
                 self._timer_finished = True
+                self.duck()
                 self._play_timer_finished()
 
     def handle_message(self, msg: message.Message) -> Iterable[message.Message]:
@@ -241,11 +241,9 @@ class VoiceSatelliteProtocol(APIServer):
         if self._timer_finished:
             self._timer_finished = False
             self.state.tts_player.stop()
-            self.state.music_player.resume()
         else:
             _LOGGER.debug("TTS response stopped manually")
             self.state.tts_player.stop()
-            self.state.announce_player.stop()
             self._tts_finished()
 
     def play_tts(self) -> None:
@@ -260,11 +258,11 @@ class VoiceSatelliteProtocol(APIServer):
 
     def duck(self) -> None:
         _LOGGER.debug("Ducking music")
-        self.state.music_player.set_volume(50)
+        self.state.music_player.duck()
 
     def unduck(self) -> None:
         _LOGGER.debug("Unducking music")
-        self.state.music_player.set_volume(100)
+        self.state.music_player.unduck()
 
     def _tts_finished(self) -> None:
         self.state.stop_word.is_active = False
@@ -281,6 +279,7 @@ class VoiceSatelliteProtocol(APIServer):
 
     def _play_timer_finished(self) -> None:
         if not self._timer_finished:
+            self.unduck()
             return
 
         self.state.tts_player.play(
@@ -337,7 +336,6 @@ async def main() -> None:
         wake_word=MicroWakeWord.from_config("wakewords/okay_nabu.json"),
         stop_word=MicroWakeWord.from_config("wakewords/stop.json"),
         music_player=MpvMediaPlayer(device=args.audio_output_device),
-        announce_player=MpvMediaPlayer(device=args.audio_output_device),
         tts_player=MpvMediaPlayer(device=args.audio_output_device),
     )
 
@@ -349,12 +347,9 @@ async def main() -> None:
     def sd_callback(indata, frames, time, status):
         state.audio_queue.put_nowait(bytes(indata))
 
-    # for idx, dev in enumerate(sd.query_devices()):
-    #     _LOGGER.debug(f"{idx}: {dev['name']}")
-
     loop = asyncio.get_running_loop()
     server = await loop.create_server(
-        lambda: VoiceSatelliteProtocol(state), host="127.0.0.1", port=6053
+        lambda: VoiceSatelliteProtocol(state), host="0.0.0.0", port=6053
     )
 
     try:

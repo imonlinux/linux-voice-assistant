@@ -99,16 +99,16 @@ class MediaPlayerEntity(ESPHomeEntity):
                 yield from self.play(msg.media_url, announcement=announcement)
             elif msg.has_command:
                 if msg.command == MediaPlayerCommand.PAUSE:
-                    if self.music_player.is_playing:
-                        self.music_player.pause()
-                        yield self._update_state(MediaPlayerState.PAUSED)
+                    self.music_player.pause()
+                    yield self._update_state(MediaPlayerState.PAUSED)
                 elif msg.command == MediaPlayerCommand.PLAY:
-                    if not self.music_player.is_playing:
-                        self.player.resume()
-                        yield self._update_state(MediaPlayerState.PLAYING)
-            # TODO
-            # elif msg.has_volume:
-            #     self.player.set_volume()
+                    self.music_player.resume()
+                    yield self._update_state(MediaPlayerState.PLAYING)
+            elif msg.has_volume:
+                volume = int(msg.volume * 100)
+                self.music_player.set_volume(volume)
+                self.announce_player.set_volume(volume)
+                self.volume = msg.volume
         elif isinstance(msg, ListEntitiesRequest):
             yield ListEntitiesMediaPlayerResponse(
                 object_id=self.object_id,
