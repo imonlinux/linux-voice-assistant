@@ -1,25 +1,25 @@
 """Partial ESPHome server implementation."""
 
-import logging
 import asyncio
-from typing import Optional, TYPE_CHECKING, List, Union
-
-
+import logging
 from abc import abstractmethod
 from collections.abc import Iterable
+from typing import TYPE_CHECKING, List, Optional
+
+# pylint: disable=no-name-in-module
 from aioesphomeapi._frame_helper.packets import make_plain_text_packets
-from google.protobuf import message
-from aioesphomeapi.core import MESSAGE_TYPE_TO_PROTO
-from aioesphomeapi.api_pb2 import (
-    HelloRequest,
-    HelloResponse,
+from aioesphomeapi.api_pb2 import (  # type: ignore[attr-defined]
     ConnectRequest,
     ConnectResponse,
     DisconnectRequest,
     DisconnectResponse,
+    HelloRequest,
+    HelloResponse,
     PingRequest,
     PingResponse,
 )
+from aioesphomeapi.core import MESSAGE_TYPE_TO_PROTO
+from google.protobuf import message
 
 PROTO_TO_MESSAGE_TYPE = {v: k for k, v in MESSAGE_TYPE_TO_PROTO.items()}
 
@@ -62,10 +62,10 @@ class APIServer(asyncio.Protocol):
         elif isinstance(msg_inst, DisconnectRequest):
             self.send_messages([DisconnectResponse()])
             _LOGGER.debug("Disconnect requested")
-            if self.transport:
-                self.transport.close()
-                self.transport = None
-                self.writelines = None
+            if self._transport:
+                self._transport.close()
+                self._transport = None
+                self._writelines = None
         elif isinstance(msg_inst, PingRequest):
             self.send_messages([PingResponse()])
         elif msgs := self.handle_message(msg_inst):
@@ -75,7 +75,7 @@ class APIServer(asyncio.Protocol):
             self.send_messages(msgs)
 
     def send_messages(self, msgs: List[message.Message]):
-        if self.writelines is None:
+        if self._writelines is None:
             return
 
         packets = [
@@ -83,11 +83,11 @@ class APIServer(asyncio.Protocol):
             for msg in msgs
         ]
         packet_bytes = make_plain_text_packets(packets)
-        self.writelines(packet_bytes)
+        self._writelines(packet_bytes)
 
     def connection_made(self, transport) -> None:
-        self.transport = transport
-        self.writelines = self.transport.writelines
+        self._transport = transport
+        self._writelines = transport.writelines
 
     def data_received(self, data: bytes):
         if self._buffer is None:
@@ -139,9 +139,8 @@ class APIServer(asyncio.Protocol):
         return cstr[original_pos:new_pos]
 
     def connection_lost(self, exc):
-        self.transport = None
-        self.writelines = None
-        _LOGGER.debug("Connection closed")
+        self._transport = None
+        self._writelines = None
 
     def _read_varuint(self) -> int:
         """Read a varuint from the buffer or -1 if the buffer runs out of bytes."""

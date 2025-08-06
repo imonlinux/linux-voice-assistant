@@ -1,11 +1,11 @@
 import ctypes
 import json
-import numpy as np
 import statistics
 from collections import deque
 from pathlib import Path
-from typing import Union, List, Deque
+from typing import Deque, List, Union
 
+import numpy as np
 from pymicro_features import MicroFrontend
 
 _SAMPLES_PER_SECOND = 16000
@@ -24,13 +24,14 @@ class TfLiteQuantizationParams(ctypes.Structure):
 class MicroWakeWord:
     def __init__(
         self,
-        id: str,
+        id: str,  # pylint: disable=redefined-builtin
         wake_word: str,
         tflite_model: Union[str, Path],
         probability_cutoff: float,
         sliding_window_size: int,
         refractory_seconds: float,
         trained_languages: List[str],
+        libtensorflowlite_c_path: Union[str, Path],
     ):
         self.id = id
         self.wake_word = wake_word
@@ -44,7 +45,7 @@ class MicroWakeWord:
 
         # Load the shared library
         self.lib = ctypes.cdll.LoadLibrary(
-            str(Path("libtensorflowlite_c.so").resolve())
+            str(Path(libtensorflowlite_c_path).resolve())
         )
 
         # Define required argument/return types for C API
@@ -153,6 +154,7 @@ class MicroWakeWord:
     @staticmethod
     def from_config(
         config_path: Union[str, Path],
+        libtensorflowlite_c_path: Union[str, Path],
         refractory_seconds: float = _DEFAULT_REFRACTORY,
     ) -> "MicroWakeWord":
         """Load a microWakeWord model from a JSON config file.
@@ -178,6 +180,7 @@ class MicroWakeWord:
             sliding_window_size=micro_config["sliding_window_size"],
             refractory_seconds=refractory_seconds,
             trained_languages=micro_config.get("trained_languages", []),
+            libtensorflowlite_c_path=libtensorflowlite_c_path,
         )
 
     def process_streaming(self, audio_bytes: bytes) -> bool:

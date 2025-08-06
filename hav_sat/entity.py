@@ -1,17 +1,17 @@
 from abc import abstractmethod
 from collections.abc import Iterable
-from typing import Callable, Optional, List, Union
+from typing import Callable, List, Optional, Union
 
-from aioesphomeapi import MediaPlayerState
-from google.protobuf import message
-from aioesphomeapi.api_pb2 import (
-    ListEntitiesRequest,
-    MediaPlayerStateResponse,
+# pylint: disable=no-name-in-module
+from aioesphomeapi.api_pb2 import (  # type: ignore[attr-defined]
     ListEntitiesMediaPlayerResponse,
-    SubscribeHomeAssistantStatesRequest,
+    ListEntitiesRequest,
     MediaPlayerCommandRequest,
+    MediaPlayerStateResponse,
+    SubscribeHomeAssistantStatesRequest,
 )
 from aioesphomeapi.model import MediaPlayerCommand, MediaPlayerState
+from google.protobuf import message
 
 from .api_server import APIServer
 from .mpv_player import MpvMediaPlayer

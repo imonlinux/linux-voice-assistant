@@ -1,66 +1,58 @@
 #!/usr/bin/env python3
 
-import asyncio
 import argparse
+import asyncio
 import logging
 import threading
 import time
 from collections.abc import Iterable
-from enum import Enum, auto
-from pathlib import Path
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Optional, List, Union, Dict
+from pathlib import Path
 from queue import Queue
+from typing import Dict, List, Optional
 
-from google.protobuf import message
+# pylint: disable=no-name-in-module
 import sounddevice as sd
-from aioesphomeapi.api_pb2 import (
+from aioesphomeapi.api_pb2 import (  # type: ignore[attr-defined]
     DeviceInfoRequest,
     DeviceInfoResponse,
-    ListEntitiesRequest,
     ListEntitiesDoneResponse,
-    VoiceAssistantConfigurationRequest,
-    VoiceAssistantConfigurationResponse,
-    VoiceAssistantWakeWord,
-    SubscribeVoiceAssistantRequest,
-    VoiceAssistantEventResponse,
-    VoiceAssistantRequest,
-    VoiceAssistantAudio,
-    ListEntitiesMediaPlayerResponse,
-    MediaPlayerStateResponse,
+    ListEntitiesRequest,
     MediaPlayerCommandRequest,
     SubscribeHomeAssistantStatesRequest,
     VoiceAssistantAnnounceFinished,
     VoiceAssistantAnnounceRequest,
+    VoiceAssistantAudio,
+    VoiceAssistantConfigurationRequest,
+    VoiceAssistantConfigurationResponse,
+    VoiceAssistantEventResponse,
+    VoiceAssistantRequest,
     VoiceAssistantTimerEventResponse,
+    VoiceAssistantWakeWord,
 )
 from aioesphomeapi.model import (
-    VoiceAssistantFeature,
     VoiceAssistantEventType,
+    VoiceAssistantFeature,
     VoiceAssistantTimerEventType,
 )
+from google.protobuf import message
 
 from .api_server import APIServer
-from .microwakeword import MicroWakeWord
 from .entity import ESPHomeEntity, MediaPlayerEntity
-from .util import get_mac, call_all
+from .microwakeword import MicroWakeWord
 from .mpv_player import MpvMediaPlayer
+from .util import call_all, get_mac, is_arm
 
 _LOGGER = logging.getLogger(__name__)
+_MODULE_DIR = Path(__file__).parent
+_REPO_DIR = _MODULE_DIR.parent
+_WAKEWORDS_DIR = _REPO_DIR / "wakewords"
+_SOUNDS_DIR = _REPO_DIR / "sounds"
 
-
-class Sound(Enum):
-    WAKEUP = auto()
-    TIMER_FINISHED = auto()
-
-
-_DIR = Path(__file__).parent
-_SOUNDS_DIR = _DIR / "sounds"
-
-DEFAULT_SOUNDS: Dict[Sound, Path] = {
-    Sound.WAKEUP: _SOUNDS_DIR / "wake_word_triggered.flac",
-    Sound.TIMER_FINISHED: _SOUNDS_DIR / "timer_finished.flac",
-}
+if is_arm():
+    _LIB_DIR = _REPO_DIR / "lib" / "linux_arm64"
+else:
+    _LIB_DIR = _REPO_DIR / "lib" / "linux_amd64"
 
 
 @dataclass
@@ -73,8 +65,13 @@ class ServerState:
     stop_word: MicroWakeWord
     music_player: MpvMediaPlayer
     tts_player: MpvMediaPlayer
+    wakeup_sound: str
+    timer_finished_sound: str
     media_player_entity: Optional[MediaPlayerEntity] = None
     satellite: "Optional[VoiceSatelliteProtocol]" = None
+
+
+# -----------------------------------------------------------------------------
 
 
 class VoiceSatelliteProtocol(APIServer):
@@ -105,7 +102,7 @@ class VoiceSatelliteProtocol(APIServer):
     def handle_voice_event(
         self, event_type: VoiceAssistantEventType, data: Dict[str, str]
     ) -> None:
-        _LOGGER.debug("%s: %s", event_type.name, data)
+        _LOGGER.debug("Voice event: type=%s, data=%s", event_type.name, data)
 
         if event_type == VoiceAssistantEventType.VOICE_ASSISTANT_RUN_START:
             self._tts_url = data.get("url")
@@ -122,7 +119,7 @@ class VoiceSatelliteProtocol(APIServer):
                 self.play_tts()
         elif event_type == VoiceAssistantEventType.VOICE_ASSISTANT_INTENT_END:
             if data.get("continue_conversation") == "1":
-                self._continue_conversation
+                self._continue_conversation = True
         elif event_type == VoiceAssistantEventType.VOICE_ASSISTANT_TTS_END:
             self._tts_url = data.get("url")
             self.play_tts()
@@ -131,6 +128,8 @@ class VoiceSatelliteProtocol(APIServer):
             if not self._tts_played:
                 self._tts_finished()
 
+            self._tts_played = False
+
         # TODO: handle error
 
     def handle_timer_event(
@@ -138,6 +137,7 @@ class VoiceSatelliteProtocol(APIServer):
         event_type: VoiceAssistantTimerEventType,
         msg: VoiceAssistantTimerEventResponse,
     ) -> None:
+        _LOGGER.debug("Timer event: type=%s", event_type.name)
         if event_type == VoiceAssistantTimerEventType.VOICE_ASSISTANT_TIMER_FINISHED:
             if not self._timer_finished:
                 self.state.stop_word.is_active = True
@@ -211,7 +211,7 @@ class VoiceSatelliteProtocol(APIServer):
                 active_wake_words=[self.state.wake_word.id],
                 max_active_wake_words=1,
             )
-            _LOGGER.debug("Registered voice assistant")
+            _LOGGER.info("Connected to Home Assistant")
 
     def handle_audio(self, audio_chunk: bytes) -> None:
 
@@ -224,6 +224,8 @@ class VoiceSatelliteProtocol(APIServer):
         if self._timer_finished:
             # Stop timer instead
             self._timer_finished = False
+            self.state.tts_player.stop()
+            _LOGGER.debug("Stopping timer finished sound")
             return
 
         wake_word_phrase = self.state.wake_word.wake_word
@@ -233,17 +235,17 @@ class VoiceSatelliteProtocol(APIServer):
         )
         self.duck()
         self._is_streaming_audio = True
-        self.state.tts_player.play(str(DEFAULT_SOUNDS[Sound.WAKEUP]))
+        self.state.tts_player.play(self.state.wakeup_sound)
 
     def stop(self) -> None:
         self.state.stop_word.is_active = False
+        self.state.tts_player.stop()
 
         if self._timer_finished:
             self._timer_finished = False
-            self.state.tts_player.stop()
+            _LOGGER.debug("Stopping timer finished sound")
         else:
             _LOGGER.debug("TTS response stopped manually")
-            self.state.tts_player.stop()
             self._tts_finished()
 
     def play_tts(self) -> None:
@@ -283,11 +285,15 @@ class VoiceSatelliteProtocol(APIServer):
             return
 
         self.state.tts_player.play(
-            str(DEFAULT_SOUNDS[Sound.TIMER_FINISHED]),
+            self.state.timer_finished_sound,
             done_callback=lambda: call_all(
                 lambda: time.sleep(1.0), self._play_timer_finished
             ),
         )
+
+    def connection_lost(self, exc):
+        super().connection_lost(exc)
+        _LOGGER.info("Disconnected from Home Assistant")
 
 
 def process_audio(state: ServerState):
@@ -313,30 +319,72 @@ def process_audio(state: ServerState):
                     audio_chunk
                 ):
                     state.satellite.stop()
-            except:
+            except Exception:
                 _LOGGER.exception("Unexpected error handling audio")
 
-    except:
+    except Exception:
         _LOGGER.exception("Unexpected error processing audio")
+
+
+# -----------------------------------------------------------------------------
 
 
 async def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--audio-input-device", default="default")
-    parser.add_argument("--audio-output-device")
+    parser.add_argument("--name", required=True)
+    parser.add_argument(
+        "--audio-input-device",
+        default="default",
+        help="sounddevice name for input device",
+    )
+    parser.add_argument("--audio-input-block-size", type=int, default=1024)
+    parser.add_argument("--audio-output-device", help="mpv name for output device")
+    parser.add_argument(
+        "--wake-model",
+        default=_WAKEWORDS_DIR / "okay_nabu.json",
+        help="Path to microWakeWord model config for wake word",
+    )
+    parser.add_argument(
+        "--stop-model",
+        default=_WAKEWORDS_DIR / "stop.json",
+        help="Path to microWakeWord model config for stop word",
+    )
+    parser.add_argument(
+        "--wakeup-sound", default=str(_SOUNDS_DIR / "wake_word_triggered.flac")
+    )
+    parser.add_argument(
+        "--timer-finished-sound", default=str(_SOUNDS_DIR / "timer_finished.flac")
+    )
+    parser.add_argument(
+        "--host",
+        default="0.0.0.0",
+        help="Address for ESPHome server (default: 0.0.0.0)",
+    )
+    parser.add_argument(
+        "--port", type=int, default=6053, help="Port for ESPHome server (default: 6053)"
+    )
+    parser.add_argument(
+        "--debug", action="store_true", help="Print DEBUG messages to console"
+    )
     args = parser.parse_args()
 
-    logging.basicConfig(level=logging.DEBUG)
+    logging.basicConfig(level=logging.DEBUG if args.debug else logging.INFO)
+    _LOGGER.debug(args)
+
+    libtensorflowlite_c_path = _LIB_DIR / "libtensorflowlite_c.so"
+    _LOGGER.debug("libtensorflowlite_c path: %s", libtensorflowlite_c_path)
 
     state = ServerState(
-        name="test",
+        name=args.name,
         mac_address=get_mac(),
         audio_queue=Queue(),
         entities=[],
-        wake_word=MicroWakeWord.from_config("wakewords/okay_nabu.json"),
-        stop_word=MicroWakeWord.from_config("wakewords/stop.json"),
+        wake_word=MicroWakeWord.from_config(args.wake_model, libtensorflowlite_c_path),
+        stop_word=MicroWakeWord.from_config(args.stop_model, libtensorflowlite_c_path),
         music_player=MpvMediaPlayer(device=args.audio_output_device),
         tts_player=MpvMediaPlayer(device=args.audio_output_device),
+        wakeup_sound=args.wakeup_sound,
+        timer_finished_sound=args.timer_finished_sound,
     )
 
     process_audio_thread = threading.Thread(
@@ -344,25 +392,26 @@ async def main() -> None:
     )
     process_audio_thread.start()
 
-    def sd_callback(indata, frames, time, status):
+    def sd_callback(indata, _frames, _time, _status):
         state.audio_queue.put_nowait(bytes(indata))
 
     loop = asyncio.get_running_loop()
     server = await loop.create_server(
-        lambda: VoiceSatelliteProtocol(state), host="0.0.0.0", port=6053
+        lambda: VoiceSatelliteProtocol(state), host=args.host, port=args.port
     )
 
     try:
+        _LOGGER.debug("Opening audio input device: %s", args.audio_input_device)
         with sd.RawInputStream(
             samplerate=16000,
-            blocksize=1024,
+            blocksize=args.audio_input_block_size,
             device=args.audio_input_device,
             dtype="int16",
             channels=1,
             callback=sd_callback,
         ):
             async with server:
-                _LOGGER.info("Server started")
+                _LOGGER.info("Server started (host=%s, port=%s)", args.host, args.port)
                 await server.serve_forever()
     except KeyboardInterrupt:
         pass

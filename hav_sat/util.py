@@ -1,7 +1,8 @@
 """Utility methods."""
 
-from collections.abc import Callable
+import platform
 import uuid
+from collections.abc import Callable
 from typing import Optional
 
 
@@ -14,3 +15,8 @@ def get_mac() -> str:
 def call_all(*callables: Optional[Callable[[], None]]) -> None:
     for item in filter(None, callables):
         item()
+
+
+def is_arm() -> bool:
+    machine = platform.machine()
+    return ("arm" in machine) or ("aarch" in machine)
