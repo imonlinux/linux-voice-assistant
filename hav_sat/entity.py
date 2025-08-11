@@ -109,6 +109,7 @@ class MediaPlayerEntity(ESPHomeEntity):
                 self.music_player.set_volume(volume)
                 self.announce_player.set_volume(volume)
                 self.volume = msg.volume
+                yield self._update_state(self.state)
         elif isinstance(msg, ListEntitiesRequest):
             yield ListEntitiesMediaPlayerResponse(
                 object_id=self.object_id,
