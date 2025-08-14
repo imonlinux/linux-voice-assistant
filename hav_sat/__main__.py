@@ -2,6 +2,7 @@
 
 import argparse
 import asyncio
+import json
 import logging
 import threading
 import time
@@ -27,6 +28,7 @@ from aioesphomeapi.api_pb2 import (  # type: ignore[attr-defined]
     VoiceAssistantConfigurationResponse,
     VoiceAssistantEventResponse,
     VoiceAssistantRequest,
+    VoiceAssistantSetConfiguration,
     VoiceAssistantTimerEventResponse,
     VoiceAssistantWakeWord,
 )
@@ -56,11 +58,20 @@ else:
 
 
 @dataclass
+class AvailableWakeWord:
+    id: str
+    wake_word: str
+    trained_languages: List[str]
+    config_path: Path
+
+
+@dataclass
 class ServerState:
     name: str
     mac_address: str
     audio_queue: "Queue[Optional[bytes]]"
     entities: List[ESPHomeEntity]
+    available_wake_words: Dict[str, AvailableWakeWord]
     wake_word: MicroWakeWord
     stop_word: MicroWakeWord
     music_player: MpvMediaPlayer
@@ -203,15 +214,35 @@ class VoiceSatelliteProtocol(APIServer):
             yield VoiceAssistantConfigurationResponse(
                 available_wake_words=[
                     VoiceAssistantWakeWord(
-                        id=self.state.wake_word.id,
-                        wake_word=self.state.wake_word.wake_word,
-                        trained_languages=self.state.wake_word.trained_languages,
+                        id=ww.id,
+                        wake_word=ww.wake_word,
+                        trained_languages=ww.trained_languages,
                     )
+                    for ww in self.state.available_wake_words.values()
                 ],
                 active_wake_words=[self.state.wake_word.id],
                 max_active_wake_words=1,
             )
             _LOGGER.info("Connected to Home Assistant")
+        elif isinstance(msg, VoiceAssistantSetConfiguration):
+            # TODO: support multiple wake words
+            for wake_word_id in msg.active_wake_words:
+                if wake_word_id == self.state.wake_word.id:
+                    # Already active
+                    break
+
+                model_info = self.state.available_wake_words.get(wake_word_id)
+                if not model_info:
+                    continue
+
+                _LOGGER.debug("Loading wake word: %s", model_info.config_path)
+                self.state.wake_word = MicroWakeWord.from_config(
+                    model_info.config_path,
+                    self.state.wake_word.libtensorflowlite_c_path,
+                )
+
+                _LOGGER.info("Wake word set: %s", self.state.wake_word.wake_word)
+                break
 
     def handle_audio(self, audio_chunk: bytes) -> None:
 
@@ -340,15 +371,14 @@ async def main() -> None:
     parser.add_argument("--audio-input-block-size", type=int, default=1024)
     parser.add_argument("--audio-output-device", help="mpv name for output device")
     parser.add_argument(
-        "--wake-model",
-        default=_WAKEWORDS_DIR / "okay_nabu.json",
-        help="Path to microWakeWord model config for wake word",
+        "--wake-word-dir",
+        default=_WAKEWORDS_DIR,
+        help="Directory with wake word models (.tflite) and configs (.json)",
     )
     parser.add_argument(
-        "--stop-model",
-        default=_WAKEWORDS_DIR / "stop.json",
-        help="Path to microWakeWord model config for stop word",
+        "--wake-model", default="okay_nabu", help="Id of active wake model"
     )
+    parser.add_argument("--stop-model", default="stop", help="Id of stop model")
     parser.add_argument(
         "--wakeup-sound", default=str(_SOUNDS_DIR / "wake_word_triggered.flac")
     )
@@ -371,16 +401,46 @@ async def main() -> None:
     logging.basicConfig(level=logging.DEBUG if args.debug else logging.INFO)
     _LOGGER.debug(args)
 
+    # Load available wake words
+    wake_word_dir = Path(args.wake_word_dir)
+    available_wake_words: Dict[str, AvailableWakeWord] = {}
+    for model_config_path in wake_word_dir.glob("*.json"):
+        model_id = model_config_path.stem
+        if model_id == args.stop_model:
+            # Don't show stop model as an available wake word
+            continue
+
+        with open(model_config_path, "r", encoding="utf-8") as model_config_file:
+            model_config = json.load(model_config_file)
+            available_wake_words[model_id] = AvailableWakeWord(
+                id=model_id,
+                wake_word=model_config["wake_word"],
+                trained_languages=model_config.get("trained_languages", []),
+                config_path=model_config_path,
+            )
+
+    _LOGGER.debug("Available wake words: %s", list(sorted(available_wake_words.keys())))
+
     libtensorflowlite_c_path = _LIB_DIR / "libtensorflowlite_c.so"
     _LOGGER.debug("libtensorflowlite_c path: %s", libtensorflowlite_c_path)
+
+    # Load wake/stop models
+    wake_config_path = wake_word_dir / f"{args.wake_model}.json"
+    _LOGGER.debug("Loading wake model: %s", wake_config_path)
+    wake_model = MicroWakeWord.from_config(wake_config_path, libtensorflowlite_c_path)
+
+    stop_config_path = wake_word_dir / f"{args.stop_model}.json"
+    _LOGGER.debug("Loading stop model: %s", stop_config_path)
+    stop_model = MicroWakeWord.from_config(stop_config_path, libtensorflowlite_c_path)
 
     state = ServerState(
         name=args.name,
         mac_address=get_mac(),
         audio_queue=Queue(),
         entities=[],
-        wake_word=MicroWakeWord.from_config(args.wake_model, libtensorflowlite_c_path),
-        stop_word=MicroWakeWord.from_config(args.stop_model, libtensorflowlite_c_path),
+        available_wake_words=available_wake_words,
+        wake_word=wake_model,
+        stop_word=stop_model,
         music_player=MpvMediaPlayer(device=args.audio_output_device),
         tts_player=MpvMediaPlayer(device=args.audio_output_device),
         wakeup_sound=args.wakeup_sound,

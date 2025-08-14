@@ -44,9 +44,8 @@ class MicroWakeWord:
         self.is_active = True
 
         # Load the shared library
-        self.lib = ctypes.cdll.LoadLibrary(
-            str(Path(libtensorflowlite_c_path).resolve())
-        )
+        self.libtensorflowlite_c_path = Path(libtensorflowlite_c_path)
+        self.lib = ctypes.cdll.LoadLibrary(str(self.libtensorflowlite_c_path.resolve()))
 
         # Define required argument/return types for C API
         self.lib.TfLiteModelCreateFromFile.argtypes = [ctypes.c_char_p]
