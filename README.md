@@ -1,6 +1,6 @@
-# Home Assistant Voice Satellite (HAV-SAT)
+# Linux Voice Assistant
 
-Experimental voice satellite for [Home Assistant][homeassistant] that uses the [ESPHome][esphome] protocol.
+Experimental Linux voice assistant for [Home Assistant][homeassistant] that uses the [ESPHome][esphome] protocol.
 
 Runs on Linux `aarch64` and `x86_64` platforms. Tested with Python 3.13 and Python 3.11.
 Supports announcments, start/continue conversation, and timers.
@@ -16,14 +16,14 @@ Install system dependencies (`apt-get`):
 Clone and install project:
 
 ``` sh
-git clone https://github.com/OHF-Voice/hav-sat.git
-cd hav-sat
+git clone https://github.com/OHF-Voice/linux-voice-assistant.git
+cd linux-voice-assistant
 script/setup
 ```
 
 ## Running
 
-Use `script/run` or `python3 -m hav_sat`
+Use `script/run` or `python3 -m linux_voice_assistant`
 
 See `--help` for more options.
 

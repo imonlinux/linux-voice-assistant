@@ -3,15 +3,15 @@ requires = ["setuptools>=62.3"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name        = "hav-satellite"
+name        = "linux-voice-assistant"
 version     = "1.0.0"
 license     = {text = "Apache-2.0"}
-description = "Voice satellite for Home Assistant using the ESPHome protocol"
+description = "Linux voice assistant for Home Assistant using the ESPHome protocol"
 readme      = "README.md"
 authors     = [
     {name = "The Home Assistant Authors", email = "hello@home-assistant.io"}
 ]
-keywords    = ["home", "assistant", "voice", "esphome"]
+keywords    = ["home", "assistant", "voice", "esphome", "linux"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -41,7 +41,7 @@ dev = [
 ]
 
 [project.urls]
-"Source Code" = "http://github.com/OHF-Voice/hav-sat"
+"Source Code" = "http://github.com/OHF-Voice/linux-voice-assistant"
 
 [tool.setuptools]
 platforms = ["any"]
@@ -49,5 +49,5 @@ zip-safe  = true
 include-package-data = true
 
 [tool.setuptools.packages.find]
-include = ["hav_sat"]
+include = ["linux_voice_assistant"]
 exclude = ["tests", "tests.*"]
