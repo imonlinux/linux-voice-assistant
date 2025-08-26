@@ -6,16 +6,11 @@ import json
 import logging
 import threading
 import time
-import tempfile
-import shutil
-import posixpath
 from collections.abc import Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from queue import Queue
 from typing import Dict, List, Optional
-from urllib.request import urlopen
-from urllib.parse import urlparse, urlunparse
 
 # pylint: disable=no-name-in-module
 import sounddevice as sd
@@ -68,7 +63,6 @@ class AvailableWakeWord:
     wake_word: str
     trained_languages: List[str]
     config_path: Path
-    url: Optional[str] = None
 
 
 @dataclass
@@ -86,15 +80,6 @@ class ServerState:
     timer_finished_sound: str
     media_player_entity: Optional[MediaPlayerEntity] = None
     satellite: "Optional[VoiceSatelliteProtocol]" = None
-
-    _external_wake_word_dir: Optional[tempfile.TemporaryDirectory] = None
-
-    @property
-    def external_wake_word_dir(self) -> Path:
-        if self._external_wake_word_dir is None:
-            self._external_wake_word_dir = tempfile.TemporaryDirectory()
-
-        return Path(self._external_wake_word_dir.name)
 
 
 # -----------------------------------------------------------------------------
@@ -226,26 +211,6 @@ class VoiceSatelliteProtocol(APIServer):
             if isinstance(msg, ListEntitiesRequest):
                 yield ListEntitiesDoneResponse()
         elif isinstance(msg, VoiceAssistantConfigurationRequest):
-            external_wake_words = {
-                external_ww.wake_word.id: external_ww
-                for external_ww in msg.external_wake_words
-                if external_ww.model_type == "micro_wake_word"
-            }
-
-            for wake_word_id, external_ww in external_wake_words.items():
-                if wake_word_id in self.state.available_wake_words:
-                    # Skip if already added
-                    continue
-
-                self.state.available_wake_words[wake_word_id] = AvailableWakeWord(
-                    id=external_ww.wake_word.id,
-                    wake_word=external_ww.wake_word.wake_word,
-                    trained_languages=external_ww.wake_word.trained_languages,
-                    config_path=self.state.external_wake_word_dir
-                    / f"{external_ww.wake_word.id}.json",
-                    url=external_ww.url,
-                )
-
             yield VoiceAssistantConfigurationResponse(
                 available_wake_words=[
                     VoiceAssistantWakeWord(
@@ -269,48 +234,6 @@ class VoiceSatelliteProtocol(APIServer):
                 model_info = self.state.available_wake_words.get(wake_word_id)
                 if not model_info:
                     continue
-
-                if (not model_info.config_path.exists()) and model_info.url:
-                    _LOGGER.debug("Downloading wake word config: %s", model_info.url)
-                    with (
-                        open(model_info.config_path, "wb") as config_file,
-                        urlopen(model_info.url) as response,
-                    ):
-                        if response.status != 200:
-                            _LOGGER.error(
-                                "Download failed with status: %s", response.status
-                            )
-                            continue
-
-                        shutil.copyfileobj(response, config_file)
-
-                    with open(
-                        model_info.config_path, "r", encoding="utf-8"
-                    ) as config_file:
-                        config_dict = json.load(config_file)
-                        parsed_config_url = urlparse(model_info.url)
-                        model_url = urlunparse(
-                            parsed_config_url._replace(
-                                path=posixpath.join(
-                                    posixpath.dirname(parsed_config_url.path),
-                                    config_dict["model"],
-                                )
-                            )
-                        )
-
-                    _LOGGER.debug("Downloading wake word model: %s", model_url)
-                    model_path = model_info.config_path.parent / config_dict["model"]
-                    with (
-                        open(model_path, "wb") as model_file,
-                        urlopen(model_url) as response,
-                    ):
-                        if response.status != 200:
-                            _LOGGER.error(
-                                "Download failed with status: %s", response.status
-                            )
-                            continue
-
-                        shutil.copyfileobj(response, model_file)
 
                 _LOGGER.debug("Loading wake word: %s", model_info.config_path)
                 self.state.wake_word = MicroWakeWord.from_config(
