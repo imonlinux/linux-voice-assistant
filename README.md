@@ -9,7 +9,7 @@ Supports announcments, start/continue conversation, and timers.
 
 Install system dependencies (`apt-get`):
 
-* `libportaudio2` (for `sounddevice`)
+* `libportaudio2` or `portaudio19-dev` (for `sounddevice`)
 * `build-essential` (for `pymicro-features`)
 * `libmpv-dev` (for `python-mpv`)
 
