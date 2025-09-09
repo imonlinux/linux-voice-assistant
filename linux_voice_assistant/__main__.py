@@ -42,8 +42,12 @@ from google.protobuf import message
 from .api_server import APIServer
 from .entity import ESPHomeEntity, MediaPlayerEntity
 from .microwakeword import MicroWakeWord
+from .openwakeword_client import WyomingWakeClient
 from .mpv_player import MpvMediaPlayer
 from .util import call_all, get_mac, is_arm
+
+from .event_bus import EventBus
+from .event_led import LedEvent
 
 _LOGGER = logging.getLogger(__name__)
 _MODULE_DIR = Path(__file__).parent
@@ -78,8 +82,12 @@ class ServerState:
     tts_player: MpvMediaPlayer
     wakeup_sound: str
     timer_finished_sound: str
+    loop: asyncio.AbstractEventLoop
+    event_bus: EventBus
     media_player_entity: Optional[MediaPlayerEntity] = None
     satellite: "Optional[VoiceSatelliteProtocol]" = None
+    wyoming_wake: Optional[WyomingWakeClient] = None
+    use_wyoming_wake: bool = False
 
 
 # -----------------------------------------------------------------------------
@@ -110,10 +118,15 @@ class VoiceSatelliteProtocol(APIServer):
         self._continue_conversation = False
         self._timer_finished = False
 
+        self.state.event_bus.publish('ready', {})
+        _LOGGER.info('System is ready!')
+
     def handle_voice_event(
         self, event_type: VoiceAssistantEventType, data: Dict[str, str]
     ) -> None:
         _LOGGER.debug("Voice event: type=%s, data=%s", event_type.name, data)
+
+        self.state.event_bus.publish(f'voice_{event_type.name}', data)
 
         if event_type == VoiceAssistantEventType.VOICE_ASSISTANT_RUN_START:
             self._tts_url = data.get("url")
@@ -157,6 +170,7 @@ class VoiceSatelliteProtocol(APIServer):
                 self._play_timer_finished()
 
     def handle_message(self, msg: message.Message) -> Iterable[message.Message]:
+        _LOGGER.debug(f'message {msg.__name__}')
         if isinstance(msg, VoiceAssistantEventResponse):
             # Pipeline event
             data: Dict[str, str] = {}
@@ -197,14 +211,11 @@ class VoiceSatelliteProtocol(APIServer):
                     | VoiceAssistantFeature.TIMERS
                 ),
             )
-        elif isinstance(
-            msg,
-            (
-                ListEntitiesRequest,
-                SubscribeHomeAssistantStatesRequest,
-                MediaPlayerCommandRequest,
-            ),
-        ):
+        elif isinstance(msg, (
+            ListEntitiesRequest,
+            SubscribeHomeAssistantStatesRequest,
+            MediaPlayerCommandRequest,
+        ),):
             for entity in self.state.entities:
                 yield from entity.handle_message(msg)
 
@@ -245,13 +256,13 @@ class VoiceSatelliteProtocol(APIServer):
                 break
 
     def handle_audio(self, audio_chunk: bytes) -> None:
-
         if not self._is_streaming_audio:
             return
 
         self.send_messages([VoiceAssistantAudio(data=audio_chunk)])
 
     def wakeup(self) -> None:
+        # Why are we stopping the timer? Wouldn't it be better to delay it?
         if self._timer_finished:
             # Stop timer instead
             self._timer_finished = False
@@ -264,6 +275,10 @@ class VoiceSatelliteProtocol(APIServer):
         self.send_messages(
             [VoiceAssistantRequest(start=True, wake_word_phrase=wake_word_phrase)]
         )
+
+        self.state.event_bus.publish('voice_wakeword', {'wake_word_phrase': wake_word_phrase})
+
+
         self.duck()
         self._is_streaming_audio = True
         self.state.tts_player.play(self.state.wakeup_sound)
@@ -286,6 +301,8 @@ class VoiceSatelliteProtocol(APIServer):
         self._tts_played = True
         _LOGGER.debug("Playing TTS response: %s", self._tts_url)
 
+        self.state.event_bus.publish('voice_play_tts', {})
+
         self.state.stop_word.is_active = True
         self.state.tts_player.play(self._tts_url, done_callback=self._tts_finished)
 
@@ -300,6 +317,9 @@ class VoiceSatelliteProtocol(APIServer):
     def _tts_finished(self) -> None:
         self.state.stop_word.is_active = False
         self.send_messages([VoiceAssistantAnnounceFinished()])
+
+        # Actual time the TTS stops speaking
+        self.state.event_bus.publish('voice__tts_finished', {})
 
         if self._continue_conversation:
             self.send_messages([VoiceAssistantRequest(start=True)])
@@ -328,6 +348,9 @@ class VoiceSatelliteProtocol(APIServer):
 
 
 def process_audio(state: ServerState):
+    # debug counters
+    chunks_sent = 0
+    last_log = 0.0
 
     try:
         while True:
@@ -340,11 +363,18 @@ def process_audio(state: ServerState):
 
             try:
                 state.satellite.handle_audio(audio_chunk)
+                chunks_sent += 1
+                if state.use_wyoming_wake and chunks_sent % 100 == 0:
+                    _LOGGER.debug("[OWW] chunks_sent=%d (approx %.1fs of audio)", chunks_sent, chunks_sent*0.064)
 
-                if state.wake_word.is_active and state.wake_word.process_streaming(
-                    audio_chunk
-                ):
-                    state.satellite.wakeup()
+                if state.use_wyoming_wake:
+                    if state.wyoming_wake:
+                        state.wyoming_wake.send_audio_chunk(audio_chunk)
+                else:
+                    if state.wake_word.is_active and state.wake_word.process_streaming(
+                        audio_chunk
+                    ):
+                        state.satellite.wakeup()
 
                 if state.stop_word.is_active and state.stop_word.process_streaming(
                     audio_chunk
@@ -363,6 +393,8 @@ def process_audio(state: ServerState):
 async def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--name", required=True)
+    parser.add_argument("--wake-uri", help="Wyoming wake server URI (e.g., tcp://127.0.0.1:10400)")
+    parser.add_argument("--wake-word-name", help="Wake word name on the Wyoming server (e.g., hal)")
     parser.add_argument(
         "--audio-input-device",
         default="default",
@@ -401,6 +433,12 @@ async def main() -> None:
     logging.basicConfig(level=logging.DEBUG if args.debug else logging.INFO)
     _LOGGER.debug(args)
 
+    use_wyoming = bool(args.wake_uri and args.wake_word_name)
+    wyoming_client = None
+    if use_wyoming:
+        _LOGGER.info("Using Wyoming openWakeWord at %s (name=%s)", args.wake_uri, args.wake_word_name)
+        wyoming_client = WyomingWakeClient(args.wake_uri, args.wake_word_name)
+
     # Load available wake words
     wake_word_dir = Path(args.wake_word_dir)
     available_wake_words: Dict[str, AvailableWakeWord] = {}
@@ -432,6 +470,8 @@ async def main() -> None:
     stop_config_path = wake_word_dir / f"{args.stop_model}.json"
     _LOGGER.debug("Loading stop model: %s", stop_config_path)
     stop_model = MicroWakeWord.from_config(stop_config_path, libtensorflowlite_c_path)
+    
+    loop = asyncio.get_running_loop()
 
     state = ServerState(
         name=args.name,
@@ -441,11 +481,27 @@ async def main() -> None:
         available_wake_words=available_wake_words,
         wake_word=wake_model,
         stop_word=stop_model,
+        event_bus=EventBus(),
+        loop=loop,
         music_player=MpvMediaPlayer(device=args.audio_output_device),
         tts_player=MpvMediaPlayer(device=args.audio_output_device),
         wakeup_sound=args.wakeup_sound,
         timer_finished_sound=args.timer_finished_sound,
+        wyoming_wake=wyoming_client,
+        use_wyoming_wake=use_wyoming,
     )
+
+    LedEvent(state)
+
+    # Connect to Wyoming wake server if enabled
+    if state.use_wyoming_wake and state.wyoming_wake:
+        def _on_detect(_name, _ts):
+            _LOGGER.debug("[OWW] detection callback fired name=%s ts=%s", _name, _ts)
+            if state.satellite is not None:
+                state.loop.call_soon_threadsafe(lambda: state.satellite.wakeup())
+        state.wyoming_wake.connect(_on_detect)
+        state.wake_word.is_active = False
+        _LOGGER.debug("[OWW] Local MicroWakeWord disabled; streaming audio to Wyoming")
 
     process_audio_thread = threading.Thread(
         target=process_audio, args=(state,), daemon=True
@@ -455,7 +511,6 @@ async def main() -> None:
     def sd_callback(indata, _frames, _time, _status):
         state.audio_queue.put_nowait(bytes(indata))
 
-    loop = asyncio.get_running_loop()
     server = await loop.create_server(
         lambda: VoiceSatelliteProtocol(state), host=args.host, port=args.port
     )
