@@ -102,11 +102,12 @@ ok_nabu_v0.1.tflite
 Additional community provided OWW models available from this repository:
 https://github.com/fwartner/home-assistant-wakewords-collection
 
-Service file as provided using OWW 'ok_nabu':
+Edit linux-voice-assistant.service file:
 ```bash
 sudo systemctl edit --force --full linux-voice-assistant.service 
 ```
 
+Service file as provided using OWW 'ok_nabu':
 ```text
 [Unit]
 Description=Linux Voice Assistant
@@ -132,9 +133,6 @@ WantedBy=multi-user.target
 ```
 
 Service file using OWW 'alexa':
-```bash
-sudo systemctl edit --force --full linux-voice-assistant.service 
-```
 
 ```text
 [Unit]
