@@ -6,7 +6,6 @@
       [https://github.com/rhasspy/wyoming-satellite/blob/master/docs/tutorial_2mic.md](https://github.com/rhasspy/wyoming-satellite/blob/master/docs/tutorial_2mic.md),
       take the attached bash history of commands and create a similar document
       detailing the installation and configuration of this linux-voice-assistant project.
-    </ul> 
 ```
 > Modeled after the Wyoming Satellite two‑mic tutorial, adapted from actual shell history.
 
