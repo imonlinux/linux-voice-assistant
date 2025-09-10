@@ -5,7 +5,7 @@ Experimental Linux voice assistant for [Home Assistant][homeassistant] that uses
 Runs on Linux `aarch64` and `x86_64` platforms. Tested with Python 3.13 and Python 3.11.
 Supports announcments, start/continue conversation, and timers.
 
-A tutorial is provided to implement on Raspberry PI 2W with a ReSpeaker 2mic hat. This fork includes the ability
+A tutorial is provided to implement on Raspberry PI 2W with a ReSpeaker 2mic hat. This fork introduces the ability
 to use Wyoming OpenWakeWord instead of MicroWakeWord.
 
 ## Installation
