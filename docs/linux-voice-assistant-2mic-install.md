@@ -121,7 +121,7 @@ WorkingDirectory=/home/pi/linux-voice-assistant
 ExecStart=/home/pi/linux-voice-assistant/script/run \
   --name 'Linux Satellite' \
   --audio-input-device seeed-2mic-voicecard \
-  --audio-output-device alsa/hw:2,0 \
+  --audio-output-device alsa/hw:1,0 \
   --wake-uri 'tcp://127.0.0.1:10400' \
   --wake-word-name 'ok_nabu'
 Restart=always
@@ -147,7 +147,7 @@ WorkingDirectory=/home/pi/linux-voice-assistant
 ExecStart=/home/pi/linux-voice-assistant/script/run \
   --name 'Linux Satellite' \
   --audio-input-device seeed-2mic-voicecard \
-  --audio-output-device alsa/hw:2,0 \
+  --audio-output-device alsa/hw:1,0 \
   --wake-uri 'tcp://127.0.0.1:10400' \
   --wake-word-name 'alexa'
 Restart=always
@@ -186,7 +186,7 @@ WorkingDirectory=/home/pi/linux-voice-assistant
 ExecStart=/home/pi/linux-voice-assistant/script/run \
   --name 'Linux Satellite' \
   --audio-input-device seeed-2mic-voicecard \
-  --audio-output-device alsa/hw:2,0 \
+  --audio-output-device alsa/hw:1,0 \
   --wake-uri 'tcp://127.0.0.1:10400' \
   --wake-word-name 'ok_nabu'
 Restart=always
@@ -210,7 +210,7 @@ WorkingDirectory=/home/pi/linux-voice-assistant
 ExecStart=/home/pi/linux-voice-assistant/script/run \
   --name 'Linux Satellite' \
   --audio-input-device seeed-2mic-voicecard \
-  --audio-output-device alsa/hw:2,0 
+  --audio-output-device alsa/hw:1,0 
 Restart=always
 RestartSec=2
 Environment=PYTHONUNBUFFERED=1
