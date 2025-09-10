@@ -1,12 +1,14 @@
 # Linux Voice Assistant on 2‑Mic Linux — Installation & Configuration Guide
 
 > Created using ChatGPT 5 with the following prompt:
-
-  -Using the following github document as a guide 
-  -https://github.com/rhasspy/wyoming-satellite/blob/master/docs/tutorial_2mic.md, 
-  -take the attached bash history of commands and create a similar document 
-  -detailing the installation and configuration of this linux-voice-assistant project.
-
+```html
+    <ul>
+      <li>Using the following github document as a guide</li>
+      <li>[https://github.com/rhasspy/wyoming-satellite/blob/master/docs/tutorial_2mic.md](https://github.com/rhasspy/wyoming-satellite/blob/master/docs/tutorial_2mic.md),</li>
+      <li>take the attached bash history of commands and create a similar document</li>
+      <li>detailing the installation and configuration of this linux-voice-assistant project.</li>
+    </ul> 
+```
 > Modeled after the Wyoming Satellite two‑mic tutorial, adapted from actual shell history.
 
 This guide reproduces a working setup of the **linux-voice-assistant** project with **Wyoming OpenWakeWord** on a Linux host with a 2‑mic HAT (e.g., seeed-2mic-voicecard). It assumes a fresh system with sudo access.
