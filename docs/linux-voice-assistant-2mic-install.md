@@ -101,11 +101,9 @@ Project OWW models include:
 
 ```text
 alexa_v0.1.tflite
-embedding_model.tflite
 hey_jarvis_v0.1.tflite
 hey_mycroft_v0.1.tflite
 hey_rhasspy_v0.1.tflite
-melspectrogram.tflite
 ok_nabu_v0.1.tflite
 ```
 
