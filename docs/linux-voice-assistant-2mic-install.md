@@ -46,7 +46,7 @@ script/setup
 
 ## 4. Configure audio devices
 
-Find your input/output device names and update the linux-voice-assistant/service/linux-voice-assistant.service file match sound card details:
+Find your input/output device names and update the linux-voice-assistant/service/linux-voice-assistant.service file to match sound card details:
 ```bash
 arecord -l
 aplay -l
