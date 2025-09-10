@@ -1,0 +1,12 @@
+[Unit]
+Description=Wyoming openWakeWord
+
+[Service]
+Type=simple
+ExecStart=/home/pi/wyoming-openwakeword/script/run --uri 'tcp://127.0.0.1:10400'
+WorkingDirectory=/home/pi/wyoming-openwakeword
+Restart=always
+RestartSec=1
+
+[Install]
+WantedBy=default.target
