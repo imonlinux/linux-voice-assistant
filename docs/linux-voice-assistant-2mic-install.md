@@ -1,6 +1,7 @@
 # Linux Voice Assistant on 2‑Mic Linux — Installation & Configuration Guide
 
 > Created using ChatGPT 5 with the following prompt:
+
 > Using the following github document as a guide 
 > https://github.com/rhasspy/wyoming-satellite/blob/master/docs/tutorial_2mic.md, 
 > take the attached bash history of commands and create a similar document 
