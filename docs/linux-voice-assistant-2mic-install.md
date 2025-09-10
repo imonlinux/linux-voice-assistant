@@ -87,7 +87,7 @@ sudo systemctl status linux-voice-assistant wyoming-openwakeword --no-pager -l
 ## 8. Change OWW detection model
 
 Edit the linux-voice-assistant.service file and change the OWW configuration argument for --wake-word-name.
-Included OWW models include:
+Project OWW models include:
 
 ```text
 alexa_v0.1.tflite
