@@ -9,7 +9,7 @@
 ```
 > Modeled after the Wyoming Satellite two‑mic tutorial, adapted from actual shell history.
 
-This guide reproduces a working setup of the **linux-voice-assistant** project with **Wyoming OpenWakeWord** on a Linux host with a 2‑mic HAT (e.g., seeed-2mic-voicecard). It assumes a fresh system with sudo access.
+This guide reproduces a working setup of the **linux-voice-assistant** project with **Wyoming OpenWakeWord** on a Raspberry PI Zero 2W and a Respeaker 2‑mic HAT (e.g., seeed-2mic-voicecard). It assumes a fresh system with sudo access.
 
 ## Prerequisites
 - A Linux system (Debian/Ubuntu/Raspberry Pi OS or compatible)
@@ -46,7 +46,7 @@ script/setup
 
 ## 4. Configure audio devices
 
-Find your input/output device names and update the linux-voice-assistant/service/linux-voice-assistant.service file to match sound card details:
+Find your sound device names and update the linux-voice-assistant/service/linux-voice-assistant.service file to match sound card details:
 ```bash
 arecord -l
 aplay -l
