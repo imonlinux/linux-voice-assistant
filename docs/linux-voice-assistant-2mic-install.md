@@ -158,7 +158,7 @@ Environment=PYTHONUNBUFFERED=1
 WantedBy=multi-user.target
 ```
 
-Reload systemd with updated linux-voice-assistant.service file and restart linux-voice-assistant.service and confirm successful run:
+Reload systemd with updated linux-voice-assistant.service file, restart linux-voice-assistant.service, and confirm successful run:
 ```bash
 sudo systemctl daemon-reload
 sudo systemctl restart linux-voice-assistant.service
@@ -168,11 +168,12 @@ sudo systemctl status linux-voice-assistant wyoming-openwakeword --no-pager -l
 ## 9. Revert to MicroWakeWord
 
 Edit the linux-voice-assistant.service file and remove the OWW configuration arguments:
-Service file with OWW:
+
 ```bash
 sudo systemctl edit --force --full linux-voice-assistant.service 
 ```
 
+Service file with OWW:
 ```text
 [Unit]
 Description=Linux Voice Assistant
@@ -196,6 +197,7 @@ Environment=PYTHONUNBUFFERED=1
 [Install]
 WantedBy=multi-user.target
 ```
+
 Service file without OWW:
 ```text
 [Unit]
