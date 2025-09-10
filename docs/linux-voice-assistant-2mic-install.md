@@ -165,7 +165,7 @@ sudo systemctl restart linux-voice-assistant.service
 sudo systemctl status linux-voice-assistant wyoming-openwakeword --no-pager -l
 ```
 
-## 9. Revert to MicroWakeWord
+## 9. TODO :Revert to MicroWakeWord
 
 Edit the linux-voice-assistant.service file and remove the OWW configuration arguments:
 Service file with OWW:
