@@ -2,11 +2,10 @@
 
 > Created using ChatGPT 5 with the following prompt:
 ```html
-    <ul>
-      <li>Using the following github document as a guide</li>
-      <li>[https://github.com/rhasspy/wyoming-satellite/blob/master/docs/tutorial_2mic.md](https://github.com/rhasspy/wyoming-satellite/blob/master/docs/tutorial_2mic.md),</li>
-      <li>take the attached bash history of commands and create a similar document</li>
-      <li>detailing the installation and configuration of this linux-voice-assistant project.</li>
+      Using the following github document as a guide
+      [https://github.com/rhasspy/wyoming-satellite/blob/master/docs/tutorial_2mic.md](https://github.com/rhasspy/wyoming-satellite/blob/master/docs/tutorial_2mic.md),
+      take the attached bash history of commands and create a similar document
+      detailing the installation and configuration of this linux-voice-assistant project.
     </ul> 
 ```
 > Modeled after the Wyoming Satellite two‑mic tutorial, adapted from actual shell history.
