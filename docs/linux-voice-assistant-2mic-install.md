@@ -27,7 +27,17 @@ sudo reboot
 ```
 
 
-## 2. Get the code
+## 2. Install ReSpeaker drivers
+
+```bash
+cd linux-voice-assistant/respeaker2mic/
+chmod +x ./install-respeaker-drivers.sh
+sudo ./install-respeaker-drivers.sh 
+sudo reboot
+```
+
+
+## 3. Get the code
 
 ```bash
 git clone https://github.com/imonlinux/linux-voice-assistant.git
@@ -35,7 +45,7 @@ git clone https://github.com/rhasspy/wyoming-openwakeword.git
 ```
 
 
-## 3. Wyoming OpenWakeWord (OWW)
+## 4. Wyoming OpenWakeWord (OWW)
 
 ```bash
 cp ./linux-voice-assistant/wyoming-openwakeword/requirements.txt ./wyoming-openwakeword/requirements.txt
@@ -44,7 +54,7 @@ script/setup
 ```
 
 
-## 4. Configure audio devices
+## 5. Configure audio devices
 
 Find your sound device names and update the linux-voice-assistant/service/linux-voice-assistant.service file to match sound card details:
 ```bash
@@ -53,7 +63,7 @@ aplay -l
 ```
 
 
-## 5. Systemd services
+## 6. Systemd services
 
 Copy the 2 service files into /etc/systemd/system/:
 ```bash
@@ -68,7 +78,7 @@ sudo systemctl status linux-voice-assistant wyoming-openwakeword --no-pager -l
 ```
 
 
-## 6. Connect to Home Assistant
+## 7. Connect to Home Assistant
 
 1. In Home Assistant, go to "Settings" -> "Device & services"
 2. Click the "Add integration" button
@@ -77,14 +87,14 @@ sudo systemctl status linux-voice-assistant wyoming-openwakeword --no-pager -l
 5. Click "Submit"
 
 
-## 7. Verification
+## 8. Verification
 
 - Expect logs like `Connected to Home Assistant`
 - Look for `[OWW] Detection: name=...` followed by re-arming/cycling
 - Ask: *“What time is it?”* and confirm TTS reply
 
 
-## 8. Change OWW detection model
+## 9. Change OWW detection model
 
 Edit the linux-voice-assistant.service file and change the OWW configuration argument for --wake-word-name.
 Project OWW models include:
@@ -165,7 +175,7 @@ sudo systemctl restart linux-voice-assistant.service
 sudo systemctl status linux-voice-assistant wyoming-openwakeword --no-pager -l
 ```
 
-## 9. Revert to MicroWakeWord
+## 10. Revert to MicroWakeWord
 
 Edit the linux-voice-assistant.service file and remove the OWW configuration arguments:
 
