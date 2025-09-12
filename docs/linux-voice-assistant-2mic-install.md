@@ -57,11 +57,11 @@ script/setup
 
 ## 5. Configure audio devices, choose either Pulse Audio or ALSA (default)
 
-# (Optional) Pulse Audio
+### (Optional) Pulse Audio
 
 See [the tutorial](docs/install_pulseaudio.md) to install and configure Pulse Audio.
 
-# For Standard ALSA
+### For Standard ALSA
 
 You shouldn't have to change anything if you are using the driver provided in this repo. If you are using something else, find your sound device names and update the linux-voice-assistant/service/linux-voice-assistant.service file to match sound card details:
 
@@ -73,20 +73,20 @@ aplay -l
 
 ## 6. Systemd services
 
-## (Optional) for Pulse Audio copy this service file into /etc/systemd/system/:
+### (Optional) for Pulse Audio copy this service file into /etc/systemd/system/:
 
 ```bash
 sudo cp ./service/pa_linux-voice-assistant.service /etc/systemd/system/linux-voice-assistant.service
 ```
 
 
-## For ALSA copy this service file into /etc/systemd/system/:
+### For ALSA copy this service file into /etc/systemd/system/:
 
 ```bash
 sudo cp ./service/linux-voice-assistant.service /etc/systemd/system/linux-voice-assistant.service
 ```
 
-## For either ALSA or Pusle Audio systems, copy the Wyoming OpenWakeWord service file into /etc/systemd/system/:
+### For either ALSA or Pusle Audio systems, copy the Wyoming OpenWakeWord service file into /etc/systemd/system/:
 
 ```bash
 sudo cp ./service/wyoming-openwakeword.service /etc/systemd/system/wyoming-openwakeword.service
