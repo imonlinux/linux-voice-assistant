@@ -39,9 +39,8 @@ git clone https://github.com/rhasspy/wyoming-openwakeword.git
 ## 3. Install ReSpeaker drivers
 
 ```bash
-cd linux-voice-assistant/respeaker2mic/
-chmod +x ./install-respeaker-drivers.sh
-sudo ./install-respeaker-drivers.sh 
+chmod +x ~/linux-voice-assistant/respeaker2mic/install-respeaker-drivers.sh
+sudo ~/linux-voice-assistant/respeaker2mic/install-respeaker-drivers.sh 
 sudo reboot
 ```
 
@@ -49,7 +48,7 @@ sudo reboot
 ## 4. Wyoming OpenWakeWord (OWW)
 
 ```bash
-cp ./linux-voice-assistant/wyoming-openwakeword/requirements.txt ./wyoming-openwakeword/requirements.txt
+cp ~/linux-voice-assistant/wyoming-openwakeword/requirements.txt ~/wyoming-openwakeword/requirements.txt
 cd wyoming-openwakeword/
 script/setup
 ```
