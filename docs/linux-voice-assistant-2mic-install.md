@@ -80,7 +80,7 @@ sudo cp ./service/pa_linux-voice-assistant.service /etc/systemd/system/linux-voi
 ```
 
 
-# For ALSA copy these 2 service files into /etc/systemd/system/:
+# For ALSA copy this service file into /etc/systemd/system/:
 
 ```bash
 sudo cp ./service/linux-voice-assistant.service /etc/systemd/system/linux-voice-assistant.service
