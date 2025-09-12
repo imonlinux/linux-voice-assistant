@@ -76,7 +76,7 @@ aplay -l
 ### (Optional) for Pulse Audio copy this service file into /etc/systemd/system/:
 
 ```bash
-sudo cp ./service/pa_linux-voice-assistant.service /etc/systemd/system/linux-voice-assistant.service
+sudo cp ./service/pa-linux-voice-assistant.service /etc/systemd/system/linux-voice-assistant.service
 ```
 
 
