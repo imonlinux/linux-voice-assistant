@@ -88,6 +88,7 @@ sudo cp ./service/linux-voice-assistant.service /etc/systemd/system/linux-voice-
 
 For either ALSA or Pusle Audio systems, copy the Wyoming OpenWakeWord service file into /etc/systemd/system/:
 
+```bash
 sudo cp ./service/wyoming-openwakeword.service /etc/systemd/system/wyoming-openwakeword.service
 ```
 
