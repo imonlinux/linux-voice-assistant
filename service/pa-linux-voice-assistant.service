@@ -1,0 +1,24 @@
+[Unit]
+Description=Linux Voice Assistant
+Requires=wyoming-openwakeword.service
+After=wyoming-openwakeword.service
+After=sound.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/pi/linux-voice-assistant
+ExecStart=/home/pi/linux-voice-assistant/script/run \
+  --name 'Linux Satellite' \
+  --audio-input-device pulse \
+  --audio-output-device pulse \
+  --wake-uri 'tcp://127.0.0.1:10400' \
+  --wake-word-name 'marvin' \
+  --wake-models-dir '/home/pi/wyoming-openwakeword/wyoming_openwakeword/models' \
+  --debug
+Restart=always
+RestartSec=2
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
