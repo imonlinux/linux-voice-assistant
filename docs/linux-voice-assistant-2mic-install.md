@@ -27,21 +27,21 @@ sudo reboot
 ```
 
 
-## 2. Install ReSpeaker drivers
+## 2. Get the code
+
+```bash
+git clone https://github.com/imonlinux/linux-voice-assistant.git
+git clone https://github.com/rhasspy/wyoming-openwakeword.git
+```
+
+
+## 3. Install ReSpeaker drivers
 
 ```bash
 cd linux-voice-assistant/respeaker2mic/
 chmod +x ./install-respeaker-drivers.sh
 sudo ./install-respeaker-drivers.sh 
 sudo reboot
-```
-
-
-## 3. Get the code
-
-```bash
-git clone https://github.com/imonlinux/linux-voice-assistant.git
-git clone https://github.com/rhasspy/wyoming-openwakeword.git
 ```
 
 
