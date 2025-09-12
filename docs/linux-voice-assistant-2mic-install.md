@@ -55,7 +55,15 @@ script/setup
 ```
 
 
-## 5. Configure audio devices, choose either Pulse Audio or ALSA (default)
+## 5. Linux Voice Assistant (LVA)
+
+```bash
+cd ~/linux-voice-assistant/
+script/setup
+```
+
+
+## 6. Configure audio devices, choose either Pulse Audio or ALSA (default)
 
 ### (Optional) Pulse Audio
 
@@ -71,7 +79,7 @@ aplay -l
 ```
 
 
-## 6. Systemd services
+## 7. Systemd services
 
 ### (Optional) for Pulse Audio copy this service file into /etc/systemd/system/:
 
@@ -104,7 +112,7 @@ sudo systemctl status linux-voice-assistant wyoming-openwakeword --no-pager -l
 ```
 
 
-## 7. Connect to Home Assistant
+## 8. Connect to Home Assistant
 
 1. In Home Assistant, go to "Settings" -> "Device & services"
 2. Click the "Add integration" button
@@ -114,7 +122,7 @@ sudo systemctl status linux-voice-assistant wyoming-openwakeword --no-pager -l
 6. During the registration process, use the wake word that you configured in your linux-voice-assistant.service file. Default is "alexa".
 
 
-## 8. Verification
+## 9. Verification
 
 - Expect logs like `Connected to Home Assistant`
 - Look for `[OWW] Detection: name=...` followed by re-arming/cycling
@@ -124,7 +132,7 @@ sudo systemctl status linux-voice-assistant wyoming-openwakeword --no-pager -l
       Settings -> Voice assistants -> Assist (the assistant you configured) -> Text-to-speech -> Voice
 
 
-## 9. Change OWW detection model (Depricated-Wake word can be selected in HA now)
+## 10. Change OWW detection model (Depricated-Wake word can be selected in HA now)
 
 Edit the linux-voice-assistant.service file and change the OWW configuration argument for --wake-word-name.
 Project OWW models include:
@@ -205,7 +213,7 @@ sudo systemctl restart linux-voice-assistant.service
 sudo systemctl status linux-voice-assistant wyoming-openwakeword --no-pager -l
 ```
 
-## 10. Revert to MicroWakeWord
+## 11. Revert to MicroWakeWord
 
 Edit the linux-voice-assistant.service file and remove the OWW configuration arguments:
 
