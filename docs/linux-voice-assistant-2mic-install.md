@@ -55,7 +55,7 @@ script/setup
 ```
 
 
-## 5. Configure audio devices, choose either Pulse Audio or ALASA (default)
+## 5. Configure audio devices, choose either Pulse Audio or ALSA (default)
 
 # (Optional) Pulse Audio
 
