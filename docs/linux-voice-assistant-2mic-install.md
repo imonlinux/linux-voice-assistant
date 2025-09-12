@@ -113,38 +113,14 @@ ok_nabu_v0.1.tflite
 Additional community provided OWW models available from this repository:
 https://github.com/fwartner/home-assistant-wakewords-collection
 
+**Word of warning. I have had problems with some of the communitee provided wake words. YMMV**
+
 Edit linux-voice-assistant.service file:
 ```bash
 sudo systemctl edit --force --full linux-voice-assistant.service 
 ```
 
-Service file as provided using OWW 'ok_nabu':
-```text
-[Unit]
-Description=Linux Voice Assistant
-Requires=wyoming-openwakeword.service
-After=sound.target network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-WorkingDirectory=/home/pi/linux-voice-assistant
-ExecStart=/home/pi/linux-voice-assistant/script/run \
-  --name 'Linux Satellite' \
-  --audio-input-device seeed-2mic-voicecard \
-  --audio-output-device alsa/hw:1,0 \
-  --wake-uri 'tcp://127.0.0.1:10400' \
-  --wake-word-name 'ok_nabu'
-Restart=always
-RestartSec=2
-Environment=PYTHONUNBUFFERED=1
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Service file using OWW 'alexa':
-
+Service file as provided using OWW 'alexa':
 ```text
 [Unit]
 Description=Linux Voice Assistant
@@ -161,6 +137,32 @@ ExecStart=/home/pi/linux-voice-assistant/script/run \
   --audio-output-device alsa/hw:1,0 \
   --wake-uri 'tcp://127.0.0.1:10400' \
   --wake-word-name 'alexa'
+Restart=always
+RestartSec=2
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Service file using OWW 'ok_nabu':
+
+```text
+[Unit]
+Description=Linux Voice Assistant
+Requires=wyoming-openwakeword.service
+After=sound.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/pi/linux-voice-assistant
+ExecStart=/home/pi/linux-voice-assistant/script/run \
+  --name 'Linux Satellite' \
+  --audio-input-device seeed-2mic-voicecard \
+  --audio-output-device alsa/hw:1,0 \
+  --wake-uri 'tcp://127.0.0.1:10400' \
+  --wake-word-name 'ok_nabu'
 Restart=always
 RestartSec=2
 Environment=PYTHONUNBUFFERED=1
@@ -200,7 +202,7 @@ ExecStart=/home/pi/linux-voice-assistant/script/run \
   --audio-input-device seeed-2mic-voicecard \
   --audio-output-device alsa/hw:1,0 \
   --wake-uri 'tcp://127.0.0.1:10400' \
-  --wake-word-name 'ok_nabu'
+  --wake-word-name 'alexa'
 Restart=always
 RestartSec=2
 Environment=PYTHONUNBUFFERED=1
