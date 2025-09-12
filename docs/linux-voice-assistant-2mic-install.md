@@ -133,7 +133,7 @@ ok_nabu_v0.1.tflite
 Additional community provided OWW models available from this repository:
 https://github.com/fwartner/home-assistant-wakewords-collection
 
-**Word of warning. I have had problems with some of the communitee provided wake words. YMMV**
+**Word of warning. I have had problems with some of the community provided wake words. YMMV**
 
 Edit linux-voice-assistant.service file:
 ```bash
