@@ -56,7 +56,7 @@ script/setup
 
 ## 5. Configure audio devices
 
-Find your sound device names and update the linux-voice-assistant/service/linux-voice-assistant.service file to match sound card details:
+You shouldn't have to change anything if you are using the driver provided in this repo. If you are using something else, find your sound device names and update the linux-voice-assistant/service/linux-voice-assistant.service file to match sound card details:
 ```bash
 arecord -l
 aplay -l
