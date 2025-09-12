@@ -115,6 +115,8 @@ sudo systemctl status linux-voice-assistant wyoming-openwakeword --no-pager -l
 - Expect logs like `Connected to Home Assistant`
 - Look for `[OWW] Detection: name=...` followed by re-arming/cycling
 - Ask: *“What time is it?”* and confirm TTS reply
+- If you do not get a voice response, check the Voice Assistant that you choose during registration has a voice assigned to it.
+      Setting -> Voice assistants -> Assist (the assistant you configured) -> Text-to-speech -> Voice
 
 
 ## 9. Change OWW detection model (Depricated-Wake word can be selected in HA now)
