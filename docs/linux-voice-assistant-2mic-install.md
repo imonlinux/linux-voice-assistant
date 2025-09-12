@@ -85,6 +85,7 @@ sudo systemctl status linux-voice-assistant wyoming-openwakeword --no-pager -l
 3. Choose "ESPHome" and then "Set up another instance of ESPHome"
 4. Enter the IP address of your voice satellite with port 6053
 5. Click "Submit"
+6. During the registration process, use the wake word that you configured in your linux-voice-assistant.service file. Default is "ok_nabo".
 
 
 ## 8. Verification
@@ -92,9 +93,11 @@ sudo systemctl status linux-voice-assistant wyoming-openwakeword --no-pager -l
 - Expect logs like `Connected to Home Assistant`
 - Look for `[OWW] Detection: name=...` followed by re-arming/cycling
 - Ask: *“What time is it?”* and confirm TTS reply
+- If you do not get a voice response, check the Voice Assistant that you choose during registration has a voice assigned to it.
+      Setting -> Voice assistants -> Assist (the assistant you configured) -> Text-to-speech -> Voice
 
 
-## 9. Change OWW detection model
+## 9. Change OWW detection model (Depricated-Wake word can be selected in HA now)
 
 Edit the linux-voice-assistant.service file and change the OWW configuration argument for --wake-word-name.
 Project OWW models include:
