@@ -215,6 +215,7 @@ Service file with OWW:
 [Unit]
 Description=Linux Voice Assistant
 Requires=wyoming-openwakeword.service
+After=wyoming-openwakeword.service
 After=sound.target network-online.target
 Wants=network-online.target
 
@@ -240,6 +241,7 @@ Service file without OWW:
 [Unit]
 Description=Linux Voice Assistant
 Requires=wyoming-openwakeword.service
+After=wyoming-openwakeword.service
 After=sound.target network-online.target
 Wants=network-online.target
 
