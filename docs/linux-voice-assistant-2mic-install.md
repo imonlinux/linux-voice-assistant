@@ -17,6 +17,7 @@ This guide reproduces a working setup of the **linux-voice-assistant** project w
 - A 2‑mic sound card
 - Network access to your Home Assistant instance
 
+
 ## 1. Install system packages
 
 ```bash
@@ -54,9 +55,16 @@ script/setup
 ```
 
 
-## 5. Configure audio devices
+## 5. Configure audio devices, choose either Pulse Audio or ALASA (default)
+
+# (Optional) Pulse Audio
+
+See [the tutorial](docs/install_pulseaudio.md) to install and configure Pulse Audio.
+
+# For Standard ALSA
 
 You shouldn't have to change anything if you are using the driver provided in this repo. If you are using something else, find your sound device names and update the linux-voice-assistant/service/linux-voice-assistant.service file to match sound card details:
+
 ```bash
 arecord -l
 aplay -l
@@ -65,12 +73,26 @@ aplay -l
 
 ## 6. Systemd services
 
-Copy the 2 service files into /etc/systemd/system/:
+# (Optional) for Pulse Audio copy this service file into /etc/systemd/system/:
+
+```bash
+sudo cp ./service/pa_linux-voice-assistant.service /etc/systemd/system/linux-voice-assistant.service
+```
+
+
+# For ALSA copy these 2 service files into /etc/systemd/system/:
+
 ```bash
 sudo cp ./service/linux-voice-assistant.service /etc/systemd/system/linux-voice-assistant.service
+```
+
+For either ALSA or Pusle Audio systems, copy the Wyoming OpenWakeWord service file into /etc/systemd/system/:
+
 sudo cp ./service/wyoming-openwakeword.service /etc/systemd/system/wyoming-openwakeword.service
 ```
+
 Start new services and confirm services are running:
+
 ```bash
 sudo systemctl daemon-reload
 sudo systemctl enable --now linux-voice-assistant
@@ -85,7 +107,6 @@ sudo systemctl status linux-voice-assistant wyoming-openwakeword --no-pager -l
 3. Choose "ESPHome" and then "Set up another instance of ESPHome"
 4. Enter the IP address of your voice satellite with port 6053
 5. Click "Submit"
-6. During the registration process, use the wake word that you configured in your linux-voice-assistant.service file. Default is "alexa".
 
 
 ## 8. Verification
@@ -93,8 +114,6 @@ sudo systemctl status linux-voice-assistant wyoming-openwakeword --no-pager -l
 - Expect logs like `Connected to Home Assistant`
 - Look for `[OWW] Detection: name=...` followed by re-arming/cycling
 - Ask: *“What time is it?”* and confirm TTS reply
-- If you do not get a voice response, check the Voice Assistant that you choose during registration has a voice assigned to it.
-      Setting -> Voice assistants -> Assist (the assistant you configured) -> Text-to-speech -> Voice
 
 
 ## 9. Change OWW detection model (Depricated-Wake word can be selected in HA now)
@@ -120,33 +139,7 @@ Edit linux-voice-assistant.service file:
 sudo systemctl edit --force --full linux-voice-assistant.service 
 ```
 
-Service file as provided using OWW 'alexa':
-```text
-[Unit]
-Description=Linux Voice Assistant
-Requires=wyoming-openwakeword.service
-After=sound.target network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-WorkingDirectory=/home/pi/linux-voice-assistant
-ExecStart=/home/pi/linux-voice-assistant/script/run \
-  --name 'Linux Satellite' \
-  --audio-input-device seeed-2mic-voicecard \
-  --audio-output-device alsa/hw:1,0 \
-  --wake-uri 'tcp://127.0.0.1:10400' \
-  --wake-word-name 'alexa'
-Restart=always
-RestartSec=2
-Environment=PYTHONUNBUFFERED=1
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Service file using OWW 'ok_nabu':
-
+Service file as provided using OWW 'ok_nabu':
 ```text
 [Unit]
 Description=Linux Voice Assistant
@@ -163,6 +156,32 @@ ExecStart=/home/pi/linux-voice-assistant/script/run \
   --audio-output-device alsa/hw:1,0 \
   --wake-uri 'tcp://127.0.0.1:10400' \
   --wake-word-name 'ok_nabu'
+Restart=always
+RestartSec=2
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Service file using OWW 'alexa':
+
+```text
+[Unit]
+Description=Linux Voice Assistant
+Requires=wyoming-openwakeword.service
+After=sound.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/pi/linux-voice-assistant
+ExecStart=/home/pi/linux-voice-assistant/script/run \
+  --name 'Linux Satellite' \
+  --audio-input-device seeed-2mic-voicecard \
+  --audio-output-device alsa/hw:1,0 \
+  --wake-uri 'tcp://127.0.0.1:10400' \
+  --wake-word-name 'alexa'
 Restart=always
 RestartSec=2
 Environment=PYTHONUNBUFFERED=1
@@ -202,7 +221,7 @@ ExecStart=/home/pi/linux-voice-assistant/script/run \
   --audio-input-device seeed-2mic-voicecard \
   --audio-output-device alsa/hw:1,0 \
   --wake-uri 'tcp://127.0.0.1:10400' \
-  --wake-word-name 'alexa'
+  --wake-word-name 'ok_nabu'
 Restart=always
 RestartSec=2
 Environment=PYTHONUNBUFFERED=1
