@@ -84,23 +84,20 @@ aplay -l
 ### (Optional) for Pulse Audio copy this service file into /etc/systemd/system/:
 
 ```bash
-cd ~/linux-voice-assistant
-sudo cp ./service/pa-linux-voice-assistant.service /etc/systemd/system/linux-voice-assistant.service
+sudo cp ~/linux-voice-assistant/service/pa-linux-voice-assistant.service /etc/systemd/system/linux-voice-assistant.service
 ```
 
 
 ### For ALSA copy this service file into /etc/systemd/system/:
 
 ```bash
-cd ~/linux-voice-assistant
-sudo cp ./service/linux-voice-assistant.service /etc/systemd/system/linux-voice-assistant.service
+sudo cp ~/linux-voice-assistant/service/linux-voice-assistant.service /etc/systemd/system/linux-voice-assistant.service
 ```
 
 ### For either ALSA or Pusle Audio systems, copy the Wyoming OpenWakeWord service file into /etc/systemd/system/:
 
 ```bash
-cd ~/linux-voice-assistant
-sudo cp ./service/wyoming-openwakeword.service /etc/systemd/system/wyoming-openwakeword.service
+sudo cp ~/linux-voice-assistant/service/wyoming-openwakeword.service /etc/systemd/system/wyoming-openwakeword.service
 ```
 
 Start new services and confirm services are running:
