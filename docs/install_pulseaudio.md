@@ -9,7 +9,7 @@ ssh <your_username>@<pi_IP_address>
 ```
 
 
-## 2. If already installed Disable/Stop the entire the Linux Voice Assistant service temporarily. If not installed, proceed to setp 3.:
+## 2. If already installed Disable/Stop the entire the Linux Voice Assistant service temporarily. If not installed, proceed to step (3.):
 
 ```sh
 sudo systemctl disable --now linux-voice-assistant.service
@@ -131,5 +131,6 @@ sudo sed -i.bak \
 
 
 ## 16. Done! Return to the tutorial to continue the Linux Voice Assistant install.
+
 
 
