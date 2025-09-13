@@ -54,11 +54,11 @@ sudo nano /etc/pulse/client.conf
 ## 8. Create the `PulseAudio.service`:
 
 ```sh
-
 sudo systemctl edit --force --full pulseaudio.service
 ```
 
-Paste in the following:
+Paste in the following then save it with CTL+o and CTL+x:
+
 ```sh
 [Unit]
 Description=PulseAudio system server
@@ -131,4 +131,5 @@ sudo sed -i.bak \
 
 
 ## 16. Done! Return to the tutorial to continue the Linux Voice Assistant install.
+
 
