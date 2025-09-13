@@ -47,7 +47,10 @@ sudo systemctl --global disable pulseaudio.service pulseaudio.socket
 ## 7. It is also advisable to set `autospawn = no` in `/etc/pulse/client.conf`:
 
 ```sh
-sudo nano /etc/pulse/client.conf
+sudo sed -i.bak \
+    -e '$a### Disable autospawn' \
+    -e '$aautospawn = no' \
+    /etc/pulse/client.conf
 ```
 
 
@@ -131,6 +134,7 @@ sudo sed -i.bak \
 
 
 ## 16. Done! Return to the tutorial to continue the Linux Voice Assistant install.
+
 
 
 
