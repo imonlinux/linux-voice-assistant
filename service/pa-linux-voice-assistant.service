@@ -16,7 +16,7 @@ Environment="PULSE_SERVER=unix:/var/run/pulse/native"
 
 # Use PulseAudio defaults (set via pactl) for input/output
 ExecStart=/home/pi/linux-voice-assistant/script/run \
-  --name 'Linux Satellite HAL-9001' \
+  --name 'Linux Satellite' \
   --audio-input-device default \
   --audio-output-device default \
   --wake-uri 'tcp://127.0.0.1:10400' \
