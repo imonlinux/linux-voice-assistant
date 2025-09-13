@@ -64,7 +64,7 @@ script/setup
 
 ## 6. Configure audio devices, choose either Pulse Audio or ALSA (default)
 
-### (Optional) Pulse Audio
+### WIP Don't Use Yet! (Optional) Pulse Audio
 
 See [the tutorial](docs/install_pulseaudio.md) to install and configure Pulse Audio.
 
