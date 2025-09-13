@@ -1,24 +1,34 @@
 [Unit]
 Description=Linux Voice Assistant
-Requires=wyoming-openwakeword.service
-After=wyoming-openwakeword.service
-After=sound.target network-online.target
+After=network-online.target pulseaudio.service wyoming-openwakeword.service
 Wants=network-online.target
+Requires=pulseaudio.service wyoming-openwakeword.service
 
 [Service]
 Type=simple
+User=pi
+Group=pi
 WorkingDirectory=/home/pi/linux-voice-assistant
+
+# Ensure the app talks to system-wide PulseAudio
+Environment=PYTHONUNBUFFERED=1
+Environment="PULSE_SERVER=unix:/var/run/pulse/native"
+
+# Use PulseAudio defaults (set via pactl) for input/output
 ExecStart=/home/pi/linux-voice-assistant/script/run \
-  --name 'Linux Satellite' \
-  --audio-input-device pulse \
-  --audio-output-device pulse \
+  --name 'Linux Satellite HAL-9001' \
+  --audio-input-device default \
+  --audio-output-device default \
   --wake-uri 'tcp://127.0.0.1:10400' \
   --wake-word-name 'alexa' \
   --wake-models-dir '/home/pi/wyoming-openwakeword/wyoming_openwakeword/models' \
   --debug
+
 Restart=always
 RestartSec=2
-Environment=PYTHONUNBUFFERED=1
+
+# If you need network and filesystems ready:
+#TimeoutStartSec=30
 
 [Install]
 WantedBy=multi-user.target
