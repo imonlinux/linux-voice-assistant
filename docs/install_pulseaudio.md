@@ -57,21 +57,7 @@ sudo sed -i.bak \
 ## 8. Create the `PulseAudio.service`:
 
 ```sh
-sudo systemctl edit --force --full pulseaudio.service
-```
-
-Paste in the following then save it with CTL+o and CTL+x:
-
-```sh
-[Unit]
-Description=PulseAudio system server
-
-[Service]
-Type=notify
-ExecStart=pulseaudio --daemonize=no --system --realtime --log-target=journal
-
-[Install]
-WantedBy=multi-user.target
+sudo cp ~/linux-voice-assistant/service/pulseaudio.service /etc/systemd/system/pulseaudio.service
 ```
 
 
@@ -134,6 +120,7 @@ sudo sed -i.bak \
 
 
 ## 16. Done! Return to the tutorial to continue the Linux Voice Assistant install.
+
 
 
 
