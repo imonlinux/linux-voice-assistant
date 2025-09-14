@@ -20,6 +20,8 @@ Install system dependencies (`apt-get`):
 * `libportaudio2` (for `sounddevice`)
 * `build-essential` (for `pymicro-features`)
 * `libmpv-dev` (for `python-mpv`)
+* `mpv` (for testing)
+* `libmpv-dev` (for building spidev)
 
 Clone and install project:
 
