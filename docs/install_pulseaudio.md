@@ -179,6 +179,7 @@ sudo cp /etc/pulse/default.pa{,.bak.$(date +%s)}
 
 Update the PA /etc/pulse/default.pa file with required change. Replaces if present (commented or not).
 
+```bash
 sudo sed -i -E \
   -e 's|^[#;[:space:]]*(load-module[[:space:]]+module-udev-detect)([[:space:]].*)?$|\1 tsched=0|' \
   -e 's|^[#;[:space:]]*(load-module[[:space:]]+module-native-protocol-unix.*)$|\1|' \
@@ -186,6 +187,7 @@ sudo sed -i -E \
   -e 's|^[#;[:space:]]*(load-module[[:space:]]+module-always-sink.*)$|\1|' \
   -e 's|^[#;[:space:]]*(load-module[[:space:]]+module-intended-roles.*)$|\1|' \
   /etc/pulse/default.pa
+```
 
 Just in case the values were missing, may not be needed but shouldn't hurt.
 
@@ -204,7 +206,7 @@ Optional since LVA handles duck/unduck: if you enabled role-ducking explicitly i
 ```bash
 sudo sed -i -E 's|^([[:space:]]*)load-module[[:space:]]+module-role-ducking\b|# \0|' /etc/pulse/system.pa
 ```
-Restart PA and verify
+## 15. Restart PA and verify
 
 ```bash
 sudo systemctl restart pulseaudio.service
@@ -216,10 +218,11 @@ Test mpv can ouput to PA with current configs:
 mpv --ao=pulse --audio-device=default --audio-samplerate=44100 /usr/share/sounds/alsa/Front_Center.wav
 ```
 
-## 15. Reboot your Pi: (see step 4)
+## 16. Reboot your Pi: (see step 4)
 
 
-## 16. Done! Return to the tutorial to continue the Linux Voice Assistant install.
+## 17. Done! Return to the tutorial to continue the Linux Voice Assistant install.
+
 
 
 
