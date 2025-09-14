@@ -89,7 +89,7 @@ aplay -l
 chmod +x ~/linux-voice-assistant/script/gen-esphome-avahi.sh
 sudo ~/linux-voice-assistant/script/gen-esphome-avahi.sh
 sudo mkdir -p /etc/systemd/system/linux-voice-assistant.service.d
-sudo cp ~/linux-voice-assistant/service/10-avahi.conf sudo mkdir -p /etc/systemd/system/linux-voice-assistant.service.d/10-avahi.conf
+sudo cp ~/linux-voice-assistant/service/10-avahi.conf /etc/systemd/system/linux-voice-assistant.service.d/10-avahi.conf
 ```
 
 ```bash
