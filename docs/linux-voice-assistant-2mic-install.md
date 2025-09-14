@@ -174,7 +174,7 @@ alexa_v0.1.tflite       -> Alexa
 hey_jarvis_v0.1.tflite  -> Hey Jarvis
 hey_mycroft_v0.1.tflite -> Hey Mycroft
 hey_rhasspy_v0.1.tflite -> Hey Rhasspy
-ok_nabu_v0.1.tflite     -> OK Nabo **(not working for me right now)**
+ok_nabu_v0.1.tflite     -> OK Nabo **(I had to say OK Nobu)**
 ```
 
 Additional community provided OWW models available from this repository:
