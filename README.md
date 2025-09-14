@@ -43,6 +43,18 @@ See `--help` for more options.
 4. Enter the IP address of your voice satellite with port 6053
 5. Click "Submit"
 
+
+## ToDo:
+
+* Configure LVA to advertise on Zeroconf/mDNS via Avahi for HA to auto detect (in progress)
+* Implement a single LVA systemd unit file that can be addapted using profiles and drop-ins (in progress)
+* Implement OWW model validation checks and error handling so that a bad model doesn't crash OWW
+* Make the selection of the right ALSA ar PA device more scripted
+* Make a Docker of the project
+* Add sensor entity that displays which wake word engine is being used for HA
+* Could this be an DEB package?
+* Implement Stop for OWW
+* Stretch goal: create a smart installer full of validation and sanity checks
 <!-- Links -->
 [homeassistant]: https://www.home-assistant.io/
 [esphome]: https://esphome.io/
