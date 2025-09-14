@@ -69,7 +69,7 @@ script/setup
 
 ### (Optional) Pulse Audio
 
-See [the tutorial](docs/install_pulseaudio.md) to install and configure Pulse Audio.
+See [the tutorial](install_pulseaudio.md) to install and configure Pulse Audio.
 
 ### For Standard ALSA
 
