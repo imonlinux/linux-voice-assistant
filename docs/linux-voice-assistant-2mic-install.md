@@ -25,7 +25,8 @@ This guide reproduces a working setup of the **linux-voice-assistant** project w
 ```bash
 sudo apt update
 sudo apt upgrade
-sudo apt install libportaudio2 build-essential git libmpv-dev mpv python3.11-dev
+sudo apt install libportaudio2 build-essential git \
+      libmpv-dev mpv python3.11-dev avahi-daemon avahi-utils
 sudo reboot
 ```
 
@@ -81,6 +82,19 @@ aplay -l
 
 
 ## 7. Systemd services
+
+### (Optional) enable Avahi service file to advertise LVA to HA:
+
+```bash
+chmod +x ~/linux-voice-assistant/script/gen-esphome-avahi.sh
+sudo ~/linux-voice-assistant/script/gen-esphome-avahi.sh
+sudo mkdir -p /etc/systemd/system/linux-voice-assistant.service.d
+sudo cp ~/linux-voice-assistant/service/10-avahi.conf sudo mkdir -p /etc/systemd/system/linux-voice-assistant.service.d/10-avahi.conf
+```
+
+```bash
+sudo systemctl restart avahi-daemon.service
+```
 
 ### (Optional) for Pulse Audio  with OWW copy this service file into /etc/systemd/system/:
 
@@ -144,6 +158,8 @@ sudo systemctl status linux-voice-assistant wyoming-openwakeword --no-pager -l
 
 
 ## 8. Connect to Home Assistant
+
+### If HA does not discover the new LVA:
 
 1. In Home Assistant, go to "Settings" -> "Device & services"
 2. Click the "Add integration" button
