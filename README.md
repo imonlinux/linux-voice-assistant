@@ -7,7 +7,11 @@ Supports announcments, start/continue conversation, and timers.
 
 See [the tutorial](docs/linux-voice-assistant-2mic-install.md) to build a satellite using a [Raspberry Pi Zero 2 W](https://www.raspberrypi.com/products/raspberry-pi-zero-2-w/) and a [ReSpeaker 2Mic HAT](https://wiki.keyestudio.com/Ks0314_keyestudio_ReSpeaker_2-Mic_Pi_HAT_V1.0). 
 
-This fork introduces the ability to use Wyoming OpenWakeWord instead of MicroWakeWord.
+### What's working:
+- This fork introduces the ability to use Wyoming OpenWakeWord (OWW) instead of MicroWakeWord (MWW).
+- Now supports **both ALSA and PulseAudio** playback backends using the updated `linux_voice_assistant/mpv_player.py`.
+- You can choose between ALSA and PulseAudio with either MWW or OWW simply by enabling the matching systemd service file.
+- You can change the OWW wake word within HA after the VLA is registered. (defaults to the wake word defind in the systemd config file)
 
 ## Installation
 
@@ -42,3 +46,5 @@ See `--help` for more options.
 <!-- Links -->
 [homeassistant]: https://www.home-assistant.io/
 [esphome]: https://esphome.io/
+[wyoming]: https://github.com/rhasspy/wyoming-openwakeword/
+[future proof home]: https://github.com/FutureProofHomes/wyoming-enhancements/
