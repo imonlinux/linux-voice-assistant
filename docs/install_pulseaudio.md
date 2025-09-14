@@ -82,7 +82,7 @@ sudo sed -i '/^pulse-access:/ s/$/root,pi/' /etc/group
 ## 11. Reboot your Pi: (see step 4)
 
 
-## 12. (OPTIONAL) If plugging speakers into the headphone jack, set the correct PulseAudio Sync Port:
+## 12. (OPTIONAL) If plugging speakers into the headphone jack of the ReSpeaker, set the correct PulseAudio Sink Port:
 
 Run `pactl list sinks` and scroll to the bottom and notice your Active Port is probably "analog-output-speaker".  Run the command below to output audio through the 3.5mm headphone jack.
 
@@ -120,6 +120,7 @@ sudo sed -i.bak \
 
 
 ## 16. Done! Return to the tutorial to continue the Linux Voice Assistant install.
+
 
 
 
