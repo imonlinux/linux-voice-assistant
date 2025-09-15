@@ -1,292 +1,278 @@
-# Copyright (c) 2025
-# mpv-based media player with PulseAudio/ALSA support and no-progress watchdog
+"""Media player using mpv in a subprocess.
+
+- Supports ALSA and PulseAudio
+- Duck/unduck
+- Robust URL handling (str | list/tuple | bytes)
+- Backwards-compatible API: play(url, done_callback=None, stop_first=False), pause, resume, stop, set_volume
+- Pulse-friendly defaults (44100 Hz stereo) and short network timeout
+- Default watchdog = 8s (configurable), to avoid hangs if mpv fails to finish
+- End-of-playback detection uses BOTH `eof-reached` and `idle-active` to finish immediately after short clips
+- mpv log level can be controlled with env var LVA_MPV_MSG_LEVEL (e.g. "all=warn", "all=info")
+"""
+
 from __future__ import annotations
 
 import logging
 import os
-import time
-from threading import Timer
-from typing import Callable, Optional, Sequence, Union
+from collections.abc import Callable, Sequence
+from threading import Lock, Timer
+from typing import Optional, Union
 
-try:
-    from mpv import MPV
-except Exception as e:  # pragma: no cover
-    # Keep import error visible during service startup
-    raise
+from mpv import MPV
 
 _LOGGER = logging.getLogger(__name__)
 
 
 class MpvMediaPlayer:
-    """Thin wrapper around python-mpv suited for short TTS clips.
+    def __init__(self, device: Optional[str] = None, watchdog_sec: float = 8.0) -> None:
+        # Bridge mpv logs into Python logging
+        self.player = MPV(video=False, terminal=False, log_handler=self._mpv_log)
 
-    Features:
-      - Supports PulseAudio and ALSA devices
-      - Accepts plain sink names (assumed Pulse): e.g. 'alsa_output.foo.bar'
-      - End-of-playback detection via 'idle-active' and 'eof-reached'
-      - No-progress watchdog: trips only if time-pos doesn't advance
-      - Optional duck/unduck helpers using mpv volume property
-    """
+        # Pulse-friendly defaults
+        try:
+            self.player['audio-samplerate'] = 44100
+            self.player['audio-channels'] = 'stereo'
+            self.player['keep-open'] = 'no'
+            self.player['network-timeout'] = 7
+            # Log level configurable via env; default to warn
+            msg_level = os.environ.get("LVA_MPV_MSG_LEVEL", "all=warn")
+            self.player['msg-level'] = msg_level
+        except Exception:
+            pass
 
-    def __init__(
-        self,
-        device: Optional[str] = None,
-        watchdog_sec: float = 8.0,
-    ) -> None:
-        self._done_cb: Optional[Callable[[], None]] = None
+        # Normalize/select backend and device
+        ao = None
+        norm = None
+
+        if device:
+            d = device.strip()
+            if d.startswith("alsa/"):
+                ao = "alsa"; norm = d
+            elif d.startswith("pulse/"):
+                ao = "pulse"; norm = d
+            elif d == "default":
+                try:
+                    self.player["ao"] = "pulse"; norm = "pulse/default"
+                except Exception:
+                    try:
+                        self.player["ao"] = "alsa"; norm = "alsa/default"
+                    except Exception:
+                        _LOGGER.warning("Neither Pulse nor ALSA available for 'default'")
+            else:
+                # Assume Pulse sink name if no prefix
+                ao = "pulse"; norm = f"pulse/{d}"
+
+        if ao:
+            try:
+                self.player["ao"] = ao
+            except Exception:
+                _LOGGER.warning("Requested ao=%s not available", ao)
+
+        if norm:
+            try:
+                self.player["audio-device"] = norm
+            except Exception:
+                _LOGGER.warning("Failed to set audio-device=%s", norm)
+
+        # State
+        self.is_playing: bool = False
+        self._done_callback: Optional[Callable[[], None]] = None
+        self._done_callback_lock = Lock()
+        self._pre_duck_volume: Optional[int] = None  # stores 0..100 when ducked
         self._watchdog: Optional[Timer] = None
         self._watchdog_sec: float = float(watchdog_sec)
-        self._last_progress: float = 0.0
-        self._duck_prev_volume: Optional[float] = None
-        self._stopped: bool = False
 
-        # Decide backend and device
-        ao, audio_device = self._select_backend_and_device(device)
-
-        # mpv msg level
-        msg_level = os.getenv("LVA_MPV_MSG_LEVEL", "all=warn")
-
-        # Create player instance tuned for TTS
-        # NOTE: video disabled; keep-open=no so idle triggers quickly
-        self.player = MPV(
-            video=False,
-            ao=ao,
-            audio_device=audio_device if audio_device else None,
-            audio_samplerate="44100",
-            audio_channels="stereo",
-            keep_open="no",
-            msg_level=msg_level,
-            input_default_bindings=False,
-            input_vo_keyboard=False,
-            ytdl=False,
-            log_handler=self._mpv_log,
-            network_timeout=7,
-        )
-
-        # Bind property observers
-        self._bind_observers()
+        # Playback end detection (both EOF and idle)
+        self.player.observe_property("eof-reached", self._on_eof)
+        self.player.observe_property("idle-active", self._on_idle_active)
 
     # -------------------- public API --------------------
 
     def play(
         self,
-        source: Union[str, Sequence[str]],
+        url: Union[str, Sequence[str]],
         done_callback: Optional[Callable[[], None]] = None,
+        stop_first: bool = False,
     ) -> None:
-        """Play a single URL/path or a sequence of them.
-        Calls done_callback exactly once on clean EOF or on failure/stop.
+        """Begin playback of a URL or local file. Replaces any existing playback.
+        Accepts a single URL (str) or a sequence of URLs; if a sequence is given, the first item is played.
         """
-        self._stopped = False
-        self._done_cb = done_callback
-        self._last_progress = time.monotonic()  # seed progress clock
+        if stop_first:
+            try:
+                self.stop()
+            except Exception:
+                _LOGGER.debug("stop_first=True: stop() raised, continuing", exc_info=True)
+
+        with self._done_callback_lock:
+            self._done_callback = done_callback
+
+        # Normalize url input
+        if isinstance(url, (list, tuple)):
+            if not url:
+                _LOGGER.error("mpv play() received empty URL list")
+                self._run_done_callback()
+                return
+            url = url[0]
+        if isinstance(url, bytes):
+            try:
+                url = url.decode("utf-8")
+            except Exception:
+                url = url.decode(errors="ignore")
+        if not isinstance(url, str):
+            _LOGGER.error("mpv play() expected str URL, got %r", type(url))
+            self._run_done_callback()
+            return
 
         try:
-            # Clear any prior state
-            self.stop(silent=True)
+            self.player["mute"] = "no"
+        except Exception:
+            pass
 
-            if isinstance(source, (list, tuple)):
-                if not source:
-                    raise ValueError("source list is empty")
-                first, *rest = source
-                self.player.play(str(first))
-                for item in rest:
-                    # Append subsequent items to playlist
-                    self.player.command("loadfile", str(item), "append-play")
-            else:
-                self.player.play(str(source))
-
-            # Arm the no-progress watchdog
+        self.is_playing = True
+        try:
+            self.player.play(url)
             self._arm_watchdog()
-
         except Exception:
-            _LOGGER.exception("mpv failed to play %r", source)
-            self._finish()
+            self.is_playing = False
+            _LOGGER.exception("mpv failed to play %r", url)
+            self._run_done_callback()
 
-    def stop(self, silent: bool = False) -> None:
-        """Stop playback immediately."""
+    def pause(self) -> None:
         try:
-            self._stopped = True
-            self._cancel_watchdog()
-            # 'stop' stops current file; 'playlist-clear' ensures nothing pending
-            self.player.command("stop")
-            self.player.command("playlist-clear")
+            self.player.pause = True
         except Exception:
-            if not silent:
-                _LOGGER.exception("mpv stop() failed")
+            _LOGGER.exception("mpv pause() failed")
+
+    def resume(self) -> None:
+        try:
+            self.player.pause = False
+        except Exception:
+            _LOGGER.exception("mpv resume() failed")
+
+    def stop(self) -> None:
+        """Stop playback immediately and clear playing state; run done callback."""
+        try:
+            try:
+                self.player.command('stop')
+            except Exception:
+                self.player.command('loadfile', 'null://', 'replace')
         finally:
-            # Ensure completion callback is fired when explicitly stopping
-            if not silent:
-                self._finish()
+            self._cancel_watchdog()
+            was_playing = self.is_playing
+            self.is_playing = False
+            if was_playing:
+                self._run_done_callback()
 
-    def set_volume(self, percent: float) -> None:
-        """Set mpv volume 0-100."""
+    def set_volume(self, *args, **kwargs) -> None:
+        """Set volume 0..100. Accepts positional or keyword 'volume' (backwards-compatible)."""
+        vol_arg = args[0] if args else kwargs.get("volume")
+        if vol_arg is None:
+            _LOGGER.error("set_volume() requires an integer (0..100)")
+            return
+
         try:
-            p = max(0.0, min(100.0, float(percent)))
-            self.player.volume = p
+            vol = max(0, min(100, int(vol_arg)))
         except Exception:
-            _LOGGER.exception("mpv set_volume(%s) failed", percent)
+            _LOGGER.exception("set_volume(): invalid value %r", vol_arg)
+            return
 
-    def get_volume(self) -> float:
         try:
-            v = float(self.player.volume)
+            self.player.volume = vol
         except Exception:
-            _LOGGER.exception("mpv get_volume() failed")
-            v = 0.0
-        return v
+            _LOGGER.exception("mpv set_volume(%s) failed", vol)
 
-    # ---- simple duck/unduck helpers (independent of Pulse role ducking) ----
+    def duck(self, target_percent: int = 20) -> None:
+        if self._pre_duck_volume is not None:
+            return  # already ducked
 
-    def duck(self, to_percent: float = 25.0) -> None:
         try:
-            if self._duck_prev_volume is None:
-                self._duck_prev_volume = self.get_volume()
-            self.set_volume(to_percent)
+            current = int(round(float(self.player.volume)))
         except Exception:
-            _LOGGER.exception("duck() failed")
+            current = 100
+
+        self._pre_duck_volume = max(0, min(100, current))
+
+        try:
+            self.player.volume = max(0, min(100, int(target_percent)))
+        except Exception:
+            _LOGGER.exception("duck(): failed to set duck volume")
 
     def unduck(self) -> None:
+        if self._pre_duck_volume is None:
+            return
+
         try:
-            if self._duck_prev_volume is not None:
-                self.set_volume(self._duck_prev_volume)
+            self.player.volume = self._pre_duck_volume
         except Exception:
-            _LOGGER.exception("unduck() failed")
+            _LOGGER.exception("unduck(): failed to restore volume")
         finally:
-            self._duck_prev_volume = None
+            self._pre_duck_volume = None
 
-    def close(self) -> None:
-        try:
-            self._cancel_watchdog()
-            self.player.terminate()
-        except Exception:
-            _LOGGER.exception("mpv terminate failed")
+    # -------------------- callbacks & watchdog --------------------
 
-    # -------------------- internal helpers --------------------
-
-    def _bind_observers(self) -> None:
-        # Idle means no file is playing; ideal for short TTS EOF detection
-        @self.player.property_observer("idle-active")
-        def _idle_active(_name, value):
-            try:
-                self._on_idle(value)
-            except Exception:
-                _LOGGER.exception("idle-active observer failed")
-
-        # Some builds also toggle eof-reached at end of a file
-        @self.player.property_observer("eof-reached")
-        def _eof(_name, value):
-            try:
-                if value:
-                    self._on_eof()
-            except Exception:
-                _LOGGER.exception("eof-reached observer failed")
-
-        # Progress while playing; used by the no-progress watchdog
-        @self.player.property_observer("time-pos")
-        def _timepos(_name, value):
-            try:
-                self._on_timepos(value)
-            except Exception:
-                _LOGGER.exception("time-pos observer failed")
-
-    def _on_idle(self, value: bool) -> None:
-        if value:
-            _LOGGER.debug("mpv became idle; treating as end-of-playback")
-            self._finish()
-
-    def _on_eof(self) -> None:
-        _LOGGER.debug("mpv reported eof-reached")
-        self._finish()
-
-    def _on_timepos(self, value: Optional[float]) -> None:
-        # Called frequently during active playback; update progress clock
-        if value is not None:
-            self._last_progress = time.monotonic()
-            # keep watchdog fresh during active playback
-            self._arm_watchdog()
-
-    def _finish(self) -> None:
-        # Stop watchdog and call done callback once
+    def _on_eof(self, _name: str, reached: bool) -> None:
+        if not reached:
+            return
         self._cancel_watchdog()
-        cb, self._done_cb = self._done_cb, None
-        if cb is not None:
-            try:
-                cb()
-            except Exception:
-                _LOGGER.exception("done_callback raised")
+        self.is_playing = False
+        self._run_done_callback()
 
-    # -------------------- watchdog (no-progress) --------------------
+    def _on_idle_active(self, _name: str, active: bool) -> None:
+        # When playback ends, mpv enters idle; treat that as completion.
+        if not self.is_playing:
+            return
+        if bool(active):
+            _LOGGER.debug("mpv became idle; treating as end-of-playback")
+            self._cancel_watchdog()
+            self.is_playing = False
+            self._run_done_callback()
 
     def _arm_watchdog(self) -> None:
         self._cancel_watchdog()
         if self._watchdog_sec <= 0:
             return
-        # seed if never set
-        if self._last_progress == 0.0:
-            self._last_progress = time.monotonic()
-
-        def _trip():
-            try:
-                stalled_for = time.monotonic() - self._last_progress
-                if stalled_for >= self._watchdog_sec and not self._stopped:
-                    _LOGGER.warning(
-                        "mpv watchdog (no progress) fired after %.1fs; stopping playback",
-                        self._watchdog_sec,
-                    )
-                    self.stop(silent=False)
-                else:
-                    # progress happened; keep monitoring
-                    self._arm_watchdog()
-            except Exception:
-                _LOGGER.exception("watchdog trip failed")
-
-        self._watchdog = Timer(self._watchdog_sec, _trip)
+        self._watchdog = Timer(self._watchdog_sec, self._watchdog_trip)
         self._watchdog.daemon = True
         self._watchdog.start()
 
     def _cancel_watchdog(self) -> None:
-        t = self._watchdog
-        self._watchdog = None
-        if t is not None:
+        if self._watchdog is not None:
             try:
-                t.cancel()
+                self._watchdog.cancel()
             except Exception:
                 pass
+            self._watchdog = None
 
-    # -------------------- backend/device selection --------------------
+    def _watchdog_trip(self) -> None:
+        if self.is_playing:
+            _LOGGER.warning("mpv watchdog fired after %.1fs; stopping playback", self._watchdog_sec)
+            try:
+                self.player.command('stop')
+            except Exception:
+                pass
+            self.is_playing = False
+            self._run_done_callback()
 
-    @staticmethod
-    def _select_backend_and_device(device: Optional[str]) -> tuple[str, Optional[str]]:
-        """Return (ao, audio_device) based on a friendly device string.
+    def _run_done_callback(self) -> None:
+        cb: Optional[Callable[[], None]] = None
+        with self._done_callback_lock:
+            cb = self._done_callback
+            self._done_callback = None
 
-        Accepted forms:
-          - None or 'default'      -> (ao='pulse', device=None)  [Pulse default sink]
-          - 'pulse/<sink-name>'    -> (ao='pulse', device='pulse/<sink-name>')
-          - '<sink-name>'          -> (ao='pulse', device='pulse/<sink-name>')
-          - 'alsa/<hw-spec>'       -> (ao='alsa',  device='alsa/<hw-spec>')
-        """
-        if not device or device == "default":
-            return "pulse", None
-
-        d = str(device).strip()
-        if d.startswith("pulse/"):
-            return "pulse", d
-        if d.startswith("alsa/"):
-            return "alsa", d
-
-        # Unprefixed: assume Pulse sink name
-        return "pulse", f"pulse/{d}"
+        if cb is not None:
+            try:
+                cb()
+            except Exception:
+                _LOGGER.exception("Unexpected error running done callback")
 
     # -------------------- mpv log bridge --------------------
-
-    def _mpv_log(self, level: str, component: str, message: str) -> None:
-        # Map mpv levels to Python logging
-        lvl = (level or "").lower()
-        log = _LOGGER.debug
-        if lvl in ("fatal", "error"):
-            log = _LOGGER.error
-        elif lvl in ("warn", "warning"):
-            log = _LOGGER.warning
-        elif lvl in ("info",):
-            log = _LOGGER.info
-        # keep mpv chatter short; component can be verbose
-        log("mpv[%s]: %s", component, message)
+    def _mpv_log(self, level: str, prefix: str, text: str) -> None:
+        msg = f"mpv[{level}] {prefix}: {text}".rstrip()
+        if level in ("fatal", "error"):
+            _LOGGER.error(msg)
+        elif level in ("warn", "warning"):
+            _LOGGER.warning(msg)
+        elif level in ("info",):
+            _LOGGER.info(msg)
+        else:
+            _LOGGER.debug(msg)
