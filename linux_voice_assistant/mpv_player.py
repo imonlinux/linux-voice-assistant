@@ -1,3 +1,4 @@
+# linux_voice_assistant/mpv_player.py
 """Media player using mpv in a subprocess.
 
 - Supports ALSA and PulseAudio
@@ -5,7 +6,7 @@
 - Robust URL handling (str | list/tuple | bytes)
 - Backwards-compatible API: play(url, done_callback=None, stop_first=False), pause, resume, stop, set_volume
 - Pulse-friendly defaults (44100 Hz stereo) and short network timeout
-- Default watchdog = 8s (configurable), to avoid hangs if mpv fails to finish
+- Watchdog is **disabled by default** (set watchdog_sec > 0 to enable)
 - End-of-playback detection uses BOTH `eof-reached` and `idle-active` to finish immediately after short clips
 - mpv log level can be controlled with env var LVA_MPV_MSG_LEVEL (e.g. "all=warn", "all=info")
 """
@@ -24,7 +25,7 @@ _LOGGER = logging.getLogger(__name__)
 
 
 class MpvMediaPlayer:
-    def __init__(self, device: Optional[str] = None, watchdog_sec: float = 8.0) -> None:
+    def __init__(self, device: Optional[str] = None, watchdog_sec: float = 0.0) -> None:
         # Bridge mpv logs into Python logging
         self.player = MPV(video=False, terminal=False, log_handler=self._mpv_log)
 
@@ -276,3 +277,4 @@ class MpvMediaPlayer:
             _LOGGER.info(msg)
         else:
             _LOGGER.debug(msg)
+
