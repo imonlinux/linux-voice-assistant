@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-
 import argparse
 import asyncio
 import json
@@ -12,7 +11,7 @@ from typing import Dict
 import sounddevice as sd
 
 from .microwakeword import MicroWakeWord
-from .models import AvailableWakeWord, ServerState
+from .models import AvailableWakeWord, Preferences, ServerState
 from .mpv_player import MpvMediaPlayer
 from .satellite import VoiceSatelliteProtocol
 from .util import get_mac, is_arm
@@ -57,6 +56,9 @@ async def main() -> None:
     parser.add_argument(
         "--timer-finished-sound", default=str(_SOUNDS_DIR / "timer_finished.flac")
     )
+    #
+    parser.add_argument("--preferences-file", default=_REPO_DIR / "preferences.json")
+    #
     parser.add_argument(
         "--host",
         default="0.0.0.0",
@@ -93,11 +95,28 @@ async def main() -> None:
 
     _LOGGER.debug("Available wake words: %s", list(sorted(available_wake_words.keys())))
 
+    # Load preferences
+    preferences_path = Path(args.preferences_file)
+    if preferences_path.exists():
+        _LOGGER.debug("Loading preferences: %s", preferences_path)
+        with open(preferences_path, "r", encoding="utf-8") as preferences_file:
+            preferences_dict = json.load(preferences_file)
+            preferences = Preferences(**preferences_dict)
+    else:
+        preferences = Preferences()
+
     libtensorflowlite_c_path = _LIB_DIR / "libtensorflowlite_c.so"
     _LOGGER.debug("libtensorflowlite_c path: %s", libtensorflowlite_c_path)
 
     # Load wake/stop models
     wake_config_path = wake_word_dir / f"{args.wake_model}.json"
+    if preferences.active_wake_words:
+        wake_word_id = preferences.active_wake_words[0]
+        maybe_wake_config_path = wake_word_dir / f"{wake_word_id}.json"
+        if maybe_wake_config_path.exists():
+            # Override with last set
+            wake_config_path = maybe_wake_config_path
+
     _LOGGER.debug("Loading wake model: %s", wake_config_path)
     wake_model = MicroWakeWord.from_config(wake_config_path, libtensorflowlite_c_path)
 
@@ -117,6 +136,8 @@ async def main() -> None:
         tts_player=MpvMediaPlayer(device=args.audio_output_device),
         wakeup_sound=args.wakeup_sound,
         timer_finished_sound=args.timer_finished_sound,
+        preferences=preferences,
+        preferences_path=preferences_path,
     )
 
     process_audio_thread = threading.Thread(

@@ -3,7 +3,7 @@
 import logging
 import time
 from collections.abc import Iterable
-from typing import Dict, Optional
+from typing import Dict, Optional, Set
 
 # pylint: disable=no-name-in-module
 from aioesphomeapi.api_pb2 import (  # type: ignore[attr-defined]
@@ -181,9 +181,12 @@ class VoiceSatelliteProtocol(APIServer):
             _LOGGER.info("Connected to Home Assistant")
         elif isinstance(msg, VoiceAssistantSetConfiguration):
             # TODO: support multiple wake words
+            active_wake_words: Set[str] = set()
+
             for wake_word_id in msg.active_wake_words:
                 if wake_word_id == self.state.wake_word.id:
                     # Already active
+                    active_wake_words.add(wake_word_id)
                     break
 
                 model_info = self.state.available_wake_words.get(wake_word_id)
@@ -197,7 +200,11 @@ class VoiceSatelliteProtocol(APIServer):
                 )
 
                 _LOGGER.info("Wake word set: %s", self.state.wake_word.wake_word)
+                active_wake_words.add(wake_word_id)
                 break
+
+            self.state.preferences.active_wake_words = list(active_wake_words)
+            self.state.save_preferences()
 
     def handle_audio(self, audio_chunk: bytes) -> None:
 
