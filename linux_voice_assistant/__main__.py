@@ -6,7 +6,7 @@ import logging
 import threading
 from pathlib import Path
 from queue import Queue
-from typing import Dict
+from typing import Dict, List
 
 import sounddevice as sd
 
@@ -109,16 +109,27 @@ async def main() -> None:
     _LOGGER.debug("libtensorflowlite_c path: %s", libtensorflowlite_c_path)
 
     # Load wake/stop models
+    wake_models: Dict[str, MicroWakeWord] = {}
     wake_config_path = wake_word_dir / f"{args.wake_model}.json"
     if preferences.active_wake_words:
-        wake_word_id = preferences.active_wake_words[0]
-        maybe_wake_config_path = wake_word_dir / f"{wake_word_id}.json"
-        if maybe_wake_config_path.exists():
-            # Override with last set
-            wake_config_path = maybe_wake_config_path
+        # Load preferred models
+        for wake_word_id in preferences.active_wake_words:
+            wake_config_path = wake_word_dir / f"{wake_word_id}.json"
+            if not wake_config_path.exists():
+                continue
 
-    _LOGGER.debug("Loading wake model: %s", wake_config_path)
-    wake_model = MicroWakeWord.from_config(wake_config_path, libtensorflowlite_c_path)
+            _LOGGER.debug("Loading wake model: %s", wake_config_path)
+            wake_models[wake_word_id] = MicroWakeWord.from_config(
+                wake_config_path, libtensorflowlite_c_path
+            )
+
+    if not wake_models:
+        # Load default model
+        _LOGGER.debug("Loading wake model: %s", wake_config_path)
+        wake_word_id = wake_config_path.stem
+        wake_models[wake_word_id] = MicroWakeWord.from_config(
+            wake_config_path, libtensorflowlite_c_path
+        )
 
     stop_config_path = wake_word_dir / f"{args.stop_model}.json"
     _LOGGER.debug("Loading stop model: %s", stop_config_path)
@@ -130,7 +141,7 @@ async def main() -> None:
         audio_queue=Queue(),
         entities=[],
         available_wake_words=available_wake_words,
-        wake_word=wake_model,
+        wake_words=wake_models,
         stop_word=stop_model,
         music_player=MpvMediaPlayer(device=args.audio_output_device),
         tts_player=MpvMediaPlayer(device=args.audio_output_device),
@@ -138,6 +149,7 @@ async def main() -> None:
         timer_finished_sound=args.timer_finished_sound,
         preferences=preferences,
         preferences_path=preferences_path,
+        libtensorflowlite_c_path=libtensorflowlite_c_path,
     )
 
     process_audio_thread = threading.Thread(
@@ -179,6 +191,9 @@ async def main() -> None:
 
 
 def process_audio(state: ServerState):
+    """Process audio chunks from the microphone."""
+
+    wake_words: List[MicroWakeWord] = []
 
     try:
         while True:
@@ -189,13 +204,20 @@ def process_audio(state: ServerState):
             if state.satellite is None:
                 continue
 
+            if (not wake_words) or (state.wake_words_changed and state.wake_words):
+                # Update list of wake word models to process
+                state.wake_words_changed = False
+                wake_words = list(state.wake_words.values())
+
             try:
                 state.satellite.handle_audio(audio_chunk)
 
-                if state.wake_word.is_active and state.wake_word.process_streaming(
-                    audio_chunk
-                ):
-                    state.satellite.wakeup()
+                for wake_word in wake_words:
+                    if not wake_word.is_active:
+                        continue
+
+                    if wake_word.process_streaming(audio_chunk):
+                        state.satellite.wakeup(wake_word)
 
                 if state.stop_word.is_active and state.stop_word.process_streaming(
                     audio_chunk

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Support multiple wake words
 - Save active wake words to preferences JSON file
 - Refactor main into separate files
 

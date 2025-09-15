@@ -36,7 +36,7 @@ class ServerState:
     audio_queue: "Queue[Optional[bytes]]"
     entities: "List[ESPHomeEntity]"
     available_wake_words: "Dict[str, AvailableWakeWord]"
-    wake_word: "MicroWakeWord"
+    wake_words: "Dict[str, MicroWakeWord]"
     stop_word: "MicroWakeWord"
     music_player: "MpvMediaPlayer"
     tts_player: "MpvMediaPlayer"
@@ -44,8 +44,10 @@ class ServerState:
     timer_finished_sound: str
     preferences: Preferences
     preferences_path: Path
+    libtensorflowlite_c_path: Path
     media_player_entity: "Optional[MediaPlayerEntity]" = None
     satellite: "Optional[VoiceSatelliteProtocol]" = None
+    wake_words_changed: bool = False
 
     def save_preferences(self) -> None:
         """Save preferences as JSON."""

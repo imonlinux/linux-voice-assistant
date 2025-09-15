@@ -175,36 +175,42 @@ class VoiceSatelliteProtocol(APIServer):
                     )
                     for ww in self.state.available_wake_words.values()
                 ],
-                active_wake_words=[self.state.wake_word.id],
-                max_active_wake_words=1,
+                active_wake_words=list(self.state.wake_words.keys()),
+                max_active_wake_words=2,
             )
             _LOGGER.info("Connected to Home Assistant")
         elif isinstance(msg, VoiceAssistantSetConfiguration):
-            # TODO: support multiple wake words
+            # Change active wake words
             active_wake_words: Set[str] = set()
 
             for wake_word_id in msg.active_wake_words:
-                if wake_word_id == self.state.wake_word.id:
+                if wake_word_id in self.state.wake_words:
                     # Already active
                     active_wake_words.add(wake_word_id)
-                    break
+                    continue
 
                 model_info = self.state.available_wake_words.get(wake_word_id)
                 if not model_info:
                     continue
 
                 _LOGGER.debug("Loading wake word: %s", model_info.config_path)
-                self.state.wake_word = MicroWakeWord.from_config(
+                self.state.wake_words[wake_word_id] = MicroWakeWord.from_config(
                     model_info.config_path,
-                    self.state.wake_word.libtensorflowlite_c_path,
+                    self.state.libtensorflowlite_c_path,
                 )
 
-                _LOGGER.info("Wake word set: %s", self.state.wake_word.wake_word)
+                _LOGGER.info("Wake word set: %s", wake_word_id)
                 active_wake_words.add(wake_word_id)
                 break
 
+            for wake_word in self.state.wake_words.values():
+                wake_word.is_active = wake_word.id in active_wake_words
+
+            _LOGGER.debug("Active wake words: %s", active_wake_words)
+
             self.state.preferences.active_wake_words = list(active_wake_words)
             self.state.save_preferences()
+            self.state.wake_words_changed = True
 
     def handle_audio(self, audio_chunk: bytes) -> None:
 
@@ -213,7 +219,7 @@ class VoiceSatelliteProtocol(APIServer):
 
         self.send_messages([VoiceAssistantAudio(data=audio_chunk)])
 
-    def wakeup(self) -> None:
+    def wakeup(self, wake_word: MicroWakeWord) -> None:
         if self._timer_finished:
             # Stop timer instead
             self._timer_finished = False
@@ -221,7 +227,7 @@ class VoiceSatelliteProtocol(APIServer):
             _LOGGER.debug("Stopping timer finished sound")
             return
 
-        wake_word_phrase = self.state.wake_word.wake_word
+        wake_word_phrase = wake_word.wake_word
         _LOGGER.debug("Detected wake word: %s", wake_word_phrase)
         self.send_messages(
             [VoiceAssistantRequest(start=True, wake_word_phrase=wake_word_phrase)]
