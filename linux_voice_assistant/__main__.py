@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 
 import argparse
-import os
 import asyncio
 import json
 import logging
@@ -9,25 +8,9 @@ import threading
 import time
 from collections.abc import Iterable
 from dataclasses import dataclass
+from pathlib import Path
 from queue import Queue
-from typing import Dict, List, Optional
-
-# Models that should NOT appear in UI dropdowns
-EXCLUDED_OWW_MODELS = {"embedding_model", "melspectrogram"}
-
-import re
-
-def _prettify_model_name(name: str) -> str:
-    stem = Path(name).stem
-    stem = re.sub(r"(?:_v\d+(?:\.\d+)?)$", "", stem)
-    parts = stem.split("_")
-    if parts and parts[0].lower() == "ok":
-        parts[0] = "OK"
-    else:
-        parts = [p.capitalize() for p in parts]
-    return " ".join(parts)
-
-
+from typing import List, Optional
 
 # pylint: disable=no-name-in-module
 import sounddevice as sd
@@ -58,44 +41,54 @@ from google.protobuf import message
 
 from .api_server import APIServer
 from .entity import ESPHomeEntity, MediaPlayerEntity
-from .microwakeword import MicroWakeWord
-from .openwakeword_client import WyomingWakeClient
 from .mpv_player import MpvMediaPlayer
 from .util import call_all, get_mac, is_arm
-
 from .event_bus import EventBus
 from .event_led import LedEvent
-from pathlib import Path
-
-# Hide helper models that are not detectors
-_OWW_DETECT_MODEL_DENYLIST = {"embedding_model", "melspectrogram"}
-
-
-def _oww_filter_models(models: list[str]) -> list[str]:
-    """Normalize names (strip .tflite/paths), drop helper models, sort & de-dupe."""
-    stems = {Path(m).stem for m in models}
-    return sorted(m for m in stems if m not in _OWW_DETECT_MODEL_DENYLIST)
-
+from .detector_factory import DetectorFactory
+from .base_detector import BaseDetector
 
 _LOGGER = logging.getLogger(__name__)
 _MODULE_DIR = Path(__file__).parent
 _REPO_DIR = _MODULE_DIR.parent
 _WAKEWORDS_DIR = _REPO_DIR / "wakewords"
 _SOUNDS_DIR = _REPO_DIR / "sounds"
+_CONFIG_DIR = _REPO_DIR / "config"
 
 if is_arm():
     _LIB_DIR = _REPO_DIR / "lib" / "linux_arm64"
 else:
     _LIB_DIR = _REPO_DIR / "lib" / "linux_amd64"
 
-
-@dataclass
-class AvailableWakeWord:
-    id: str
-    wake_word: str
-    trained_languages: List[str]
-    config_path: Path
-
+class WakeWordConfig:
+    """Manages persistent storage of the wake word configuration."""
+    def __init__(self, config_dir: Path):
+        self.config_dir = Path(config_dir)
+        self.config_dir.mkdir(exist_ok=True)
+        self.config_file = self.config_dir / "wake_word_config.json"
+    
+    def save_wake_word(self, wake_word_id: str) -> None:
+        """Save the current wake word ID to persistent storage."""
+        try:
+            config = {"wake_word_id": wake_word_id}
+            with open(self.config_file, 'w') as f:
+                json.dump(config, f)
+            _LOGGER.debug("Saved wake word config: %s", wake_word_id)
+        except Exception as e:
+            _LOGGER.error("Failed to save wake word config: %s", e)
+    
+    def load_wake_word(self) -> Optional[str]:
+        """Load the last saved wake word ID from persistent storage."""
+        try:
+            if self.config_file.exists():
+                with open(self.config_file, 'r') as f:
+                    config = json.load(f)
+                wake_word_id = config.get("wake_word_id")
+                _LOGGER.debug("Loaded wake word config: %s", wake_word_id)
+                return wake_word_id
+        except Exception as e:
+            _LOGGER.error("Failed to load wake word config: %s", e)
+        return None
 
 @dataclass
 class ServerState:
@@ -103,20 +96,16 @@ class ServerState:
     mac_address: str
     audio_queue: "Queue[Optional[bytes]]"
     entities: List[ESPHomeEntity]
-    available_wake_words: Dict[str, AvailableWakeWord]
-    wake_word: MicroWakeWord
-    stop_word: MicroWakeWord
+    detector: BaseDetector
     music_player: MpvMediaPlayer
     tts_player: MpvMediaPlayer
     wakeup_sound: str
     timer_finished_sound: str
     loop: asyncio.AbstractEventLoop
     event_bus: EventBus
+    wake_word_config: WakeWordConfig
     media_player_entity: Optional[MediaPlayerEntity] = None
     satellite: "Optional[VoiceSatelliteProtocol]" = None
-    current_remote_wake: Optional[str] = None
-    wyoming_wake: "Optional[WyomingWakeClient]" = None
-    use_wyoming_wake: bool = False
 
 
 # -----------------------------------------------------------------------------
@@ -151,7 +140,7 @@ class VoiceSatelliteProtocol(APIServer):
         _LOGGER.info('System is ready!')
 
     def handle_voice_event(
-        self, event_type: VoiceAssistantEventType, data: Dict[str, str]
+        self, event_type: VoiceAssistantEventType, data: dict[str, str]
     ) -> None:
         _LOGGER.debug("Voice event: type=%s, data=%s", event_type.name, data)
 
@@ -193,7 +182,7 @@ class VoiceSatelliteProtocol(APIServer):
         _LOGGER.debug("Timer event: type=%s", event_type.name)
         if event_type == VoiceAssistantTimerEventType.VOICE_ASSISTANT_TIMER_FINISHED:
             if not self._timer_finished:
-                self.state.stop_word.is_active = True
+                self.state.detector.stop_active = True
                 self._timer_finished = True
                 self.duck()
                 self._play_timer_finished()
@@ -202,7 +191,7 @@ class VoiceSatelliteProtocol(APIServer):
         _LOGGER.debug(f'message {msg.__name__}')
         if isinstance(msg, VoiceAssistantEventResponse):
             # Pipeline event
-            data: Dict[str, str] = {}
+            data: dict[str, str] = {}
             for arg in msg.data:
                 data[arg.name] = arg.value
 
@@ -218,7 +207,7 @@ class VoiceSatelliteProtocol(APIServer):
 
             urls.append(msg.media_id)
 
-            self.state.stop_word.is_active = True
+            self.state.detector.stop_active = True
             self._continue_conversation = msg.start_conversation
 
             self.duck()
@@ -258,40 +247,17 @@ class VoiceSatelliteProtocol(APIServer):
                         wake_word=ww.wake_word,
                         trained_languages=ww.trained_languages,
                     )
-                    for ww in self.state.available_wake_words.values()
+                    for ww in self.state.detector.available_wake_words.values()
                 ],
-                active_wake_words=[self.state.current_remote_wake] if self.state.use_wyoming_wake else [self.state.wake_word.id],
+                active_wake_words=self.state.detector.get_active_wake_words(),
                 max_active_wake_words=1,
             )
             _LOGGER.info("Connected to Home Assistant")
         elif isinstance(msg, VoiceAssistantSetConfiguration):
-            # TODO: support multiple wake words
             for wake_word_id in msg.active_wake_words:
-                if wake_word_id == self.state.wake_word.id:
-                    # Already active
+                if self.state.detector.set_wake_model(wake_word_id):
+                    self.state.wake_word_config.save_wake_word(wake_word_id)
                     break
-
-                if self.state.use_wyoming_wake and self.state.wyoming_wake:
-                    try:
-                        self.state.wyoming_wake.set_detect([wake_word_id])
-                        _LOGGER.info("Switched Wyoming wake model to: %s", wake_word_id)
-                        self.state.current_remote_wake = wake_word_id
-                        self.state.wake_word.is_active = False
-                    except Exception:
-                        _LOGGER.exception("Failed to switch Wyoming wake model")
-                    break
-                model_info = self.state.available_wake_words.get(wake_word_id)
-                if not model_info:
-                    continue
-
-                _LOGGER.debug("Loading wake word: %s", model_info.config_path)
-                self.state.wake_word = MicroWakeWord.from_config(
-                    model_info.config_path,
-                    self.state.wake_word.libtensorflowlite_c_path,
-                )
-
-                _LOGGER.info("Wake word set: %s", self.state.wake_word.wake_word)
-                break
 
     def handle_audio(self, audio_chunk: bytes) -> None:
         if not self._is_streaming_audio:
@@ -299,7 +265,7 @@ class VoiceSatelliteProtocol(APIServer):
 
         self.send_messages([VoiceAssistantAudio(data=audio_chunk)])
 
-    def wakeup(self) -> None:
+    def wakeup(self, wake_word_phrase: Optional[str] = None) -> None:
         # Why are we stopping the timer? Wouldn't it be better to delay it?
         if self._timer_finished:
             # Stop timer instead
@@ -307,13 +273,14 @@ class VoiceSatelliteProtocol(APIServer):
             self.state.tts_player.stop()
             _LOGGER.debug("Stopping timer finished sound")
             return
-
-        wake_word_phrase = (self.state.current_remote_wake or self.state.wake_word.wake_word) if self.state.use_wyoming_wake else self.state.wake_word.wake_word
-        _LOGGER.debug("Detected wake word: %s", wake_word_phrase)
-        try:
-            self.state.wyoming_wake.suppress(2500)
-        except Exception:
-            pass
+        
+        if not wake_word_phrase:
+            wake_words = self.state.detector.available_wake_words
+            wake_word_id = self.state.detector.wake_model_id
+            wake_word_phrase = wake_words[wake_word_id].wake_word if wake_word_id in wake_words else "unknown"
+        
+        _LOGGER.debug("Detected wake word phrase: %s", wake_word_phrase)
+        
         self.send_messages(
             [VoiceAssistantRequest(start=True, wake_word_phrase=wake_word_phrase)]
         )
@@ -326,7 +293,7 @@ class VoiceSatelliteProtocol(APIServer):
         self.state.tts_player.play(self.state.wakeup_sound)
 
     def stop(self) -> None:
-        self.state.stop_word.is_active = False
+        self.state.detector.stop_active = False
         self.state.tts_player.stop()
 
         if self._timer_finished:
@@ -345,7 +312,7 @@ class VoiceSatelliteProtocol(APIServer):
 
         self.state.event_bus.publish('voice_play_tts', {})
 
-        self.state.stop_word.is_active = True
+        self.state.detector.stop_active = True
         self.state.tts_player.play(self._tts_url, done_callback=self._tts_finished)
 
     def duck(self) -> None:
@@ -357,7 +324,7 @@ class VoiceSatelliteProtocol(APIServer):
         self.state.music_player.unduck()
 
     def _tts_finished(self) -> None:
-        self.state.stop_word.is_active = False
+        self.state.detector.stop_active = False
         self.send_messages([VoiceAssistantAnnounceFinished()])
 
         # Actual time the TTS stops speaking
@@ -390,7 +357,6 @@ class VoiceSatelliteProtocol(APIServer):
 
 
 def process_audio(state: ServerState):
-
     try:
         while True:
             audio_chunk = state.audio_queue.get()
@@ -403,25 +369,25 @@ def process_audio(state: ServerState):
             try:
                 state.satellite.handle_audio(audio_chunk)
 
-                if state.use_wyoming_wake:
-                    if state.wyoming_wake:
-                        state.wyoming_wake.send_audio_chunk(audio_chunk)
-                else:
-                    if state.wake_word.is_active and state.wake_word.process_streaming(
-                        audio_chunk
-                    ):
-                        state.satellite.wakeup()
+                # Process audio through detector
+                wake_detected, stop_detected = state.detector.process_audio(audio_chunk)
 
-                if state.stop_word.is_active and state.stop_word.process_streaming(
-                    audio_chunk
-                ):
-                    state.satellite.stop()
+                handle_detection(state, wake_detected, stop_detected)
+                    
             except Exception:
                 _LOGGER.exception("Unexpected error handling audio")
 
     except Exception:
         _LOGGER.exception("Unexpected error processing audio")
 
+def handle_detection(state: ServerState, wake_detected: bool, stop_detected: bool):
+    if state.satellite is None:
+        return
+
+    if wake_detected:
+        state.satellite.wakeup()
+    if stop_detected:
+        state.satellite.stop()
 
 # -----------------------------------------------------------------------------
 
@@ -429,9 +395,13 @@ def process_audio(state: ServerState):
 async def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--name", required=True)
-    parser.add_argument("--wake-uri", help="Wyoming wake server URI (e.g., tcp://127.0.0.1:10400)")
-    parser.add_argument("--wake-word-name", help="Wake word name on the Wyoming server (e.g., hal)")
-    parser.add_argument("--wake-models-dir", help="Fallback: directory containing openWakeWord *.tflite models to list if the server does not advertise them")
+    parser.add_argument(
+        "--detector-type", 
+        choices=["mww", "oww"], 
+        default="mww",
+        help="Detector type: mww (MicroWakeWord) or oww (OpenWakeWord)"
+    )
+    parser.add_argument("--wake-uri", help="Wyoming wake server URI (required for oww, e.g., tcp://127.0.0.1:10400)")
     parser.add_argument(
         "--audio-input-device",
         default="default",
@@ -470,68 +440,35 @@ async def main() -> None:
     logging.basicConfig(level=logging.DEBUG if args.debug else logging.INFO)
     _LOGGER.debug(args)
 
-    # Optional fallback for discovering remote models from filesystem
-    models_dir = args.wake_models_dir or os.environ.get("WYOMING_MODELS_DIR")
+    # Validate detector-specific arguments
+    if args.detector_type == "oww" and not args.wake_uri:
+        parser.error("--wake-uri is required when using OpenWakeWord (--detector-type oww)")
+    if args.detector_type == "mww" and not args.wake_word_dir:
+        parser.error("--wake-word-dor is required when using MicroWakeWord (--detector-type mww)")
 
-    use_wyoming = bool(args.wake_uri)
-    wyoming_client = None
-    if use_wyoming:
-        _LOGGER.info("Using Wyoming openWakeWord at %s (name=%s)", args.wake_uri, args.wake_word_name)
-        wyoming_client = WyomingWakeClient(args.wake_uri, args.wake_word_name or "")
+    # Prepare detector arguments
+    detector_kwargs = {}
+    
+    if args.detector_type == "mww":
+        libtensorflowlite_c_path = _LIB_DIR / "libtensorflowlite_c.so"
+        detector_kwargs['libtensorflowlite_c_path'] = libtensorflowlite_c_path
+        detector_kwargs['wake_word_dir'] = args.wake_word_dir
+    elif args.detector_type == "oww":
+        detector_kwargs['wake_uri'] = args.wake_uri
 
-    # Load available wake words
-    wake_word_dir = Path(args.wake_word_dir)
-    available_wake_words: Dict[str, AvailableWakeWord] = {}
-    for model_config_path in wake_word_dir.glob("*.json"):
-        model_id = model_config_path.stem
-        if model_id == args.stop_model:
-            # Don't show stop model as an available wake word
-            continue
+        
+    # Create wake word config manager and try to load saved wake word, fall back to command line argument
+    wake_word_config = WakeWordConfig(_CONFIG_DIR)
+    saved_wake_word = wake_word_config.load_wake_word()
+    wake_model = saved_wake_word if saved_wake_word else args.wake_model
 
-        with open(model_config_path, "r", encoding="utf-8") as model_config_file:
-            model_config = json.load(model_config_file)
-            available_wake_words[model_id] = AvailableWakeWord(
-                id=model_id,
-                wake_word=model_config["wake_word"],
-                trained_languages=model_config.get("trained_languages", []),
-                config_path=model_config_path,
-            )
-
-    _LOGGER.debug("Available wake words: %s", list(sorted(available_wake_words.keys())))
-
-    if use_wyoming and wyoming_client:
-        try:
-            remote_models = wyoming_client.list_models() or []
-            _LOGGER.debug("Queried Wyoming models: %s", [m.get("name") if isinstance(m, dict) else m for m in remote_models])
-        except Exception:
-            remote_models = []
-            _LOGGER.exception("Failed to list models from Wyoming server")
-        if remote_models:
-            available_wake_words = {}
-            for m in remote_models:
-                name = (m.get("name") or "").strip()
-                langs = m.get("languages") or m.get("trained_languages") or []
-                if not name:
-                    continue
-                available_wake_words[name] = AvailableWakeWord(
-                        id=name,
-                        wake_word=(m.get('label') or _prettify_model_name(name)),
-                    trained_languages=langs,
-                    config_path=Path(f"wyoming:{name}"),
-                )
-            _LOGGER.debug("Remote OpenWakeWord models: %s", list(sorted(available_wake_words.keys())))
-
-    libtensorflowlite_c_path = _LIB_DIR / "libtensorflowlite_c.so"
-    _LOGGER.debug("libtensorflowlite_c path: %s", libtensorflowlite_c_path)
-
-    # Load wake/stop models
-    wake_config_path = wake_word_dir / f"{args.wake_model}.json"
-    _LOGGER.debug("Loading wake model: %s", wake_config_path)
-    wake_model = MicroWakeWord.from_config(wake_config_path, libtensorflowlite_c_path)
-
-    stop_config_path = wake_word_dir / f"{args.stop_model}.json"
-    _LOGGER.debug("Loading stop model: %s", stop_config_path)
-    stop_model = MicroWakeWord.from_config(stop_config_path, libtensorflowlite_c_path)
+    # Create detector
+    detector = DetectorFactory.create_detector(
+        detector_type=args.detector_type,
+        wake_model=wake_model,
+        stop_model=args.stop_model,
+        **detector_kwargs
+    )
     
     loop = asyncio.get_running_loop()
 
@@ -540,76 +477,30 @@ async def main() -> None:
         mac_address=get_mac(),
         audio_queue=Queue(),
         entities=[],
-        available_wake_words=available_wake_words,
-        wake_word=wake_model,
-        stop_word=stop_model,
+        detector=detector,
         event_bus=EventBus(),
+        wake_word_config=wake_word_config,
         loop=loop,
         music_player=MpvMediaPlayer(device=args.audio_output_device),
         tts_player=MpvMediaPlayer(device=args.audio_output_device),
         wakeup_sound=args.wakeup_sound,
         timer_finished_sound=args.timer_finished_sound,
-        wyoming_wake=wyoming_client,
-        use_wyoming_wake=use_wyoming,
     )
 
     LedEvent(state)
 
-    # Connect to Wyoming wake server if enabled
-    if state.use_wyoming_wake and state.wyoming_wake:
-        def _on_detect(_name, _ts):
-            if state.satellite is not None:
-                state.loop.call_soon_threadsafe(lambda: state.satellite.wakeup())
-        state.wyoming_wake.connect(_on_detect)
-        # Disable local wake model to avoid double triggers
-        state.wake_word.is_active = False
-        # Refresh remote models after connect
-        try:
-            cached = state.wyoming_wake.get_models(timeout=1.5) if state.wyoming_wake else []
-            if not cached and models_dir:
-                try:
-                    from pathlib import Path as _P
-                    cached = [{"name": p.stem} for p in _P(models_dir).glob("*.tflite")]
-                    cached = [
-                        m for m in cached
-                        if (m.get('name') or '').strip() not in EXCLUDED_OWW_MODELS
-                    ]
-                    _LOGGER.info("Using filesystem fallback for OWW models (post-connect): %s", [m["name"] for m in cached])
-                except Exception:
-                    _LOGGER.exception("Failed to scan wake-models-dir (post-connect)")
-            if cached:
-                available = {}
-                for m in cached:
-                    name = (m.get('name') or '').strip()
-                    if not name:
-                        continue
-                    available[name] = AvailableWakeWord(
-                        id=name,
-                        wake_word=(m.get('label') or _prettify_model_name(name)),
-                        trained_languages=[],
-                        config_path=Path(f"wyoming:{name}")
-                    )
-                state.available_wake_words = available
-                _LOGGER.debug("Using remote models from cached info: %s", list(sorted(state.available_wake_words.keys())))
-        except Exception:
-            _LOGGER.exception("Failed to refresh remote models from connection info")
-        # Initialize remote detection target if provided
-        try:
-            if args.wake_word_name:
-                state.wyoming_wake.set_detect([args.wake_word_name])
-                state.current_remote_wake = args.wake_word_name
-            else:
-                try:
-                    first = next(iter(state.available_wake_words.keys()))
-                except StopIteration:
-                    first = None
-                if first:
-                    state.wyoming_wake.set_detect([first])
-                    state.current_remote_wake = first
-                else:
-                    _LOGGER.warning("Wyoming enabled but no remote models available; not sending detect yet")
-        except Exception:
-            _LOGGER.exception("Failed to initialize remote detect")
+    # Connect to remote service if needed (e.g., Wyoming server)
+    def _on_detect(name, ts):
+        if state.satellite is not None:
+            _LOGGER.debug("Detected wake word via callback: %s", name)
+
+            def _handle_detection():
+                if (state.satellite is None): return
+                handle_detection(state, name == state.detector.wake_model_id, name == state.detector.stop_model_id)
+
+            state.loop.call_soon_threadsafe(_handle_detection)
+
+    detector.connect_if_needed(_on_detect)
 
     process_audio_thread = threading.Thread(
         target=process_audio, args=(state,), daemon=True

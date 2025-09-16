@@ -6,15 +6,12 @@ from typing import Callable, Optional, List, Dict, Any
 from urllib.parse import urlparse
 from pathlib import Path
 import time
+import re
+
+from .base_detector import BaseDetector, AvailableWakeWord
 
 # Models that should NOT appear in UI dropdowns
 EXCLUDED_OWW_MODELS = {"embedding_model", "melspectrogram"}
-
-
-# Models that are not actual wake-word detectors and should never be shown
-_OWW_DETECT_MODEL_DENYLIST = {"embedding_model", "melspectrogram"}
-
-import re
 
 def _prettify_model_name(name: str) -> str:
     """
@@ -32,18 +29,6 @@ def _prettify_model_name(name: str) -> str:
     return " ".join(parts)
 
 
-def _normalize_model_name(name: str) -> str:
-    # Accept "foo_v2", "foo_v2.tflite", full paths, etc.
-    stem = Path(name).stem
-    return stem
-
-
-def _filter_detect_models(models: list[str]) -> list[str]:
-    # Remove helper models and de-duplicate
-    normalized = {_normalize_model_name(m) for m in models}
-    return sorted(m for m in normalized if m not in _OWW_DETECT_MODEL_DENYLIST)
-
-
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -54,8 +39,8 @@ def _jsonl(obj: dict) -> bytes:
 class WyomingWakeClient:
     """Minimal client for Wyoming wake detection (openWakeWord)."""
 
-    def __init__(self, uri: str, name: str, rate=16000, width=2, channels=1):
-        self.uri, self.name = uri, name
+    def __init__(self, uri: str, rate=16000, width=2, channels=1):
+        self.uri = uri
         self.rate, self.width, self.channels = rate, width, channels
         self._paused = False
         self._suppress_until_ms = 0
@@ -63,31 +48,30 @@ class WyomingWakeClient:
         self._sock: Optional[socket.socket] = None
         self._reader: Optional[threading.Thread] = None
         self._on_detect: Optional[Callable[[str, Optional[int]], None]] = None
+        self._on_models_listed: Optional[Callable[[List[Dict[str, Any]]], None]] = None
         self._closed = False
         # model discovery cache
         self._models_cache: List[Dict[str, Any]] = []
         self._info_event = threading.Event()
 
-    def connect(self, on_detect: Callable[[str, Optional[int]], None]) -> None:
+    def connect(self, on_detect: Callable[[str, Optional[int]], None], on_models_listed: Callable[[List[Dict[str, Any]]], None]) -> None:
         self._on_detect = on_detect
+        self._on_models_listed = on_models_listed
         parsed = urlparse(self.uri)
         if parsed.scheme != "tcp":
             raise ValueError(f"Only tcp:// URIs are supported (got {self.uri})")
         self._sock = socket.create_connection((parsed.hostname or "127.0.0.1", parsed.port or 10400))
         self._sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+
         # Start audio stream
         self._send({"type": "audio-start", "data": {"rate": self.rate, "width": self.width, "channels": self.channels}})
+
         # Ask for model info
         try:
             self._send({"type": "describe"})
         except Exception:
             pass
-        # Set initial detect model
-        if self.name:
-            try:
-                self._send({"type": "detect", "data": {"names": [self.name]}})
-            except Exception:
-                pass
+        
         self._reader = threading.Thread(target=self._read_loop, daemon=True)
         self._reader.start()
         _LOGGER.debug("Connected to Wyoming wake server at %s", self.uri)
@@ -115,7 +99,6 @@ class WyomingWakeClient:
         self._sock.sendall(_jsonl(hdr))
         self._sock.sendall(pcm)
 
-    
     def pause(self) -> None:
         self._paused = True
 
@@ -129,86 +112,13 @@ class WyomingWakeClient:
             now_ms = 0
         self._suppress_until_ms = max(self._suppress_until_ms, now_ms + int(ms))
 
-    def set_refractory(self, ms: int) -> None:
-        self._refractory_ms = max(0, int(ms))
-
-
-
-    def list_models(self):
-        """Query models using a short-lived connection with timeout; accept 'describe' or 'info'."""
-        parsed = urlparse(self.uri)
-        if parsed.scheme != "tcp":
-            raise ValueError(f"Only tcp:// URIs are supported (got {self.uri})")
-        host, port = (parsed.hostname or "127.0.0.1", parsed.port or 10400)
-        s = socket.create_connection((host, port))
-        try:
-            s.settimeout(1.5)
-            s.sendall(_jsonl({"type": "describe"}))
-            f = s.makefile("rb")
-            while True:
-                try:
-                    line = f.readline()
-                except Exception:
-                    break
-                if not line:
-                    break
-                try:
-                    msg = json.loads(line.decode("utf-8"))
-                except Exception:
-                    continue
-                mtype = msg.get("type")
-                if mtype in ("describe", "info"):
-                    data = msg.get("data", {}) or {}
-                    wake = data.get("wake", {}) or {}
-                    models = wake.get("models") or wake.get("names") or []
-                    norm: List[Dict[str, Any]] = []
-                    for m in models:
-                        if isinstance(m, str):
-                            norm.append({"name": m})
-                        elif isinstance(m, dict):
-                            norm.append(m)
-                    out: List[Dict[str, Any]] = []
-                    for m in norm:
-                        name = (m.get('name') or '').strip()
-                        if not name or name in EXCLUDED_OWW_MODELS:
-                            continue
-                        phrase = (m.get('phrase') or '').strip()
-                        desc = (m.get('description') or '').strip()
-                        try:
-                            label = phrase or desc or _prettify_model_name(name)  # type: ignore[name-defined]
-                        except NameError:
-                            stem = Path(name).stem
-                            stem = re.sub(r"(?:_v\d+(?:\.\d+)?)$", "", stem)
-                            parts = stem.split("_")
-                            if parts and parts[0].lower() == "ok":
-                                parts[0] = "OK"
-                            else:
-                                parts = [p.capitalize() for p in parts]
-                            label = " ".join(parts)
-                        mm = dict(m)
-                        mm['label'] = label
-                        out.append(mm)
-                    return out
-        finally:
-            try:
-                s.close()
-            except Exception:
-                pass
-        return []
-
-    def get_models(self, timeout: float = 1.5):
-        """Return cached models after waiting briefly for an 'info'/'describe' update."""
-        self._info_event.wait(timeout)
-        return list(self._models_cache)
-
-    def set_detect(self, names):
+    def set_detect(self, names: List[str]) -> None:
         if self._sock is None:
             raise RuntimeError("Not connected")
         filtered = [n for n in list(names) if n]
         if not filtered:
             _LOGGER.warning("Ignoring empty detect() request (no model names)")
             return
-        self.name = filtered[0]
         _LOGGER.debug("Requesting Wyoming detect models: %s", filtered)
         self._send({"type": "detect", "data": {"names": filtered}})
 
@@ -218,13 +128,11 @@ class WyomingWakeClient:
         assert self._sock is not None
         self._sock.sendall(_jsonl(obj))
 
-# --- paste this to replace the whole _read_loop method ---
     def _read_loop(self) -> None:
         assert self._sock is not None
         f = self._sock.makefile("rb")
-    
         buf = ""  # text buffer for concatenated JSON objects
-    
+
         def _yield_objects_from_text(text: str):
             """Yield JSON objects from `text` even if they are concatenated like {}{}..."""
             start = 0
@@ -253,12 +161,12 @@ class WyomingWakeClient:
                             yield text[start : i + 1], i + 1
             # return here with any remainder unparsed
             return
-    
+
         while not self._closed:
             chunk = f.readline()
             if not chunk:
                 break
-    
+
             try:
                 piece = chunk.decode("utf-8")
             except Exception:
@@ -267,9 +175,9 @@ class WyomingWakeClient:
                 except Exception:
                     pass
                 continue
-    
+
             buf += piece
-    
+
             # Try to peel off as many complete JSON objects as we can
             pos = 0
             progressed = True
@@ -286,7 +194,7 @@ class WyomingWakeClient:
                         except Exception:
                             pass
                         continue
-    
+
                     mtype = str(msg.get("type") or "").lower()
                     try:
                         _LOGGER.debug("Received Wyoming message type=%s", mtype or "<?>")
@@ -294,54 +202,51 @@ class WyomingWakeClient:
                             _LOGGER.debug("Wyoming raw: %r", obj_text[:200])
                     except Exception:
                         pass
-    
+
                     # ----- model info path -----
                     if mtype in ("info", "describe"):
-                        data = msg.get("data", {}) or {}
-                        wake = data.get("wake", {}) if isinstance(data, dict) else {}
-    
-                        models = []
-                        if isinstance(wake, dict):
-                            if isinstance(wake.get("models"), list):
-                                models = wake.get("models")
-                            elif isinstance(wake.get("names"), list):
-                                models = wake.get("names")
-    
-                        norm = []
-                        for m in models:
-                            if isinstance(m, str):
-                                norm.append({"name": m})
-                            elif isinstance(m, dict):
-                                norm.append(m)
-    
-                        if norm:
-                            self._models_cache = norm
-                            self._info_event.set()
-                            _LOGGER.debug(
-                                "Wyoming model list updated: %s",
-                                [m.get("name") for m in norm],
-                            )
+                        data_len = int(msg["data_length"])
+                        payload = f.read(data_len).decode("utf-8")
+
+                        try:
+                            data = json.loads(payload)
+                        except Exception:
+                            _LOGGER.exception("Bad JSON in Wyoming info payload")
+                            continue
+
+                        wake = data.get("wake", [])
+
+                        if wake and isinstance(wake, list):
+                            models = wake[0].get("models", [])
+                            norm = []
+                            for m in models:
+                                if isinstance(m, str):
+                                    norm.append({"name": m})
+                                elif isinstance(m, dict):
+                                    norm.append(m)
+
+                            if norm:
+                                self._models_cache = norm
+                                self._info_event.set()
+
+                                if self._on_models_listed:
+                                    self._on_models_listed(norm)
                         continue
-    
-                    # ----- detection path (accept several shapes) -----
-                    data = msg.get("data", {}) or {}
-                    is_detection = False
+
                     if mtype == "detection":
-                        is_detection = True
-                    elif mtype in ("event", "wake", "hotword"):
-                        ev = str(data.get("event") or "").lower()
-                        if ev in ("detection", "wake", "hotword"):
-                            is_detection = True
-    
-                    if is_detection:
-                        name = (
-                            data.get("name")
-                            or data.get("model")
-                            or data.get("wakeword")
-                            or self.name
-                        )
+                        data_len = int(msg["data_length"])
+                        payload = f.read(data_len).decode("utf-8")
+
+                        try:
+                            data = json.loads(payload)
+                        except Exception:
+                            _LOGGER.exception("Bad JSON in Wyoming info payload")
+                            continue
+
+                        name = data.get("name") or data.get("model") or data.get("wakeword")
                         ts = data.get("timestamp") or data.get("time") or data.get("ts")
                         _LOGGER.debug("Wake detected: %s ts=%s", name, ts)
+
                         if self._on_detect:
                             try:
                                 now_ms = int(time.time() * 1000)
@@ -355,10 +260,100 @@ class WyomingWakeClient:
                                     self._on_detect(name, ts)
                                     if getattr(self, '_refractory_ms', 0):
                                         self.suppress(self._refractory_ms)
-                                    if getattr(self, '_refractory_ms', 0):
-                                        self.suppress(self._refractory_ms)
                             except Exception:
                                 _LOGGER.exception("Error in detection callback")
-    
+
             # keep any unconsumed remainder in buffer
             buf = buf[pos:]
+
+class OpenWakeWordDetector(BaseDetector):
+    """OpenWakeWord detector implementation using Wyoming protocol."""
+    
+    def _initialize(self, **kwargs) -> None:
+        """Initialize OpenWakeWord-specific setup."""
+        self.wake_uri = kwargs.get('wake_uri')
+        if not self.wake_uri:
+            raise ValueError("wake_uri is required for OpenWakeWord")
+        
+        self._wyoming_client = WyomingWakeClient(self.wake_uri)
+        self.stop_active = False
+    
+    def connect_if_needed(self, on_detect: Callable[[str, Optional[int]], None]) -> None:
+        """Connect to Wyoming wake server."""        
+        def on_models_listed(models: List[Dict[str, Any]]):
+            self.available_wake_words.clear()
+
+            for m in models:
+                name = (m.get('name') or '').strip()
+                langs = m.get('languages') or m.get('trained_languages') or []
+                if not name:
+                    continue
+                label = m.get('label') or _prettify_model_name(name)
+                self.available_wake_words[name] = AvailableWakeWord(
+                    id=name,
+                    wake_word=label,
+                    trained_languages=langs,
+                    config_path=Path(f"wyoming:{name}"),
+                )
+
+            wake_word_keys = self.available_wake_words.keys()
+            _LOGGER.debug("Wyoming model list updated: %s", [m for m in wake_word_keys])
+            
+            wake_id = self._resolve_model_id(self.wake_model_id)
+            self.wake_model_id = wake_id if wake_id else next(iter(wake_word_keys))
+
+            stop_id = self._resolve_model_id(self.stop_model_id)
+            self.stop_model_id = stop_id if stop_id else next(iter(wake_word_keys))
+
+            try:
+                self._wyoming_client.set_detect([self.wake_model_id, self.stop_model_id])
+            except Exception as e:
+                _LOGGER.exception("Failed to set initial detection target: %s", e)
+        
+        self._wyoming_client.connect(on_detect, on_models_listed)
+    
+    def process_audio(self, audio_chunk: bytes) -> tuple[bool, bool]:
+        """Process audio chunk by sending to Wyoming server."""
+        if self._wyoming_client:
+            try:
+                self._wyoming_client.send_audio_chunk(audio_chunk)
+            except Exception as e:
+                _LOGGER.exception("Error sending audio to Wyoming server: %s", e)
+        
+        # OpenWakeWord detection happens asynchronously via callback
+        return False, False
+    
+    def set_wake_model(self, wake_word_id: str) -> bool:
+        """Set the active wake word model on Wyoming server."""        
+        if wake_word_id not in self.available_wake_words:
+            _LOGGER.warning("Wake model not found: %s", wake_word_id)
+            return False
+        
+        if not self._wyoming_client:
+            _LOGGER.warning("Wyoming client not connected")
+            return False
+        
+        try:
+            self._wyoming_client.set_detect([wake_word_id, self.stop_model_id])
+            self.wake_model_id = wake_word_id
+            _LOGGER.info("Switched Wyoming wake model to: %s", wake_word_id)
+            return True
+        except Exception as e:
+            _LOGGER.error("Failed to switch Wyoming wake model: %s", e)
+            return False
+        
+    def _resolve_model_id(self, model_id: str):
+        if not model_id:
+            return None
+
+        # Direct match
+        if model_id in self.available_wake_words:
+            return model_id
+
+        # Try matching without version suffix
+        base = model_id.split("_v")[0]
+        for key in self.available_wake_words:
+            if key == base or key.startswith(base + "_v"):
+                return key
+
+        return None
