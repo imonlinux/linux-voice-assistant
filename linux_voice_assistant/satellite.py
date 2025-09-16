@@ -3,7 +3,7 @@
 import logging
 import time
 from collections.abc import Iterable
-from typing import Dict, Optional, Set
+from typing import Dict, Optional, Set, Union
 
 # pylint: disable=no-name-in-module
 from aioesphomeapi.api_pb2 import (  # type: ignore[attr-defined]
@@ -35,6 +35,7 @@ from .api_server import APIServer
 from .entity import MediaPlayerEntity
 from .microwakeword import MicroWakeWord
 from .models import ServerState
+from .openwakeword import OpenWakeWord
 from .util import call_all
 
 _LOGGER = logging.getLogger(__name__)
@@ -194,9 +195,8 @@ class VoiceSatelliteProtocol(APIServer):
                     continue
 
                 _LOGGER.debug("Loading wake word: %s", model_info.config_path)
-                self.state.wake_words[wake_word_id] = MicroWakeWord.from_config(
-                    model_info.config_path,
-                    self.state.libtensorflowlite_c_path,
+                self.state.wake_words[wake_word_id] = model_info.load(
+                    self.state.libtensorflowlite_c_path
                 )
 
                 _LOGGER.info("Wake word set: %s", wake_word_id)
@@ -219,7 +219,7 @@ class VoiceSatelliteProtocol(APIServer):
 
         self.send_messages([VoiceAssistantAudio(data=audio_chunk)])
 
-    def wakeup(self, wake_word: MicroWakeWord) -> None:
+    def wakeup(self, wake_word: Union[MicroWakeWord, OpenWakeWord]) -> None:
         if self._timer_finished:
             # Stop timer instead
             self._timer_finished = False
