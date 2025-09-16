@@ -253,10 +253,6 @@ class WyomingWakeClient:
                                 if self._paused or (self._suppress_until_ms and now_ms < self._suppress_until_ms):
                                     _LOGGER.debug("Detection suppressed (paused=%s until=%s)", self._paused, getattr(self, '_suppress_until_ms', 0))
                                 else:
-                                    now_ms = int(time.time() * 1000)
-                                if self._paused or (self._suppress_until_ms and now_ms < self._suppress_until_ms):
-                                    _LOGGER.debug("Detection suppressed (paused=%s until=%s)", self._paused, getattr(self, '_suppress_until_ms', 0))
-                                else:
                                     self._on_detect(name, ts)
                                     if getattr(self, '_refractory_ms', 0):
                                         self.suppress(self._refractory_ms)
