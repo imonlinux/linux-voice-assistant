@@ -10,7 +10,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from queue import Queue
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 # pylint: disable=no-name-in-module
 import sounddevice as sd
@@ -62,16 +62,17 @@ else:
 
 class WakeWordConfig:
     """Manages persistent storage of the wake word configuration."""
-    def __init__(self, config_dir: Path):
+    def __init__(self, detector_type: Literal["mww","oww"], config_dir: Path):
         self.config_dir = Path(config_dir)
         self.config_dir.mkdir(exist_ok=True)
         self.config_file = self.config_dir / "wake_word_config.json"
+        self.detector_type = detector_type
     
     def save_wake_word(self, wake_word_id: str) -> None:
         """Save the current wake word ID to persistent storage."""
         try:
-            config = {"wake_word_id": wake_word_id}
-            with open(self.config_file, 'w') as f:
+            config = {"detector": self.detector_type, "wake_word_id": wake_word_id}
+            with open(self.config_file, 'w', encoding='utf-8') as f:
                 json.dump(config, f)
             _LOGGER.debug("Saved wake word config: %s", wake_word_id)
         except Exception as e:
@@ -81,10 +82,16 @@ class WakeWordConfig:
         """Load the last saved wake word ID from persistent storage."""
         try:
             if self.config_file.exists():
-                with open(self.config_file, 'r') as f:
+                with open(self.config_file, 'r', encoding='utf-8') as f:
                     config = json.load(f)
                 wake_word_id = config.get("wake_word_id")
-                _LOGGER.debug("Loaded wake word config: %s", wake_word_id)
+                detector_type = config.get("detector")
+
+                # if the saved detector type doesn't match the current one, return None
+                if detector_type != self.detector_type:
+                    return None
+
+                _LOGGER.debug("Loaded wake word config: %s and detector %s", wake_word_id, detector_type)
                 return wake_word_id
         except Exception as e:
             _LOGGER.error("Failed to load wake word config: %s", e)
@@ -456,11 +463,11 @@ async def main() -> None:
     elif args.detector_type == "oww":
         detector_kwargs['wake_uri'] = args.wake_uri
 
-        
     # Create wake word config manager and try to load saved wake word, fall back to command line argument
-    wake_word_config = WakeWordConfig(_CONFIG_DIR)
+    wake_word_config = WakeWordConfig(args.detector_type, _CONFIG_DIR)
     saved_wake_word = wake_word_config.load_wake_word()
     wake_model = saved_wake_word if saved_wake_word else args.wake_model
+    _LOGGER.debug("Using wake word: %s and stop word: %s", wake_model, args.stop_model)
 
     # Create detector
     detector = DetectorFactory.create_detector(
