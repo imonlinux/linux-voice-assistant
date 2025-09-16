@@ -422,7 +422,7 @@ async def main() -> None:
         help="Directory with wake word models (.tflite) and configs (.json)",
     )
     parser.add_argument(
-        "--wake-model", default="okay_nabu", help="Id of active wake model"
+        "--wake-model", default="hey_jarvis", help="Id of active wake model"
     )
     parser.add_argument("--stop-model", default="stop", help="Id of stop model")
     parser.add_argument(
