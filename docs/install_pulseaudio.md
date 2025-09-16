@@ -218,10 +218,17 @@ Test mpv can ouput to PA with current configs:
 mpv --ao=pulse --audio-device=default --audio-samplerate=44100 /usr/share/sounds/alsa/Front_Center.wav
 ```
 
+If you disabled your Linux Voice Assistant service in step 2., enable it now:
+
+```bash
+sudo systemctl enable --now linux-voice-assistant.service
+```
+
 ## 16. Reboot your Pi: (see step 4)
 
 
 ## 17. Done! Return to the tutorial to continue the Linux Voice Assistant install.
+
 
 
 
