@@ -1,12 +1,15 @@
 import ctypes
 import json
+import logging
 import statistics
 from collections import deque
 from pathlib import Path
-from typing import Deque, List, Union
+from typing import Callable, Deque, List, Optional, Union
 
 import numpy as np
 from pymicro_features import MicroFrontend
+
+from .base_detector import AvailableWakeWord, BaseDetector
 
 _SAMPLES_PER_SECOND = 16000
 _SAMPLES_PER_CHUNK = 160  # 10ms
@@ -16,6 +19,7 @@ _SECONDS_PER_CHUNK = _SAMPLES_PER_CHUNK / _SAMPLES_PER_SECOND
 _STRIDE = 3
 _DEFAULT_REFRACTORY = 2  # seconds
 
+_LOGGER = logging.getLogger(__name__)
 
 class TfLiteQuantizationParams(ctypes.Structure):
     _fields_ = [("scale", ctypes.c_float), ("zero_point", ctypes.c_int32)]
@@ -270,3 +274,125 @@ class MicroWakeWord:
         self._audio_buffer = self._audio_buffer[audio_buffer_idx:]
 
         return detected
+
+class MicroWakeWordDetector(BaseDetector):
+    """MicroWakeWord detector implementation."""
+
+    def __init__(self, wake_model_id: str, stop_model_id: str, **kwargs):
+        super().__init__(wake_model_id, stop_model_id, **kwargs)
+        self.wake_word: Optional[MicroWakeWord] = None
+        self.stop_word: Optional[MicroWakeWord] = None
+    
+    def _initialize(self, **kwargs) -> None:
+        """Initialize MicroWakeWord-specific setup."""
+        wake_word_dir = kwargs.get('wake_word_dir')
+        if not wake_word_dir:
+            raise ValueError("wake_word_dir is required for MicroWakeWord")
+        self.wake_word_dir = Path(wake_word_dir)
+
+        self.libtensorflowlite_c_path = kwargs.get('libtensorflowlite_c_path')
+        if not self.libtensorflowlite_c_path:
+            raise ValueError("libtensorflowlite_c_path is required for MicroWakeWord")
+        
+        self._load_available_models()
+        self._load_models()
+    
+    def _load_available_models(self) -> None:
+        """Load available MicroWakeWord models from filesystem."""
+        self.available_wake_words.clear()
+        
+        for model_config_path in self.wake_word_dir.glob("*.json"):
+            model_id = model_config_path.stem
+            if model_id == self.stop_model_id:
+                # Don't show stop model as an available wake word
+                continue
+            
+            try:
+                with open(model_config_path, "r", encoding="utf-8") as model_config_file:
+                    model_config = json.load(model_config_file)
+                    
+                    self.available_wake_words[model_id] = AvailableWakeWord(
+                        id=model_id,
+                        wake_word=model_config["wake_word"],
+                        trained_languages=model_config.get("trained_languages", []),
+                        config_path=model_config_path,
+                    )
+            except Exception as e:
+                _LOGGER.warning("Failed to load model config %s: %s", model_config_path, e)
+        
+        _LOGGER.debug("Available MicroWakeWord models: %s", list(sorted(self.available_wake_words.keys())))
+    
+    def _load_models(self) -> None:
+        """Load the wake and stop word models."""
+        # Load wake model
+        wake_config_path = self.wake_word_dir / f"{self.wake_model_id}.json"
+        if not wake_config_path.exists():
+            raise ValueError(f"Wake model config not found: {wake_config_path}")
+        
+        _LOGGER.debug("Loading wake model: %s", wake_config_path)
+        self.wake_word = MicroWakeWord.from_config(wake_config_path, self.libtensorflowlite_c_path)
+        
+        # Load stop model
+        stop_config_path = self.wake_word_dir / f"{self.stop_model_id}.json"
+        if not stop_config_path.exists():
+            raise ValueError(f"Stop model config not found: {stop_config_path}")
+        
+        _LOGGER.debug("Loading stop model: %s", stop_config_path)
+        self.stop_word = MicroWakeWord.from_config(stop_config_path, self.libtensorflowlite_c_path)
+    
+    def connect_if_needed(self, on_detect: Callable[[str, Optional[int]], None]) -> None:
+        """MicroWakeWord doesn't need remote connection."""
+        pass
+    
+    def process_audio(self, audio_chunk: bytes) -> tuple[bool, bool]:
+        """Process audio chunk with both wake and stop models."""
+        wake_detected = False
+        stop_detected = False
+        
+        if self.wake_word and self.wake_word.is_active:
+            wake_detected = self.wake_word.process_streaming(audio_chunk)
+        
+        if self.stop_word and self.stop_word.is_active:
+            stop_detected = self.stop_word.process_streaming(audio_chunk)
+        
+        return wake_detected, stop_detected
+    
+    def set_wake_model(self, wake_word_id: str) -> bool:
+        """Set the active wake word model."""
+        if wake_word_id == self.wake_word.id if self.wake_word else None:
+            # Already active
+            return True
+        
+        model_info = self.available_wake_words.get(wake_word_id)
+        if not model_info:
+            _LOGGER.warning("Wake model not found: %s", wake_word_id)
+            return False
+        
+        try:
+            _LOGGER.debug("Loading wake word: %s", model_info.config_path)
+            micro_wake = MicroWakeWord.from_config(
+                model_info.config_path,
+                self.libtensorflowlite_c_path,
+            )
+            self.wake_word = micro_wake
+            _LOGGER.info("Wake word set: %s", self.wake_word.wake_word)
+            return True
+        except Exception as e:
+            _LOGGER.error("Failed to load wake model %s: %s", wake_word_id, e)
+            return False
+        
+    @BaseDetector.wake_active.setter
+    def wake_active(self, value: bool):
+        if BaseDetector.wake_active.fset:
+            BaseDetector.wake_active.fset(self, value)
+        
+        if self.wake_word:
+            self.wake_word.is_active = self.wake_active
+
+    @BaseDetector.stop_active.setter
+    def stop_active(self, value: bool):
+        if BaseDetector.stop_active.fset:
+            BaseDetector.stop_active.fset(self, value)
+        
+        if self.stop_word:
+            self.stop_word.is_active = self.stop_active
