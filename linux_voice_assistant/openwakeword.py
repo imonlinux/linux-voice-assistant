@@ -44,7 +44,7 @@ class WyomingWakeClient:
         self.rate, self.width, self.channels = rate, width, channels
         self._paused = False
         self._suppress_until_ms = 0
-        self._refractory_ms = 0
+        self._refractory_ms = 2000
         self._sock: Optional[socket.socket] = None
         self._reader: Optional[threading.Thread] = None
         self._on_detect: Optional[Callable[[str, Optional[int]], None]] = None
@@ -254,7 +254,7 @@ class WyomingWakeClient:
                                     _LOGGER.debug("Detection suppressed (paused=%s until=%s)", self._paused, getattr(self, '_suppress_until_ms', 0))
                                 else:
                                     self._on_detect(name, ts)
-                                    if getattr(self, '_refractory_ms', 0):
+                                    if self._refractory_ms:
                                         self.suppress(self._refractory_ms)
                             except Exception:
                                 _LOGGER.exception("Error in detection callback")
