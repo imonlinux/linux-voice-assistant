@@ -78,7 +78,7 @@ class WakeWordConfig:
         except Exception as e:
             _LOGGER.error("Failed to save wake word config: %s", e)
     
-    def load_wake_word(self) -> Optional[str]:
+    def load_wake_word(self, fallback: str) -> str:
         """Load the last saved wake word ID from persistent storage."""
         try:
             if self.config_file.exists():
@@ -87,15 +87,15 @@ class WakeWordConfig:
                 wake_word_id = config.get("wake_word_id")
                 detector_type = config.get("detector")
 
-                # if the saved detector type doesn't match the current one, return None
+                # if the saved detector type doesn't match the current one, return the default fallback (e.g., from CLI)
                 if detector_type != self.detector_type:
-                    return None
+                    return fallback
 
                 _LOGGER.debug("Loaded wake word config: %s and detector %s", wake_word_id, detector_type)
                 return wake_word_id
         except Exception as e:
             _LOGGER.error("Failed to load wake word config: %s", e)
-        return None
+        return fallback
 
 @dataclass
 class ServerState:
@@ -247,6 +247,7 @@ class VoiceSatelliteProtocol(APIServer):
             if isinstance(msg, ListEntitiesRequest):
                 yield ListEntitiesDoneResponse()
         elif isinstance(msg, VoiceAssistantConfigurationRequest):
+            filtered_wake_words = list(filter(lambda x: x.id != self.state.detector.stop_model_id, self.state.detector.available_wake_words.values()))
             yield VoiceAssistantConfigurationResponse(
                 available_wake_words=[
                     VoiceAssistantWakeWord(
@@ -254,7 +255,7 @@ class VoiceSatelliteProtocol(APIServer):
                         wake_word=ww.wake_word,
                         trained_languages=ww.trained_languages,
                     )
-                    for ww in self.state.detector.available_wake_words.values()
+                    for ww in filtered_wake_words
                 ],
                 active_wake_words=self.state.detector.get_active_wake_words(),
                 max_active_wake_words=1,
@@ -447,7 +448,9 @@ async def main() -> None:
     logging.basicConfig(level=logging.DEBUG if args.debug else logging.INFO)
     _LOGGER.debug(args)
 
-    # Validate detector-specific arguments
+    # Validate CLI arguments
+    if (args.wake_model == args.stop_model):
+        parser.error("Wake model and stop model must be different")
     if args.detector_type == "oww" and not args.wake_uri:
         parser.error("--wake-uri is required when using OpenWakeWord (--detector-type oww)")
     if args.detector_type == "mww" and not args.wake_word_dir:
@@ -465,8 +468,7 @@ async def main() -> None:
 
     # Create wake word config manager and try to load saved wake word, fall back to command line argument
     wake_word_config = WakeWordConfig(args.detector_type, _CONFIG_DIR)
-    saved_wake_word = wake_word_config.load_wake_word()
-    wake_model = saved_wake_word if saved_wake_word else args.wake_model
+    wake_model = wake_word_config.load_wake_word(args.wake_model)
     _LOGGER.debug("Using wake word: %s and stop word: %s", wake_model, args.stop_model)
 
     # Create detector
