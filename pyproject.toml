@@ -30,6 +30,7 @@ dependencies = [
     "numpy>=2,<3",
     "pymicro-features==1.0.0",
     "python-mpv>=1,<2",
+    "zeroconf",
 ]
 
 [project.optional-dependencies]

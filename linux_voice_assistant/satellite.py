@@ -176,7 +176,9 @@ class VoiceSatelliteProtocol(APIServer):
                     )
                     for ww in self.state.available_wake_words.values()
                 ],
-                active_wake_words=list(self.state.wake_words.keys()),
+                active_wake_words=[
+                    ww.id for ww in self.state.wake_words.values() if ww.is_active
+                ],
                 max_active_wake_words=2,
             )
             _LOGGER.info("Connected to Home Assistant")

@@ -18,6 +18,7 @@ from .mpv_player import MpvMediaPlayer
 from .openwakeword import OpenWakeWord, OpenWakeWordFeatures
 from .satellite import VoiceSatelliteProtocol
 from .util import get_mac, is_arm
+from .zeroconf import HomeAssistantZeroconf
 
 _LOGGER = logging.getLogger(__name__)
 _MODULE_DIR = Path(__file__).parent
@@ -204,6 +205,10 @@ async def main() -> None:
         lambda: VoiceSatelliteProtocol(state), host=args.host, port=args.port
     )
 
+    # Auto discovery (zeroconf, mDNS)
+    discovery = HomeAssistantZeroconf(port=args.port, name=args.name)
+    await discovery.register_server()
+
     try:
         _LOGGER.debug("Opening audio input device: %s", args.audio_input_device)
         with sd.RawInputStream(
@@ -254,7 +259,7 @@ def process_audio(state: ServerState):
             if (not wake_words) or (state.wake_words_changed and state.wake_words):
                 # Update list of wake word models to process
                 state.wake_words_changed = False
-                wake_words = list(state.wake_words.values())
+                wake_words = [ww for ww in state.wake_words.values() if ww.is_active]
 
                 has_oww = False
                 for wake_word in wake_words:
@@ -286,13 +291,10 @@ def process_audio(state: ServerState):
                     oww_inputs.extend(oww_features.process_streaming(audio_chunk))
 
                 for wake_word in wake_words:
-                    if not wake_word.is_active:
-                        continue
-
                     activated = False
                     if isinstance(wake_word, MicroWakeWord):
-                        for oww_input in oww_inputs:
-                            if wake_word.process_streaming(oww_input):
+                        for micro_input in micro_inputs:
+                            if wake_word.process_streaming(micro_input):
                                 activated = True
                     elif isinstance(wake_word, OpenWakeWord):
                         for oww_input in oww_inputs:
