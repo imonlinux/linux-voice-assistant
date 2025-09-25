@@ -1,8 +1,8 @@
 [Unit]
 Description=Linux Voice Assistant (PulseAudio - Headphone Jack)
-After=network-online.target pulseaudio.service wyoming-openwakeword.service
+After=network-online.target pulseaudio.service
 Wants=network-online.target
-Requires=pulseaudio.service wyoming-openwakeword.service
+Requires=pulseaudio.service
 
 [Service]
 Type=simple
@@ -24,9 +24,6 @@ ExecStart=/home/pi/linux-voice-assistant/script/run   \
 	--name 'Linux Satellite PA MWW'   \
 	--audio-input-device default   \
 	--audio-output-device ${MPV_DEFAULT_DEVICE}   \
-#	--wake-uri 'tcp://127.0.0.1:10400'   \
-#	--wake-word-name 'alexa'   \
-#	--wake-models-dir '/home/pi/wyoming-openwakeword/wyoming_openwakeword/models'   \
 	--debug
 
 Restart=always
