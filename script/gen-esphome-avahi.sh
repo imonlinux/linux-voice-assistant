@@ -15,10 +15,20 @@ done
 # Collect all UP, non-loopback ifaces
 mapfile -t IFACES < <(ip -o link show up | awk -F': ' '{print $2}' | grep -v '^lo$' | sort -u)
 
-TXT="    <txt-record>platform=HOST</txt-record>
+# Detect platform/board from the running system
+PLATFORM="LINUX"
+ARCH_RAW="$(uname -m)"
+case "$ARCH_RAW" in
+  aarch64|arm64) BOARD="aarch64" ;;
+  x86_64|amd64)  BOARD="x86_64"  ;;
+  *)             BOARD="$ARCH_RAW" ;;
+esac
+
+TXT="    <txt-record>platform=${PLATFORM}</txt-record>
 "
-TXT+="    <txt-record>board=host</txt-record>
+TXT+="    <txt-record>board=${BOARD}</txt-record>
 "
+
 LIST=""
 for i in "${IFACES[@]}"; do
   [ -e "/sys/class/net/$i/address" ] || continue
