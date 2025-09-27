@@ -290,7 +290,7 @@ You just copy the ones you want into the ~/wyoming-openwakeword/wyoming-openwake
 **Word of warning. I have had problems with some of the community provided wake words. YMMV**
 
 
-## 10. Switching between OWW and MWW. Or ALSA and PA see section 7.
+## 10. Switching between OWW and MWW. Or ALSA, PW, PA see section 6.
 
 If you intend to switch from PA to ALSA, you must first stop the pusleaudio.service.
 
