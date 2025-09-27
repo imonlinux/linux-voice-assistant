@@ -9,7 +9,7 @@
 ```
 > Modeled after the Wyoming Satellite two‑mic tutorial, adapted from actual shell history.
 
-This guide reproduces a working setup of the **linux-voice-assistant** project with **Wyoming OpenWakeWord** or **MicroWakeWord** on a Raspberry PI Zero 2W and a Respeaker 2‑mic HAT (e.g., seeed-2mic-voicecard). It assumes a fresh system with sudo access and the default "pi" user. Included is the option to use Pulse Audio instead of ALSA.
+This guide reproduces a working setup of the **linux-voice-assistant** project with **Wyoming OpenWakeWord** or **MicroWakeWord** on a Raspberry PI Zero 2W and a Respeaker 2‑mic HAT (e.g., seeed-2mic-voicecard). It assumes a fresh system with sudo access and the default "pi" user. Included is the option to use PipeWire or PulseAudio instead of ALSA.
 
 ## Prerequisites
 - Raspberry Pi OS Lite (64-bit)
@@ -48,7 +48,7 @@ sudo reboot
 ```
 
 
-## 4. Wyoming OpenWakeWord (OWW)
+## 4. Wyoming OpenWakeWord (OWW), skip to step 5. if using MicroWakeWord (MWW)
 
 ```bash
 cp ~/linux-voice-assistant/wyoming-openwakeword/requirements.txt ~/wyoming-openwakeword/requirements.txt
@@ -65,11 +65,15 @@ script/setup
 ```
 
 
-## 6. Configure audio devices, choose either Pulse Audio or ALSA (default)
+## 6. Configure audio devices, choose PipeWire, PulseAudio, or ALSA (default)
 
-### (Optional) Pulse Audio
+### (Optional) PipeWire
 
-See [the tutorial](install_pulseaudio.md) to install and configure Pulse Audio.
+See [the tutorial](install_pipewire.md) to install and configure PipeWire.
+
+### (Optional) PulseAudio
+
+See [the tutorial](install_pulseaudio.md) to install and configure PulseAudio.
 
 ### For Standard ALSA
 
@@ -88,15 +92,66 @@ aplay -l
 ```bash
 chmod +x ~/linux-voice-assistant/script/gen-esphome-avahi.sh
 sudo ~/linux-voice-assistant/script/gen-esphome-avahi.sh
-sudo mkdir -p /etc/systemd/system/linux-voice-assistant.service.d
-sudo cp ~/linux-voice-assistant/service/10-avahi.conf /etc/systemd/system/linux-voice-assistant.service.d/10-avahi.conf
 ```
 
 ```bash
 sudo systemctl restart avahi-daemon.service
 ```
 
-### (Optional) for Pulse Audio  with OWW copy this service file into /etc/systemd/system/:
+### (Optional) for PipeWire with OWW copy these service files to /home/pi/.config/systemd/user
+### Note: This installes OWW and LVA as User Mode Systemd services
+
+```bash
+mkdir -p ~/.config/systemd/user
+
+cp ~/linux-voice-assistant/service/user-pw-oww-linux-voice-assistant.service.service ~/.config/systemd/user/linux-voice-assistant.service
+
+cp ~/linux-voice-assistant/service/user-wyoming-openwakeword.service.service ~/.config/systemd/user/wyoming-openwakeword.service.service
+```
+
+Enable and start the user mode services:
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now wyoming-openwakeword.service
+systemctl --user enable --now linux-voice-assistant.service
+```
+
+Check that the user mode services are running:
+
+```bash
+sytemctl --user status linux-voice-assistat.service
+```
+
+#### Proceed to step 8 (Connecting to HA)
+
+
+### (Optional) for PipeWire with MWW copy this service file to /home/pi/.config/systemd/user
+### Note: This installes LVA as User Mode Systemd service
+
+```bash
+mkdir -p ~/.config/systemd/user
+
+cp ~/linux-voice-assistant/service/user-pw-mww-linux-voice-assistant.service.service ~/.config/systemd/user/linux-voice-assistant.service
+```
+
+Enable and start the user mode services:
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now linux-voice-assistant.service
+```
+
+Check that the user mode service is running:
+
+```bash
+sytemctl --user status linux-voice-assistat.service
+```
+
+#### Proceed to step 8 (Connecting to HA)
+
+
+### (Optional) for PulseAudio with OWW copy this service file into /etc/systemd/system/:
 
 ```bash
 sudo cp ~/linux-voice-assistant/service/pa-oww-linux-voice-assistant.service /etc/systemd/system/linux-voice-assistant.service
@@ -142,13 +197,15 @@ sudo cp ~/linux-voice-assistant/service/alsa-oww-linux-voice-assistant.service /
 sudo cp ~/linux-voice-assistant/service/alsa-mww-linux-voice-assistant.service /etc/systemd/system/linux-voice-assistant.service
 ```
 
-### For either ALSA or Pusle Audio systems with the OWW copy this service file into /etc/systemd/system/:
+### For either ALSA or PulseAudio systems with the OWW copy this service file into /etc/systemd/system/:
+### Not needed if using PipeWire
 
 ```bash
 sudo cp ~/linux-voice-assistant/service/wyoming-openwakeword.service /etc/systemd/system/wyoming-openwakeword.service
 ```
 
-Start new services and confirm services are running:
+### For either ALSA or PulseAudio start new services and confirm services are running:
+### Not needed if using PipeWire
 
 ```bash
 sudo systemctl daemon-reload
@@ -170,7 +227,8 @@ sudo systemctl status linux-voice-assistant wyoming-openwakeword --no-pager -l
 
 
 ## 9. Verification
-- Use journalctl -fu linux-voice-assistant.service to check for errors. Debugging is enabled.
+- Use "journalctl -u linux-voice-assistant.service -f" to check for errors for ALSA and PluseAudio. Debugging is enabled.
+- Use "journalctl --user -u linux-voice-assistant.service -f" to check for errors when using PipeWire. Debugging is enabled.
  - Expect logs like `Connected to Home Assistant`
  - Look for `[OWW] Detection: name=...` followed by re-arming/cycling
  - Ask: *“What time is it?”* and confirm TTS reply
