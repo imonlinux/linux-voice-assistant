@@ -69,7 +69,7 @@ script/setup
 ```
 
 
-## 6–7. Choose your install option "Choose your Adventure!"
+## 6. Choose your install option "Choose your Adventure!"
 
 Pick **one** of the following install paths. Expand a section to see the exact steps.
 
@@ -245,7 +245,7 @@ sudo systemctl restart avahi-daemon.service
 </details>
 
 
-## 8. Connect to Home Assistant
+## 7. Connect to Home Assistant
 
 ### If HA does not discover the new LVA:
 
@@ -257,7 +257,7 @@ sudo systemctl restart avahi-daemon.service
 6. During the registration process, use the wake word that you configured in your linux-voice-assistant.service file. Default is "alexa".
 
 
-## 9. Verification
+## 8. Verification
 - Use "journalctl -u linux-voice-assistant.service -f" to check for errors for ALSA and PluseAudio. Debugging is enabled.
 - Use "journalctl --user -u linux-voice-assistant.service -f" to check for errors when using PipeWire. Debugging is enabled.
  - Expect logs like `Connected to Home Assistant`
@@ -268,7 +268,7 @@ sudo systemctl restart avahi-daemon.service
      ### Settings -> Voice assistants -> Assist (the assistant you configured) -> Text-to-speech -> Voice
 
 
-## 10. Change OWW detection model
+## 9. Change OWW detection model
 
 After the LVA is registered with HA, you can change the Wake Word model used in the ESPHome Voice Assistant entity.
 
@@ -290,7 +290,7 @@ You just copy the ones you want into the ~/wyoming-openwakeword/wyoming-openwake
 **Word of warning. I have had problems with some of the community provided wake words. YMMV**
 
 
-## 11. Switching between OWW and MWW. Or ALSA and PA see section 7.
+## 10. Switching between OWW and MWW. Or ALSA and PA see section 7.
 
 If you intend to switch from PA to ALSA, you must first stop the pusleaudio.service.
 
