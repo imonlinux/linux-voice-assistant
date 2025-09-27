@@ -99,7 +99,16 @@ sudo systemctl restart avahi-daemon.service
 ```
 
 ### (Optional) for PipeWire with OWW copy these service files to /home/pi/.config/systemd/user
-### Note: This installes OWW and LVA as User Mode Systemd services
+### Note: This installs OWW and LVA as User Mode Systemd services. This requires linger to be enabled on the user (pi).
+### Note: Without linger the User Mode Systemd service(s) will not start automatically after a reboot.
+
+Enable linger for the user:
+
+```bash
+sudo loginctl enable-linger pi
+```
+
+Install User Mode Service files:
 
 ```bash
 mkdir -p ~/.config/systemd/user
@@ -127,7 +136,16 @@ sytemctl --user status linux-voice-assistat.service
 
 
 ### (Optional) for PipeWire with MWW copy this service file to /home/pi/.config/systemd/user
-### Note: This installes LVA as User Mode Systemd service
+### Note: This installs LVA as User Mode Systemd service. This requires linger to be enabled on the user (pi).
+### Note: Without linger the User Mode Systemd service(s) will not start automatically after a reboot.
+
+Enable linger for the user:
+
+```bash
+sudo loginctl enable-linger pi
+```
+
+Install User Mode Service file:
 
 ```bash
 mkdir -p ~/.config/systemd/user
@@ -135,7 +153,7 @@ mkdir -p ~/.config/systemd/user
 cp ~/linux-voice-assistant/service/user-pw-mww-linux-voice-assistant.service.service ~/.config/systemd/user/linux-voice-assistant.service
 ```
 
-Enable and start the user mode services:
+Enable and start the user mode service:
 
 ```bash
 systemctl --user daemon-reload
