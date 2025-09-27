@@ -1,4 +1,4 @@
-# Linux Voice Assistant on 2‑Mic Linux — Installation & Configuration Guide
+# Linux Voice Assistant on RaspberryPi with ReSpeaker 2‑Mic — Installation & Configuration Guide
 
 > Created using ChatGPT 5 with the following prompt:
 ```html
@@ -35,7 +35,6 @@ sudo reboot
 
 ```bash
 git clone https://github.com/imonlinux/linux-voice-assistant.git
-git clone https://github.com/rhasspy/wyoming-openwakeword.git
 ```
 
 
@@ -49,6 +48,11 @@ sudo reboot
 
 
 ## 4. Wyoming OpenWakeWord (OWW), skip to step 5. if using MicroWakeWord (MWW)
+
+
+```bash
+git clone https://github.com/rhasspy/wyoming-openwakeword.git
+```
 
 ```bash
 cp ~/linux-voice-assistant/wyoming-openwakeword/requirements.txt ~/wyoming-openwakeword/requirements.txt
@@ -65,171 +69,180 @@ script/setup
 ```
 
 
-## 6. Configure audio devices, choose PipeWire, PulseAudio, or ALSA (default)
+## 6–7. Choose your install option "Choose your Adventure!"
 
-### (Optional) PipeWire
+Pick **one** of the following install paths. Expand a section to see the exact steps.
 
-See [the tutorial](install_pipewire.md) to install and configure PipeWire.
+> Tip: PipeWire options run services in *user* mode (requires `loginctl enable-linger`); PulseAudio/ALSA options run services in *system* mode.
 
-### (Optional) PulseAudio
+<details>
+<summary><strong>PipeWire + OpenWakeWord (user-mode services)</strong></summary>
 
-See [the tutorial](install_pulseaudio.md) to install and configure PulseAudio.
+**Prep (PipeWire):** Follow the PipeWire tutorial first: [the tutorial](install_pipewire.md).
 
-### For Standard ALSA
-
-You shouldn't have to change anything if you are using the driver provided in this repo. If you are using something else, find your sound device names and update the linux-voice-assistant/service/alsa-oww-linux-voice-assistant.service used with OpenWakeWord or linux-voice-assistant/service/alsa-mww-linux-voice-assistant.service file used with MicroWakeWord to match sound card details:
-
-```bash
-arecord -l
-aplay -l
-```
-
-
-## 7. Systemd services
-
-### (Optional) enable Avahi service file to advertise LVA to HA:
-
-```bash
-chmod +x ~/linux-voice-assistant/script/gen-esphome-avahi.sh
-sudo ~/linux-voice-assistant/script/gen-esphome-avahi.sh
-```
-
-```bash
-sudo systemctl restart avahi-daemon.service
-```
-
-### (Optional) for PipeWire with OWW copy these service files to /home/pi/.config/systemd/user
-### Note: This installs OWW and LVA as User Mode Systemd services. This requires linger to be enabled on the user (pi).
-### Note: Without linger the User Mode Systemd service(s) will not start automatically after a reboot.
-
-Enable linger for the user:
-
+**Enable linger (required for user services to start after reboot):**
 ```bash
 sudo loginctl enable-linger pi
 ```
 
-Install User Mode Service files:
-
+**Install user-mode services:**
 ```bash
 mkdir -p ~/.config/systemd/user
 
-cp ~/linux-voice-assistant/service/user-pw-oww-linux-voice-assistant.service.service ~/.config/systemd/user/linux-voice-assistant.service
+# LVA
+cp ~/linux-voice-assistant/service/user-pw-oww-linux-voice-assistant.service.service    ~/.config/systemd/user/linux-voice-assistant.service
 
-cp ~/linux-voice-assistant/service/user-wyoming-openwakeword.service.service ~/.config/systemd/user/wyoming-openwakeword.service.service
+# OWW
+cp ~/linux-voice-assistant/service/user-wyoming-openwakeword.service.service    ~/.config/systemd/user/wyoming-openwakeword.service
 ```
 
-Enable and start the user mode services:
-
+**Enable & start:**
 ```bash
 systemctl --user daemon-reload
 systemctl --user enable --now wyoming-openwakeword.service
 systemctl --user enable --now linux-voice-assistant.service
 ```
 
-Check that the user mode services are running:
-
+**Verify:**
 ```bash
-sytemctl --user status linux-voice-assistat.service
+systemctl --user status linux-voice-assistant wyoming-openwakeword --no-pager -l
 ```
+</details>
 
-#### Proceed to step 8 (Connecting to HA)
+<details>
+<summary><strong>PipeWire + MicroWakeWord (user-mode services)</strong></summary>
 
+**Prep (PipeWire):** Follow the PipeWire tutorial first: [the tutorial](install_pipewire.md).
 
-### (Optional) for PipeWire with MWW copy this service file to /home/pi/.config/systemd/user
-### Note: This installs LVA as User Mode Systemd service. This requires linger to be enabled on the user (pi).
-### Note: Without linger the User Mode Systemd service(s) will not start automatically after a reboot.
-
-Enable linger for the user:
-
+**Enable linger:**
 ```bash
 sudo loginctl enable-linger pi
 ```
 
-Install User Mode Service file:
-
+**Install user-mode service:**
 ```bash
 mkdir -p ~/.config/systemd/user
-
-cp ~/linux-voice-assistant/service/user-pw-mww-linux-voice-assistant.service.service ~/.config/systemd/user/linux-voice-assistant.service
+cp ~/linux-voice-assistant/service/user-pw-mww-linux-voice-assistant.service.service    ~/.config/systemd/user/linux-voice-assistant.service
 ```
 
-Enable and start the user mode service:
-
+**Enable & start:**
 ```bash
 systemctl --user daemon-reload
 systemctl --user enable --now linux-voice-assistant.service
 ```
 
-Check that the user mode service is running:
-
+**Verify:**
 ```bash
-sytemctl --user status linux-voice-assistat.service
+systemctl --user status linux-voice-assistant --no-pager -l
 ```
+</details>
 
-#### Proceed to step 8 (Connecting to HA)
+<details>
+<summary><strong>PulseAudio + OpenWakeWord (system services)</strong></summary>
 
+**Prep (PulseAudio):** Follow the PulseAudio tutorial first: [the tutorial](install_pulseaudio.md).
 
-### (Optional) for PulseAudio with OWW copy this service file into /etc/systemd/system/:
-
+**Install LVA (system) + tuning drop-in:**
 ```bash
-sudo cp ~/linux-voice-assistant/service/pa-oww-linux-voice-assistant.service /etc/systemd/system/linux-voice-assistant.service
-```
-Create the systemd drop-in directory for linux-voice-assistant.service:
+sudo cp ~/linux-voice-assistant/service/pa-oww-linux-voice-assistant.service         /etc/systemd/system/linux-voice-assistant.service
 
-```bash
 sudo mkdir -p /etc/systemd/system/linux-voice-assistant.service.d
+sudo cp ~/linux-voice-assistant/service/10-tuning.conf         /etc/systemd/system/linux-voice-assistant.service.d/10-tuning.conf
 ```
 
+**Install OWW (system):**
 ```bash
-sudo cp ~/linux-voice-assistant/service/10-tuning.conf \
-      /etc/systemd/system/linux-voice-assistant.service.d/10-tuning.conf
+sudo cp ~/linux-voice-assistant/service/wyoming-openwakeword.service         /etc/systemd/system/wyoming-openwakeword.service
 ```
 
-### OR for Pulse Audio  with MWW copy this service file into /etc/systemd/system/:
-
+**Enable & start:**
 ```bash
-sudo cp ~/linux-voice-assistant/service/pa-mww-linux-voice-assistant.service /etc/systemd/system/linux-voice-assistant.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now wyoming-openwakeword linux-voice-assistant
+sudo systemctl status linux-voice-assistant wyoming-openwakeword --no-pager -l
 ```
-Create the systemd drop-in directory for linux-voice-assistant.service:
+</details>
 
+<details>
+<summary><strong>PulseAudio + MicroWakeWord (system services)</strong></summary>
+
+**Prep (PulseAudio):** Follow the PulseAudio tutorial first: [the tutorial](install_pulseaudio.md).
+
+**Install LVA (system) + tuning drop-in:**
 ```bash
+sudo cp ~/linux-voice-assistant/service/pa-mww-linux-voice-assistant.service         /etc/systemd/system/linux-voice-assistant.service
+
 sudo mkdir -p /etc/systemd/system/linux-voice-assistant.service.d
+sudo cp ~/linux-voice-assistant/service/10-tuning.conf         /etc/systemd/system/linux-voice-assistant.service.d/10-tuning.conf
 ```
 
-```bash
-sudo cp ~/linux-voice-assistant/service/10-tuning.conf \
-      /etc/systemd/system/linux-voice-assistant.service.d/10-tuning.conf
-```
-
-
-### For ALSA with OWW copy this service file into /etc/systemd/system/:
-
-```bash
-sudo cp ~/linux-voice-assistant/service/alsa-oww-linux-voice-assistant.service /etc/systemd/system/linux-voice-assistant.service
-```
-
-
-### OR for ALSA with MWW copy this service file into /etc/systemd/system/:
-
-```bash
-sudo cp ~/linux-voice-assistant/service/alsa-mww-linux-voice-assistant.service /etc/systemd/system/linux-voice-assistant.service
-```
-
-### For either ALSA or PulseAudio systems with the OWW copy this service file into /etc/systemd/system/:
-### Not needed if using PipeWire
-
-```bash
-sudo cp ~/linux-voice-assistant/service/wyoming-openwakeword.service /etc/systemd/system/wyoming-openwakeword.service
-```
-
-### For either ALSA or PulseAudio start new services and confirm services are running:
-### Not needed if using PipeWire
-
+**Enable & start:**
 ```bash
 sudo systemctl daemon-reload
 sudo systemctl enable --now linux-voice-assistant
+sudo systemctl status linux-voice-assistant --no-pager -l
+```
+</details>
+
+<details>
+<summary><strong>ALSA + OpenWakeWord (system services)</strong></summary>
+
+**No extra audio stack needed.** If you’re using a different sound card/driver, confirm device names:
+```bash
+arecord -l
+aplay -l
+```
+
+**Install LVA (system):**
+```bash
+sudo cp ~/linux-voice-assistant/service/alsa-oww-linux-voice-assistant.service         /etc/systemd/system/linux-voice-assistant.service
+```
+
+**Install OWW (system):**
+```bash
+sudo cp ~/linux-voice-assistant/service/wyoming-openwakeword.service         /etc/systemd/system/wyoming-openwakeword.service
+```
+
+**Enable & start:**
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now wyoming-openwakeword linux-voice-assistant
 sudo systemctl status linux-voice-assistant wyoming-openwakeword --no-pager -l
 ```
+</details>
+
+<details>
+<summary><strong>ALSA + MicroWakeWord (system services)</strong></summary>
+
+**No extra audio stack needed.** If you’re using a different sound card/driver, confirm device names:
+```bash
+arecord -l
+aplay -l
+```
+
+**Install LVA (system):**
+```bash
+sudo cp ~/linux-voice-assistant/service/alsa-mww-linux-voice-assistant.service         /etc/systemd/system/linux-voice-assistant.service
+```
+
+**Enable & start:**
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now linux-voice-assistant
+sudo systemctl status linux-voice-assistant --no-pager -l
+```
+</details>
+
+<details>
+<summary><strong>Optional: Advertise LVA to Home Assistant via Avahi</strong></summary>
+
+**Generate & install ESPHome-style mDNS service:**
+```bash
+chmod +x ~/linux-voice-assistant/script/gen-esphome-avahi.sh
+sudo ~/linux-voice-assistant/script/gen-esphome-avahi.sh
+sudo systemctl restart avahi-daemon.service
+```
+</details>
 
 
 ## 8. Connect to Home Assistant
