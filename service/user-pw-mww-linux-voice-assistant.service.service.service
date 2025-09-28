@@ -11,7 +11,7 @@ Environment=PYTHONUNBUFFERED=1
 ExecStart=/home/pi/linux-voice-assistant/script/run \
   --name 'Linux Satellite PW MWW' \
   --audio-input-device default \
-  --audio-output-device pulse/alsa_output.platform-soc_sound.stereo-fallback \
+  --audio-output-device pipewire/default \
   --debug
 
 Restart=always
