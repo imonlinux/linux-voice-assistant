@@ -13,7 +13,7 @@ Environment=PYTHONUNBUFFERED=1
 ExecStart=/home/pi/linux-voice-assistant/script/run \
   --name 'Linux Satellite Test PW' \
   --audio-input-device default \
-  --audio-output-device pulse/alsa_output.platform-soc_sound.stereo-fallback \
+  --audio-output-device pipewire/default \
   --wake-uri 'tcp://127.0.0.1:10400' \
   --wake-word-name 'alexa' \
   --wake-models-dir '/home/pi/wyoming-openwakeword/wyoming_openwakeword/models' \
