@@ -41,9 +41,23 @@ class MpvMediaPlayer:
         except Exception:
             pass
 
-        # Normalize/select backend and device
+        
+# Normalize/select backend and device
         ao = None
         norm = None
+
+        # Helper to try candidates in order
+        def _try_candidates(candidates):
+            nonlocal ao, norm
+            for cand_ao, cand_norm in candidates:
+                try:
+                    self.player["ao"] = cand_ao
+                    ao = cand_ao
+                    norm = cand_norm
+                    return True
+                except Exception:
+                    continue
+            return False
 
         if device:
             d = device.strip()
@@ -51,17 +65,43 @@ class MpvMediaPlayer:
                 ao = "alsa"; norm = d
             elif d.startswith("pulse/"):
                 ao = "pulse"; norm = d
+            elif d.startswith(("pipewire/", "pw/")):
+                ao = "pipewire"; norm = d.replace("pw/", "pipewire/", 1)
             elif d == "default":
-                try:
-                    self.player["ao"] = "pulse"; norm = "pulse/default"
-                except Exception:
-                    try:
-                        self.player["ao"] = "alsa"; norm = "alsa/default"
-                    except Exception:
-                        _LOGGER.warning("Neither Pulse nor ALSA available for 'default'")
+                # Preference order: env override -> PipeWire -> Pulse -> ALSA
+                order = []
+                if ao_env in {"pipewire","pulse","alsa"}:
+                    order.append((ao_env, f"{ao_env}/default"))
+                order.extend([
+                    ("pipewire", "pipewire/default"),
+                    ("pulse",    "pulse/default"),
+                    ("alsa",     "alsa/default"),
+                ])
+                _try_candidates(order)
+                if ao is None:
+                    _LOGGER.warning("No suitable audio output (PipeWire/Pulse/ALSA) available for 'default'")
             else:
-                # Assume Pulse sink name if no prefix
-                ao = "pulse"; norm = f"pulse/{d}"
+                # No explicit prefix: respect env override if set; otherwise prefer PipeWire, then Pulse, then ALSA
+                tried = False
+                if ao_env in {"pipewire","pulse","alsa"}:
+                    tried = _try_candidates([(ao_env, f"{ao_env}/{d if ao_env!='alsa' else 'default'}")])
+                if not tried:
+                    _try_candidates([
+                        ("pipewire", f"pipewire/{d}"),
+                        ("pulse",    f"pulse/{d}"),
+                        ("alsa",     "alsa/default"),
+                    ])
+        else:
+            # No device specified: env override first (if valid), then PipeWire, Pulse, ALSA
+            order = []
+            if ao_env in {"pipewire","pulse","alsa"}:
+                order.append((ao_env, f"{ao_env}/default"))
+            order.extend([
+                ("pipewire", "pipewire/default"),
+                ("pulse",    "pulse/default"),
+                ("alsa",     "alsa/default"),
+            ])
+            _try_candidates(order)
 
         if ao:
             try:
@@ -76,6 +116,7 @@ class MpvMediaPlayer:
                 _LOGGER.warning("Failed to set audio-device=%s", norm)
 
         # State
+
         self.is_playing: bool = False
         self._done_callback: Optional[Callable[[], None]] = None
         self._done_callback_lock = Lock()
