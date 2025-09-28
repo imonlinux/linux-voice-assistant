@@ -53,7 +53,7 @@ See `--help` for more options.
 * Implement a single LVA systemd unit file that can be addapted using profiles and drop-ins (in progress)
 * Implement OWW model validation checks and error handling so that a bad model doesn't crash OWW
 * Make the selection of the right ALSA ar PA device more scripted
-* Make a Docker of the project
+* ~~Make a Docker of the project~~ Already done in parent repo.
 * Add sensor entity that displays which wake word engine is being used for HA
 * Could this be an DEB package?
 * Implement Stop for OWW
