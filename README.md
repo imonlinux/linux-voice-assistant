@@ -49,6 +49,7 @@ See `--help` for more options.
 
 ## ToDo:
 
+* Implement echo-cancellation filter in PipeWire. (Improves wake word detection when audio is being played)
 * Merge jianyu-li's PR from source project to add mute switch function in this branch
 * ~~Configure LVA to advertise on Zeroconf/mDNS via Avahi for HA to auto detect (in progress)~~
 * Implement a single LVA systemd unit file that can be addapted using profiles and drop-ins (in progress)
