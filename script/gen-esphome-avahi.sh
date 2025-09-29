@@ -49,7 +49,7 @@ cat >"$SERVICE" <<XML
 <!DOCTYPE service-group SYSTEM "avahi-service.dtd">
 <service-group>
   <name replace-wildcards="yes">${NAME}</name>
-  <service protocol=ipv4>
+  <service protocol="ipv4">
     <type>_esphomelib._tcp</type>
     <port>${PORT}</port>
     <txt-record>version=2025.9.0</txt-record>
