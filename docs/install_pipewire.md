@@ -68,6 +68,12 @@ pactl set-default-sink alsa_output.platform-soc_sound.stereo-fallback
 mpv --ao=pipewire --audio-device=default --audio-samplerate=44100 /usr/share/sounds/alsa/Front_Center.wav
 ```
 
+If volume is low, set it to 150%.
+
+```sh
+pactl set-sink-volume alsa_output.platform-soc_sound.stereo-fallback 150%
+```
+
 **Note that if you have a Raspbery Pi 3B or 4B, this may or may not seem to work, but it will output on the hat as intended.**
 
 
