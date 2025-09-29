@@ -1,6 +1,6 @@
 # Linux Voice Assistant
 
-Experimental Linux voice assistant for [Home Assistant][homeassistant] that uses the [ESPHome][esphome] protocol.
+Experimental Linux voice assistant (LVA) for [Home Assistant][homeassistant] that uses the [ESPHome][esphome] protocol.
 
 Runs on Linux `aarch64` and `x86_64` platforms. Tested with Python 3.13 and Python 3.11.
 Supports announcments, start/continue conversation, and timers.
@@ -12,6 +12,7 @@ See [the tutorial](docs/linux-voice-assistant-2mic-install.md) to build a satell
 - Now supports **ALSA, PulseAudio and PipeWire** playback backends using the updated `linux_voice_assistant/mpv_player.py`.
 - You can choose between ALSA, PulseAudio, or PipeWire with either MWW or OWW simply by enabling the matching systemd service file.
 - You can change the OWW wake word within HA after the VLA is registered. (defaults to the wake word defind in the systemd config file)
+- Home Assistant successfully detects the LVA when Avahi is setup according to the tutorial.
 
 ## Installation
 
