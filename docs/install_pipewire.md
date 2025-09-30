@@ -23,6 +23,7 @@ sudo rm /etc/systemd/system/linux-voice-assistant.service
 ```sh
 sudo apt-get update
 sudo apt-get install \
+    pulseaudio-utils \
     pipewire wireplumber \
     pipewire-audio libspa-0.2-modules
 ```
