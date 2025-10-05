@@ -1,0 +1,21 @@
+[Unit]
+Description=Linux Voice Assistant (PulseAudio + MWW)
+After=pulseaudio.service
+Wants=pulseaudio.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/pi/linux-voice-assistant
+Environment=PYTHONUNBUFFERED=1
+
+ExecStart=/home/pi/linux-voice-assistant/script/run \
+  --name 'Linux Satellite PA' \
+  --audio-input-device default \
+  --audio-output-device pulse/alsa_output.platform-soc_sound.stereo-fallback \
+  --debug
+
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target
