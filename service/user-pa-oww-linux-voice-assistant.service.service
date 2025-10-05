@@ -1,0 +1,26 @@
+[Unit]
+Description=Linux Voice Assistant (PulseAudio + OWW)
+After=pulseaudio.service wyoming-openwakeword.service
+Wants=pulseaudio.service wyoming-openwakeword.service
+Requires=wyoming-openwakeword.service
+After=wyoming-openwakeword.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/pi/linux-voice-assistant
+Environment=PYTHONUNBUFFERED=1
+
+ExecStart=/home/pi/linux-voice-assistant/script/run \
+  --name 'Linux Satellite PA' \
+  --audio-input-device default \
+  --audio-output-device pulse/alsa_output.platform-soc_sound.stereo-fallback \
+  --wake-uri 'tcp://127.0.0.1:10400' \
+  --wake-word-name 'alexa' \
+  --wake-models-dir '/home/pi/wyoming-openwakeword/wyoming_openwakeword/models' \
+  --debug
+
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target
