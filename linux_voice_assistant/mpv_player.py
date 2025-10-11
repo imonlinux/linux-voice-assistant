@@ -1,4 +1,3 @@
-# linux_voice_assistant/mpv_player.py
 """
 Media player using mpv in a subprocess.
 
@@ -103,7 +102,9 @@ def _select_backend(player: MPV, device: Optional[str], env_ao: Optional[str]) -
 
 
 class MpvMediaPlayer:
-    def __init__(self, device: Optional[str] = None, watchdog_sec: float = 0.0) -> None:
+    def __init__(
+        self, device: Optional[str] = None, watchdog_sec: float = 0.0, initial_volume: float = 1.0
+    ) -> None:
         self.player = MPV(video=False, terminal=False, log_handler=self._mpv_log)
 
         _set_player_opt(self.player, "audio-samplerate", 44100)
@@ -115,6 +116,9 @@ class MpvMediaPlayer:
 
         env_ao = _normalize_env_ao(os.environ.get("LVA_AO"))
         self._ao, self._audio_device = _select_backend(self.player, device, env_ao)
+
+        # Set initial volume from preferences
+        self.set_volume(int(initial_volume * 100))
 
         self.is_playing: bool = False
         self._done_callback: Optional[Callable[[], None]] = None
