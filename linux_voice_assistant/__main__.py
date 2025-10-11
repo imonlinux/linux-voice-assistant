@@ -200,6 +200,14 @@ async def main() -> None:
 
     assert stop_model is not None
 
+    # Create media players with saved volume
+    music_player = MpvMediaPlayer(
+        device=args.audio_output_device, initial_volume=preferences.volume_level
+    )
+    tts_player = MpvMediaPlayer(
+        device=args.audio_output_device, initial_volume=preferences.volume_level
+    )
+
     state = ServerState(
         name=args.name,
         mac_address=get_mac(),
@@ -208,8 +216,8 @@ async def main() -> None:
         available_wake_words=available_wake_words,
         wake_words=wake_models,
         stop_word=stop_model,
-        music_player=MpvMediaPlayer(device=args.audio_output_device),
-        tts_player=MpvMediaPlayer(device=args.audio_output_device),
+        music_player=music_player,
+        tts_player=tts_player,
         wakeup_sound=args.wakeup_sound,
         timer_finished_sound=args.timer_finished_sound,
         preferences=preferences,
