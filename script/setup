@@ -24,6 +24,7 @@ subprocess.check_call(pip + ["install", "--upgrade", "setuptools", "wheel"])
 subprocess.check_call(pip + ["install", "--upgrade", "python-mpv"])
 subprocess.check_call(pip + ["install", "--upgrade", "gpiozero"])
 subprocess.check_call(pip + ["install", "--upgrade", "spidev"])
+subprocess.check_call(pip + ["install", "--upgrade", "adafruit-circuitpython-dotstar"])
 
 # Install requirements
 subprocess.check_call(pip + ["install", "-e", str(_PROGRAM_DIR)])
