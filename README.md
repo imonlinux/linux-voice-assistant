@@ -10,7 +10,7 @@ See [the tutorial](docs/linux-voice-assistant-2mic-install.md) to build a satell
 ### What's working:
 - This fork is from https://github.com/OHF-Voice/linux-voice-assistant Release v1.0.0 which introduces the ablity to use both MicroWakeWord and OpenWakeWord detections models.
 - Now supports **ALSA, PulseAudio and PipeWire** playback backends using the updated `linux_voice_assistant/mpv_player.py`.
-- You can choose between ALSA, PulseAudio, or PipeWire with either MWW or OWW simply by enabling the matching systemd User Mode service file.
+- You can choose between ALSA, PulseAudio, or PipeWire by enabling the matching systemd User Mode service file.
 - You can choose between all MWW and OWW wake word within HA after the VLA is registered. Choosen wake words are saved to preferences.json in the linux-voice-assistant folder.
 - The volume control is now persistant between connections and reboots. The volume setting gets stored in prefernces.json and loaded when LVA starts.
 
