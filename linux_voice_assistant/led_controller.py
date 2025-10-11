@@ -92,6 +92,12 @@ class LedController(EventHandler):
         except asyncio.CancelledError:
             await self.color(_OFF)
 
+    # --- THIS IS THE NEWLY ADDED METHOD ---
+    @subscribe
+    def ha_connected(self, data: dict):
+        _LOGGER.debug("HA Connected, setting idle LED state.")
+        self.voice_run_end(data)
+
     @subscribe
     def voice_wakeword(self, data: dict):
         _LOGGER.debug("LED Event: voice_wakeword")
