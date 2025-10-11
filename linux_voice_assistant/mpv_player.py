@@ -53,12 +53,7 @@ def _select_backend(
     device: Optional[str],
     env_ao: Optional[str],
 ) -> Tuple[Optional[str], Optional[str]]:
-    """
-    Decide and apply (ao, audio-device) after probing candidates in order.
-
-    Returns:
-        (ao, audio_device) — the values successfully applied (or (None, None)).
-    """
+    """Decide and apply (ao, audio-device) after probing candidates."""
     ao: Optional[str] = None
     norm: Optional[str] = None
 
@@ -164,58 +159,4 @@ class MpvMediaPlayer:
     def play(
         self,
         url: Union[str, Sequence[str], bytes],
-        done_callback: Optional[Callable[[], None]] = None,
-        stop_first: bool = False,
-    ) -> None:
-        """Begin playback of one or more URLs. Sequential playlist supported."""
-        if stop_first:
-            try:
-                self.stop()
-            except Exception:
-                _LOGGER.debug("stop_first=True: stop() raised, continuing", exc_info=True)
-
-        with self._done_callback_lock:
-            self._done_callback = done_callback
-
-        # Normalize input to playlist list
-        if isinstance(url, (list, tuple)):
-            self._playlist = list(url)
-        elif isinstance(url, bytes):
-            try:
-                self._playlist = [url.decode("utf-8")]
-            except Exception:
-                self._playlist = [url.decode(errors="ignore")]
-        elif isinstance(url, str):
-            self._playlist = [url]
-        else:
-            _LOGGER.error("mpv play() expected str/seq/bytes, got %r", type(url))
-            self._run_done_callback()
-            return
-
-        if not self._playlist:
-            _LOGGER.error("Empty playlist; nothing to play")
-            self._run_done_callback()
-            return
-
-        next_url = self._playlist.pop(0)
-        self._play_single(next_url)
-
-    def _play_single(self, url: str) -> None:
-        """Internal: play one track."""
-        _LOGGER.debug("Playing %s", url)
-        try:
-            self.player["mute"] = "no"
-        except Exception:
-            _LOGGER.debug("Failed to unmute before playback", exc_info=True)
-
-        self.is_playing = True
-        try:
-            self.player.play(url)
-            self._arm_watchdog()
-        except Exception:
-            self.is_playing = False
-            _LOGGER.exception("mpv failed to play %r", url, exc_info=True)
-            self._run_done_callback()
-
-    def pause(self) -> None:
-        try:
+        done_callback: Optional[Callable[[], None]()]()_
