@@ -1,0 +1,21 @@
+[Unit]
+Description=Linux Voice Assistant (PipeWire + MWW)
+After=pipewire.service pipewire-pulse.service
+Wants=pipewire-pulse.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/pi/linux-voice-assistant
+Environment=PYTHONUNBUFFERED=1
+
+ExecStart=/home/pi/linux-voice-assistant/script/run \
+  --name 'Linux Satellite PW MWW' \
+  --audio-input-device default \
+  --audio-output-device pipewire/default \
+  --debug
+
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target
