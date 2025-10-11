@@ -1,6 +1,6 @@
 from abc import abstractmethod
 from collections.abc import Iterable
-from typing import Callable, List, Optional, Union
+from typing import TYPE_CHECKING, Callable, List, Optional, Union
 
 # pylint: disable=no-name-in-module
 from aioesphomeapi.api_pb2 import (  # type: ignore[attr-defined]
@@ -17,10 +17,14 @@ from .api_server import APIServer
 from .mpv_player import MpvMediaPlayer
 from .util import call_all
 
+if TYPE_CHECKING:
+    from .models import ServerState
+
 
 class ESPHomeEntity:
-    def __init__(self, server: APIServer) -> None:
+    def __init__(self, server: APIServer, state: "ServerState") -> None:
         self.server = server
+        self.state = state
 
     @abstractmethod
     def handle_message(self, msg: message.Message) -> Iterable[message.Message]:
@@ -34,19 +38,20 @@ class MediaPlayerEntity(ESPHomeEntity):
     def __init__(
         self,
         server: APIServer,
+        state: "ServerState",
         key: int,
         name: str,
         object_id: str,
         music_player: MpvMediaPlayer,
         announce_player: MpvMediaPlayer,
     ) -> None:
-        ESPHomeEntity.__init__(self, server)
+        super().__init__(server, state)
 
         self.key = key
         self.name = name
         self.object_id = object_id
-        self.state = MediaPlayerState.IDLE
-        self.volume = 1.0
+        self.state_enum = MediaPlayerState.IDLE
+        self.volume = state.preferences.volume_level  # Initialize with saved volume
         self.muted = False
         self.music_player = music_player
         self.announce_player = announce_player
@@ -104,12 +109,18 @@ class MediaPlayerEntity(ESPHomeEntity):
                 elif msg.command == MediaPlayerCommand.PLAY:
                     self.music_player.resume()
                     yield self._update_state(MediaPlayerState.PLAYING)
-            elif msg.has_volume:
-                volume = int(msg.volume * 100)
-                self.music_player.set_volume(volume)
-                self.announce_player.set_volume(volume)
-                self.volume = msg.volume
-                yield self._update_state(self.state)
+            if msg.has_volume:
+                # This block is called when the volume slider changes in HA
+                self.volume = msg.volume  # HA sends volume as 0.0-1.0
+                volume_int = int(self.volume * 100)
+                self.music_player.set_volume(volume_int)
+                self.announce_player.set_volume(volume_int)
+
+                # Save the new volume level to preferences
+                self.state.preferences.volume_level = self.volume
+                self.state.save_preferences()
+                
+                yield self._update_state(self.state_enum)
         elif isinstance(msg, ListEntitiesRequest):
             yield ListEntitiesMediaPlayerResponse(
                 object_id=self.object_id,
@@ -121,13 +132,13 @@ class MediaPlayerEntity(ESPHomeEntity):
             yield self._get_state_message()
 
     def _update_state(self, new_state: MediaPlayerState) -> MediaPlayerStateResponse:
-        self.state = new_state
+        self.state_enum = new_state
         return self._get_state_message()
 
     def _get_state_message(self) -> MediaPlayerStateResponse:
         return MediaPlayerStateResponse(
             key=self.key,
-            state=self.state,
+            state=self.state_enum,
             volume=self.volume,
             muted=self.muted,
         )
