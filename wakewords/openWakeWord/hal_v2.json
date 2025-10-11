@@ -1,0 +1,5 @@
+{
+  "type": "openWakeWord",
+  "wake_word": "HAL",
+  "model": "hal_v2.tflite"
+}
