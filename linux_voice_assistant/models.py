@@ -1,5 +1,6 @@
 """Shared models."""
 
+import asyncio
 import json
 import logging
 from dataclasses import asdict, dataclass, field
@@ -7,6 +8,8 @@ from enum import Enum
 from pathlib import Path
 from queue import Queue
 from typing import TYPE_CHECKING, Dict, List, Optional, Union
+
+from .event_bus import EventBus
 
 if TYPE_CHECKING:
     from .entity import ESPHomeEntity, MediaPlayerEntity
@@ -74,6 +77,8 @@ class ServerState:
     preferences: Preferences
     preferences_path: Path
     libtensorflowlite_c_path: Path
+    event_bus: EventBus
+    loop: asyncio.AbstractEventLoop
 
     # openWakeWord
     oww_melspectrogram_path: Path
