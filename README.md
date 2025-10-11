@@ -1,6 +1,6 @@
 # Linux Voice Assistant
 
-Experimental Linux voice assistant (LVA) for [Home Assistant][homeassistant] that uses the [ESPHome][esphome] protocol.
+Experimental Linux voice assistant (LVA) for [Home Assistant][homeassistant] that uses the [ESPHome][esphome] protocol/API (via [aioesphomeapi](https://github.com/esphome/aioesphomeapi)).
 
 Runs on Linux `aarch64` and `x86_64` platforms. Tested with Python 3.13 and Python 3.11.
 Supports announcments, start/continue conversation, and timers.
@@ -8,11 +8,11 @@ Supports announcments, start/continue conversation, and timers.
 See [the tutorial](docs/linux-voice-assistant-2mic-install.md) to build a satellite using a [Raspberry Pi Zero 2 W](https://www.raspberrypi.com/products/raspberry-pi-zero-2-w/) and a [ReSpeaker 2Mic HAT](https://wiki.keyestudio.com/Ks0314_keyestudio_ReSpeaker_2-Mic_Pi_HAT_V1.0). 
 
 ### What's working:
-- This fork introduces the ability to use Wyoming OpenWakeWord (OWW) instead of MicroWakeWord (MWW).
+- This fork is from https://github.com/OHF-Voice/linux-voice-assistant Release v1.0.0 which introduces the ablity to use both MicroWakeWord and OpenWakeWord detections models.
 - Now supports **ALSA, PulseAudio and PipeWire** playback backends using the updated `linux_voice_assistant/mpv_player.py`.
-- You can choose between ALSA, PulseAudio, or PipeWire with either MWW or OWW simply by enabling the matching systemd service file.
-- You can change the OWW wake word within HA after the VLA is registered. (defaults to the wake word defind in the systemd config file)
-- Home Assistant successfully detects the LVA when Avahi is setup according to the tutorial.
+- You can choose between ALSA, PulseAudio, or PipeWire with either MWW or OWW simply by enabling the matching systemd User Mode service file.
+- You can choose between all MWW and OWW wake word within HA after the VLA is registered. Choosen wake words are saved to preferences.json in the linux-voice-assistant folder.
+- The volume control is now persistant between connections and reboots. The volume setting gets stored in prefernces.json and loaded when LVA starts.
 
 ## Installation
 
@@ -23,7 +23,7 @@ Install system dependencies (`apt-get`):
 * `libmpv-dev` (for `python-mpv`)
 * `mpv` (for testing)
 * `libmpv-dev` (for building spidev)
-
+  
 Clone and install project:
 
 ``` sh
@@ -56,9 +56,9 @@ See `--help` for more options.
 * Implement OWW model validation checks and error handling so that a bad model doesn't crash OWW
 * Make the selection of the right ALSA ar PA device more scripted
 * ~~Make a Docker of the project~~ Already done in parent repo.
-* Add sensor entity that displays which wake word engine is being used for HA
+* ~~Add sensor entity that displays which wake word engine is being used for HA~~ (Not needed as you can use both at the same time)
 * Could this be an DEB package?
-* Implement Stop for OWW
+* ~~Implement Stop for OWW~~ (Not needed, Stop with MWW works even when using OWW detection models)
 * Stretch goal: create a smart installer full of validation and sanity checks
 <!-- Links -->
 [homeassistant]: https://www.home-assistant.io/
