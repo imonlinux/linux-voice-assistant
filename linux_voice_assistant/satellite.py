@@ -42,7 +42,6 @@ _LOGGER = logging.getLogger(__name__)
 
 
 class VoiceSatelliteProtocol(APIServer):
-
     def __init__(self, state: ServerState) -> None:
         super().__init__(state.name)
 
@@ -52,6 +51,7 @@ class VoiceSatelliteProtocol(APIServer):
         if self.state.media_player_entity is None:
             self.state.media_player_entity = MediaPlayerEntity(
                 server=self,
+                state=state,
                 key=len(state.entities),
                 name="Media Player",
                 object_id="linux_voice_assistant_media_player",
@@ -188,6 +188,9 @@ class VoiceSatelliteProtocol(APIServer):
                 max_active_wake_words=2,
             )
             _LOGGER.info("Connected to Home Assistant")
+            # --- THIS IS THE CHANGE ---
+            # Announce the connection so other components (like LEDs) can react.
+            self.state.event_bus.publish("ha_connected")
         elif isinstance(msg, VoiceAssistantSetConfiguration):
             # Change active wake words
             active_wake_words: Set[str] = set()
@@ -221,7 +224,6 @@ class VoiceSatelliteProtocol(APIServer):
             self.state.wake_words_changed = True
 
     def handle_audio(self, audio_chunk: bytes) -> None:
-
         if not self._is_streaming_audio:
             return
 
@@ -229,7 +231,7 @@ class VoiceSatelliteProtocol(APIServer):
 
     def wakeup(self, wake_word: Union[MicroWakeWord, OpenWakeWord]) -> None:
         self.state.event_bus.publish("voice_wakeword")
-        
+
         if self._timer_finished:
             # Stop timer instead
             self._timer_finished = False
@@ -260,7 +262,7 @@ class VoiceSatelliteProtocol(APIServer):
     def play_tts(self) -> None:
         if (not self._tts_url) or self._tts_played:
             return
-            
+
         self.state.event_bus.publish("voice_tts_start", {"url": self._tts_url})
 
         self._tts_played = True
