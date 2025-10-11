@@ -59,6 +59,7 @@ class AvailableWakeWord:
 @dataclass
 class Preferences:
     active_wake_words: List[str] = field(default_factory=list)
+    volume_level: float = 1.0  # ADD THIS LINE (volume from 0.0 to 1.0)
 
 
 @dataclass
