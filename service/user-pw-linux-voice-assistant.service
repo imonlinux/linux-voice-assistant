@@ -1,5 +1,5 @@
 [Unit]
-Description=Linux Voice Assistant (PipeWire + MWW)
+Description=Linux Voice Assistant (PipeWire)
 After=pipewire.service pipewire-pulse.service
 Wants=pipewire-pulse.service
 
@@ -9,7 +9,10 @@ WorkingDirectory=/home/pi/linux-voice-assistant
 Environment=PYTHONUNBUFFERED=1
 
 ExecStart=/home/pi/linux-voice-assistant/script/run \
-  --name 'Linux Satellite PW MWW' \
+  --name 'Linux Voice Assistant' \
+  --wake-word-dir wakewords/openWakeWord  \
+  --wake-word-dir wakewords \
+  --stop-model stop \
   --audio-input-device default \
   --audio-output-device pipewire/default \
   --debug
