@@ -62,6 +62,8 @@ pactl set-sink-port alsa_output.platform-soc_sound.stereo-fallback "analog-outpu
 pactl set-default-sink alsa_output.platform-soc_sound.stereo-fallback
 ```
 
+**Note that if you have a Raspbery Pi 3B or 4B, this may or may not seem to work, but it will output on the hat as intended.**
+
 
 ## 8. Test and make sure you can hear the wav file.:
 
@@ -75,13 +77,8 @@ If volume is low, set it to 100%.
 pactl set-sink-volume alsa_output.platform-soc_sound.stereo-fallback 100%
 ```
 
-**Note that if you have a Raspbery Pi 3B or 4B, this may or may not seem to work, but it will output on the hat as intended.**
 
-
-## 9. Reboot your Pi: (see step 4)
-
-
-## 10. Done! Return to the tutorial to continue the Linux Voice Assistant install.
+## 9. Done! Return to the tutorial to continue the Linux Voice Assistant install.
 
 
 
