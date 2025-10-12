@@ -25,12 +25,13 @@ classifiers = [
 ]
 requires-python = ">=3.9.0"
 dependencies = [
-    "aioesphomeapi==37.2.1",
+    "aioesphomeapi==41.13.0",
     "sounddevice<1",
     "numpy>=2,<3",
     "pymicro-features==1.0.0",
     "python-mpv>=1,<2",
     "zeroconf",
+    "paho-mqtt",
 ]
 
 [project.optional-dependencies]
