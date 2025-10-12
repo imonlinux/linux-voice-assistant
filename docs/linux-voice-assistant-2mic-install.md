@@ -159,6 +159,134 @@ systemctl --user status linux-voice-assistant --no-pager -l
 ```
 </details>
 
+<details>
+<summary><strong>Optional (MQTT Controls)</strong></summary>
+
+**Edit LVA user-mode service:**
+
+```bash
+systemctl --user edit --force --full linux-voice-assistant
+```
+
+**Add MQTT configuration entries to LVA user-mode service:**
+
+```bash
+  --mqtt-host <IP_Adress> \
+  --mqtt-port 1883 \
+  --mqtt-username <user_name> \
+  --mqtt-password <password> \
+```
+
+**Example (Alsa LVA User Mode Service File)**
+***Note: Change the MQTT values to match your system!***
+
+```bash
+[Unit]
+Description=Linux Voice Assistant
+
+[Service]
+Type=simple
+WorkingDirectory=/home/pi/linux-voice-assistant
+Environment=PYTHONUNBUFFERED=1
+
+ExecStart=/home/pi/linux-voice-assistant/script/run \
+  --name 'Linux Voice Assistant' \
+  --mqtt-host 192.168.1.2 \
+  --mqtt-port 1883 \
+  --mqtt-username mqtt \
+  --mqtt-password Ch@ngeMe_1st \
+  --wake-word-dir wakewords/openWakeWord  \
+  --wake-word-dir wakewords \
+  --stop-model stop \
+  --audio-input-device seeed-2mic-voicecard \
+  --audio-output-device alsa/plughw:CARD=seeed2micvoicec \
+  --debug 
+
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target
+```
+
+
+**Enable & start:**
+```bash
+systemctl --user daemon-reload
+systemctl --user restart linux-voice-assistant.service
+```
+
+**Verify:**
+```bash
+systemctl --user status linux-voice-assistant --no-pager -l
+```
+</details>
+
+<details>
+<summary><strong>Optional (Grove Port LEDs)</strong></summary>
+
+**Edit LVA user-mode service:**
+
+```bash
+systemctl --user edit --force --full linux-voice-assistant
+```
+
+**Add MQTT configuration entries to LVA user-mode service:**
+
+```bash
+  --led-interface gpio \
+  --led-data-pin 12 \
+  --led-clock-pin 13 \
+```
+
+**Example (Alsa LVA User Mode Service File with MQTT Enabled)**
+***Note: Change the GPIO values to match your system!***
+
+```bash
+[Unit]
+Description=Linux Voice Assistant
+
+[Service]
+Type=simple
+WorkingDirectory=/home/pi/linux-voice-assistant
+Environment=PYTHONUNBUFFERED=1
+
+ExecStart=/home/pi/linux-voice-assistant/script/run \
+  --name 'Linux Voice Assistant' \
+  --mqtt-host 192.168.1.2 \
+  --mqtt-port 1883 \
+  --mqtt-username mqtt \
+  --mqtt-password Ch@ngeMe_1st \
+  --led-interface gpio \
+  --led-data-pin 12 \
+  --led-clock-pin 13 \
+  --wake-word-dir wakewords/openWakeWord  \
+  --wake-word-dir wakewords \
+  --stop-model stop \
+  --audio-input-device seeed-2mic-voicecard \
+  --audio-output-device alsa/plughw:CARD=seeed2micvoicec \
+  --debug 
+
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target
+```
+
+
+**Enable & start:**
+```bash
+systemctl --user daemon-reload
+systemctl --user restart linux-voice-assistant.service
+```
+
+**Verify:**
+```bash
+systemctl --user status linux-voice-assistant --no-pager -l
+```
+</details>
+
 ## 6. Connect to Home Assistant
 
 ### If HA does not discover the new LVA:
