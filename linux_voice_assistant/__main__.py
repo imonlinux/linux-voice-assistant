@@ -12,8 +12,9 @@ from typing import Dict, List, Optional, Union
 import numpy as np
 import sounddevice as sd
 
-from .event_bus import EventBus
+from .event_bus import EventBus, EventHandler, subscribe
 from .led_controller import LedController
+from .mqtt_controller import MqttController
 from .microwakeword import MicroWakeWord, MicroWakeWordFeatures
 from .models import AvailableWakeWord, Preferences, ServerState, WakeWordType
 from .mpv_player import MpvMediaPlayer
@@ -34,6 +35,34 @@ if is_arm():
 else:
     _LIB_DIR = _REPO_DIR / "lib" / "linux_amd64"
 
+# -----------------------------------------------------------------------------
+
+class MicMuteHandler(EventHandler):
+    """Event handler for mic mute switch."""
+    def __init__(self, state, mqtt_controller: Optional[MqttController]):
+        super().__init__(state)
+        self.mqtt_controller = mqtt_controller
+
+    @subscribe
+    def set_mic_mute(self, data: dict):
+        is_muted = data.get("state", False)
+        if self.state.mic_muted != is_muted:
+            self.state.mic_muted = is_muted
+            _LOGGER.debug("Mic muted = %s", is_muted)
+            
+            if self.mqtt_controller:
+                self.mqtt_controller.publish_mute_state(is_muted)
+            
+            if is_muted:
+                self.state.event_bus.publish("mic_muted")
+            else:
+                _LOGGER.debug("Clearing stale audio queue...")
+                while not self.state.audio_queue.empty():
+                    try:
+                        self.state.audio_queue.get_nowait()
+                    except Queue.Empty:
+                        break
+                self.state.event_bus.publish("mic_unmuted")
 
 # -----------------------------------------------------------------------------
 
@@ -107,6 +136,17 @@ async def main() -> None:
         default=12,
         help="GPIO pin for LED data (for Grove)",
     )
+    # --- ADDED NUM_LEDS ARGUMENT ---
+    parser.add_argument(
+        "--num-leds",
+        type=int,
+        default=3,
+        help="Number of LEDs in the strip",
+    )
+    parser.add_argument("--mqtt-host", help="MQTT broker host")
+    parser.add_argument("--mqtt-port", type=int, default=1883, help="MQTT broker port")
+    parser.add_argument("--mqtt-username", help="MQTT broker username")
+    parser.add_argument("--mqtt-password", help="MQTT broker password")
     parser.add_argument(
         "--debug", action="store_true", help="Print DEBUG messages to console"
     )
@@ -135,9 +175,8 @@ async def main() -> None:
                     trained_languages=model_config.get("trained_languages", []),
                     config_path=model_config_path,
                 )
-
     _LOGGER.debug("Available wake words: %s", list(sorted(available_wake_words.keys())))
-
+    
     preferences_path = Path(args.preferences_file)
     if preferences_path.exists():
         _LOGGER.debug("Loading preferences: %s", preferences_path)
@@ -147,9 +186,12 @@ async def main() -> None:
     else:
         preferences = Preferences()
 
+    # Set number of LEDs from command line default, then override with saved preference
+    preferences.num_leds = getattr(preferences, 'num_leds', args.num_leds)
+
+
     libtensorflowlite_c_path = _LIB_DIR / "libtensorflowlite_c.so"
     _LOGGER.debug("libtensorflowlite_c path: %s", libtensorflowlite_c_path)
-
     wake_models: Dict[str, Union[MicroWakeWord, OpenWakeWord]] = {}
     if preferences.active_wake_words:
         for wake_word_id in preferences.active_wake_words:
@@ -164,7 +206,6 @@ async def main() -> None:
         wake_word = available_wake_words[wake_word_id]
         _LOGGER.debug("Loading wake model: %s", wake_word_id)
         wake_models[wake_word_id] = wake_word.load(libtensorflowlite_c_path)
-
     stop_model: Optional[MicroWakeWord] = None
     for wake_word_dir in wake_word_dirs:
         stop_config_path = wake_word_dir / f"{args.stop_model}.json"
@@ -175,9 +216,7 @@ async def main() -> None:
             stop_config_path, libtensorflowlite_c_path
         )
         break
-
     assert stop_model is not None
-
     music_player = MpvMediaPlayer(
         device=args.audio_output_device, initial_volume=preferences.volume_level
     )
@@ -212,7 +251,21 @@ async def main() -> None:
         interface=args.led_interface,
         clock_pin=args.led_clock_pin,
         data_pin=args.led_data_pin,
+        num_leds=state.preferences.num_leds, # Pass number of LEDs
     )
+    
+    mqtt_controller: Optional[MqttController] = None
+    if args.mqtt_host:
+        mqtt_controller = MqttController(
+            state=state,
+            host=args.mqtt_host,
+            port=args.mqtt_port,
+            username=args.mqtt_username,
+            password=args.mqtt_password,
+        )
+        mqtt_controller.start()
+    
+    mic_mute_handler = MicMuteHandler(state, mqtt_controller)
 
     process_audio_thread = threading.Thread(
         target=process_audio, args=(state,), daemon=True
@@ -245,6 +298,8 @@ async def main() -> None:
     except KeyboardInterrupt:
         pass
     finally:
+        if mqtt_controller:
+            mqtt_controller.stop()
         state.audio_queue.put_nowait(None)
         process_audio_thread.join()
 
@@ -266,6 +321,10 @@ def process_audio(state: ServerState):
 
     try:
         while True:
+            if state.mic_muted:
+                time.sleep(0.1)
+                continue
+
             audio_chunk = state.audio_queue.get()
             if audio_chunk is None:
                 break
