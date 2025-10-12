@@ -6,12 +6,9 @@ from typing import TYPE_CHECKING, Callable, List, Optional, Union
 from aioesphomeapi.api_pb2 import (  # type: ignore[attr-defined]
     ListEntitiesMediaPlayerResponse,
     ListEntitiesRequest,
-    ListEntitiesSwitchResponse, # ADDED
     MediaPlayerCommandRequest,
     MediaPlayerStateResponse,
     SubscribeHomeAssistantStatesRequest,
-    SwitchCommandRequest, # ADDED
-    SwitchStateResponse, # ADDED
 )
 from aioesphomeapi.model import MediaPlayerCommand, MediaPlayerState
 from google.protobuf import message
@@ -35,44 +32,6 @@ class ESPHomeEntity:
 
 
 # -----------------------------------------------------------------------------
-# --- ADDED MIC MUTE SWITCH ENTITY ---
-# -----------------------------------------------------------------------------
-
-class MicMuteSwitchEntity(ESPHomeEntity):
-    def __init__(
-        self,
-        server: APIServer,
-        state: "ServerState",
-        key: int,
-        name: str,
-        object_id: str,
-    ) -> None:
-        super().__init__(server, state)
-        self.key = key
-        self.name = name
-        self.object_id = object_id
-        self.is_on = False  # Mute is OFF by default
-
-    def handle_message(self, msg: message.Message) -> Iterable[message.Message]:
-        if isinstance(msg, ListEntitiesRequest):
-            yield ListEntitiesSwitchResponse(
-                object_id=self.object_id,
-                key=self.key,
-                name=self.name,
-                icon="mdi:microphone-off", # Show a mic-off icon in HA
-            )
-        elif isinstance(msg, SwitchCommandRequest) and (msg.key == self.key):
-            self.is_on = msg.state
-            self.state.event_bus.publish("set_mic_mute", {"state": self.is_on})
-            yield self._get_state_message()
-        elif isinstance(msg, SubscribeHomeAssistantStatesRequest):
-            yield self._get_state_message()
-
-    def _get_state_message(self) -> SwitchStateResponse:
-        return SwitchStateResponse(key=self.key, state=self.is_on)
-
-
-# -----------------------------------------------------------------------------
 
 
 class MediaPlayerEntity(ESPHomeEntity):
@@ -92,7 +51,7 @@ class MediaPlayerEntity(ESPHomeEntity):
         self.name = name
         self.object_id = object_id
         self.state_enum = MediaPlayerState.IDLE
-        self.volume = state.preferences.volume_level
+        self.volume = state.preferences.volume_level  # Initialize with saved volume
         self.muted = False
         self.music_player = music_player
         self.announce_player = announce_player
@@ -105,6 +64,7 @@ class MediaPlayerEntity(ESPHomeEntity):
     ) -> Iterable[message.Message]:
         if announcement:
             if self.music_player.is_playing:
+                # Announce, resume music
                 self.music_player.pause()
                 self.announce_player.play(
                     url,
@@ -113,6 +73,7 @@ class MediaPlayerEntity(ESPHomeEntity):
                     ),
                 )
             else:
+                # Announce, idle
                 self.announce_player.play(
                     url,
                     done_callback=lambda: call_all(
@@ -123,6 +84,7 @@ class MediaPlayerEntity(ESPHomeEntity):
                     ),
                 )
         else:
+            # Music
             self.music_player.play(
                 url,
                 done_callback=lambda: call_all(
@@ -148,11 +110,13 @@ class MediaPlayerEntity(ESPHomeEntity):
                     self.music_player.resume()
                     yield self._update_state(MediaPlayerState.PLAYING)
             if msg.has_volume:
-                self.volume = msg.volume
+                # This block is called when the volume slider changes in HA
+                self.volume = msg.volume  # HA sends volume as 0.0-1.0
                 volume_int = int(self.volume * 100)
                 self.music_player.set_volume(volume_int)
                 self.announce_player.set_volume(volume_int)
 
+                # Save the new volume level to preferences
                 self.state.preferences.volume_level = self.volume
                 self.state.save_preferences()
                 
