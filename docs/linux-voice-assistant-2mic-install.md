@@ -77,7 +77,7 @@ mkdir -p ~/.config/systemd/user
 ```
 
 ```bash
-cp ~/linux-voice-assistant/service/user-pw-linux-voice-assistant.service.service    ~/.config/systemd/user/linux-voice-assistant.service
+cp ~/linux-voice-assistant/service/user-pw-linux-voice-assistant.service    ~/.config/systemd/user/linux-voice-assistant.service
 ```
 
 **Enable & start:**
@@ -108,7 +108,7 @@ mkdir -p ~/.config/systemd/user
 ```
 
 ```bash
-cp ~/linux-voice-assistant/service/user-pa-linux-voice-assistant.service.service    ~/.config/systemd/user/linux-voice-assistant.service
+cp ~/linux-voice-assistant/service/user-pa-linux-voice-assistant.service   ~/.config/systemd/user/linux-voice-assistant.service
 ```
 
 **Enable & start:**
@@ -144,7 +144,7 @@ mkdir -p ~/.config/systemd/user
 ```
 
 ```bash
-sudo cp ~/linux-voice-assistant/service/user-linux-voice-assistant.service     ~/.config/systemd/user/linux-voice-assistant.service
+cp ~/linux-voice-assistant/service/user-linux-voice-assistant.service     ~/.config/systemd/user/linux-voice-assistant.service
 ```
 
 **Enable & start:**
