@@ -64,6 +64,7 @@ class Preferences:
 
 @dataclass
 class ServerState:
+    # --- Fields WITHOUT default values ---
     name: str
     mac_address: str
     audio_queue: "Queue[Optional[bytes]]"
@@ -80,15 +81,16 @@ class ServerState:
     libtensorflowlite_c_path: Path
     event_bus: EventBus
     loop: asyncio.AbstractEventLoop
-
-    # openWakeWord
+    # MOVED openWakeWord fields here
     oww_melspectrogram_path: Path
     oww_embedding_path: Path
 
+    # --- Fields WITH default values ---
     media_player_entity: "Optional[MediaPlayerEntity]" = None
     satellite: "Optional[VoiceSatelliteProtocol]" = None
     wake_words_changed: bool = False
     refractory_seconds: float = 2.0
+    mic_muted: bool = False
 
     def save_preferences(self) -> None:
         """Save preferences as JSON."""
