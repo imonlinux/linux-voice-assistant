@@ -13,6 +13,7 @@ See [the tutorial](docs/linux-voice-assistant-2mic-install.md) to build a satell
 - You can choose between ALSA, PulseAudio, or PipeWire by enabling the matching systemd User Mode service file.
 - You can choose between all MWW and OWW wake word within HA after the VLA is registered. Choosen wake words are saved to preferences.json in the linux-voice-assistant folder.
 - The volume control is now persistant between connections and reboots. The volume setting gets stored in prefernces.json and loaded when LVA starts.
+- Microphone mute button entity added. Changes the LED event to dim red while muted.
 
 ## Installation
 
@@ -50,8 +51,8 @@ See `--help` for more options.
 ## ToDo:
 
 * Implement echo-cancellation filter in PipeWire. (Improves wake word detection when audio is being played)
-* Merge jianyu-li's PR from source project to add mute switch function in this branch
-* ~~Configure LVA to advertise on Zeroconf/mDNS via Avahi for HA to auto detect (in progress)~~
+* ~~Merge jianyu-li's PR from source project to add mute switch function in this branch~~
+* ~~Configure LVA to advertise on Zeroconf/mDNS via Avahi for HA to auto detect (in progress)~~ (Not needed as Release v1.0.0 implemented in code)
 * Implement a single LVA systemd unit file that can be addapted using profiles and drop-ins (in progress)
 * Implement OWW model validation checks and error handling so that a bad model doesn't crash OWW
 * Make the selection of the right ALSA ar PA device more scripted
