@@ -7,11 +7,13 @@ WorkingDirectory=/home/pi/linux-voice-assistant
 Environment=PYTHONUNBUFFERED=1
 
 ExecStart=/home/pi/linux-voice-assistant/script/run \
-  --name LVA-OWW  \
-  --wake-word-dir wakewords/openWakeWord \
+  --name 'Linux Voice Assistant' \
+  --wake-word-dir wakewords/openWakeWord  \
   --wake-word-dir wakewords \
-  --stop-model stop  \
-  --debug
+  --stop-model stop \
+  --audio-input-device seeed-2mic-voicecard \
+  --audio-output-device alsa/plughw:CARD=seeed2micvoicec \
+  --debug 
 
 Restart=always
 RestartSec=2
