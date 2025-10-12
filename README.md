@@ -31,6 +31,23 @@ See [the tutorial](docs/linux-voice-assistant-2mic-install.md) to build a satell
 
 - All settings are persistent, retained by the MQTT broker and re-applied whenever the application restarts.
 
+  Enable MQTT by including the following run configuration entries:
+
+  ```bash
+  script/run \
+  --name 'Linux Voice Assistant' \
+  --mqtt-host <IP_Adress> \
+  --mqtt-port 1883 \
+  --mqtt-username <user_name> \
+  --mqtt-password <password> \
+  --wake-word-dir wakewords/openWakeWord  \
+  --wake-word-dir wakewords \
+  --stop-model stop \
+  --audio-input-device seeed-2mic-voicecard \
+  --audio-output-device alsa/plughw:CARD=seeed2micvoicec \
+  --debug
+  ```
+
 ## Installation
 
 Install system dependencies (`apt-get`):
