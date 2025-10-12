@@ -37,6 +37,7 @@ class LedController(EventHandler):
         }
 
         try:
+            # Initialize hardware
             if interface == "gpio":
                 data_pin_obj = getattr(board, f"D{data_pin}")
                 clock_pin_obj = getattr(board, f"D{clock_pin}")
@@ -133,9 +134,9 @@ class LedController(EventHandler):
             config["effect"] = new_effect
             changed = True
 
-        new_color = data.get("color")
-        if new_color is not None:
-             new_color_tuple = (new_color.get("r"), new_color.get("g"), new_color.get("b"))
+        new_color_data = data.get("color")
+        if new_color_data is not None:
+             new_color_tuple = (new_color_data.get("r"), new_color_data.get("g"), new_color_data.get("b"))
              if config["color"] != new_color_tuple:
                  config["color"] = new_color_tuple
                  changed = True
@@ -143,7 +144,9 @@ class LedController(EventHandler):
         new_brightness = data.get("brightness")
         if new_brightness is not None:
             new_brightness_float = new_brightness / 255.0
-            if config["brightness"] != new_brightness_float:
+            # --- THIS IS THE FIX ---
+            # Compare floats with a tolerance, not for exact equality
+            if abs(config["brightness"] - new_brightness_float) > 0.001:
                 config["brightness"] = new_brightness_float
                 changed = True
 
@@ -151,12 +154,15 @@ class LedController(EventHandler):
             return
 
         is_retained = data.get("retained", False)
-        if apply and not is_retained:
+        
+        if is_retained:
+            if state_name == "idle":
+                self._apply_state_effect("idle")
+            return
+        
+        if apply:
              self._apply_state_effect(state_name)
-        elif is_retained:
-            if state_name == "idle": self._apply_state_effect("idle")
-        elif not apply:
-            # Config was updated for a non-active state, just publish it back
+        else:
             config["state_name"] = state_name
             self.state.event_bus.publish("publish_state_to_mqtt", config)
     
