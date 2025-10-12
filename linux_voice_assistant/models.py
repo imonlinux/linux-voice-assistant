@@ -59,7 +59,7 @@ class AvailableWakeWord:
 @dataclass
 class Preferences:
     active_wake_words: List[str] = field(default_factory=list)
-    volume_level: float = 1.0  # ADD THIS LINE (volume from 0.0 to 1.0)
+    volume_level: float = 1.0
 
 
 @dataclass
@@ -89,6 +89,7 @@ class ServerState:
     satellite: "Optional[VoiceSatelliteProtocol]" = None
     wake_words_changed: bool = False
     refractory_seconds: float = 2.0
+    mic_muted: bool = False  # ADD THIS LINE
 
     def save_preferences(self) -> None:
         """Save preferences as JSON."""
