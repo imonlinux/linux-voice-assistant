@@ -14,7 +14,7 @@ See [the tutorial](docs/linux-voice-assistant-2mic-install.md) to build a satell
 - You can choose between ALSA, PulseAudio, or PipeWire by enabling the matching systemd User Mode service file.
 - You can choose between all MWW and OWW wake word within HA after the VLA is registered. Choosen wake words are saved to preferences.json in the linux-voice-assistant folder.
 - The volume control is now persistant between connections and reboots. The volume setting gets stored in prefernces.json and loaded when LVA starts.
-- Microphone mute button entity added. Changes the LED event to dim red while muted.
+- ~~Microphone mute button entity added. Changes the LED event to dim red while muted.~~ (The mute switch does not survice a reboot or reconnect because unique_id not supported by aioesphomeapi version 41.13.0)
 
 ## Installation
 
