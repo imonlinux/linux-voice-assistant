@@ -60,6 +60,7 @@ class AvailableWakeWord:
 class Preferences:
     active_wake_words: List[str] = field(default_factory=list)
     volume_level: float = 1.0
+    num_leds: int = 3  # THIS LINE WAS MISSING
 
 
 @dataclass
@@ -81,7 +82,6 @@ class ServerState:
     libtensorflowlite_c_path: Path
     event_bus: EventBus
     loop: asyncio.AbstractEventLoop
-    # MOVED openWakeWord fields here
     oww_melspectrogram_path: Path
     oww_embedding_path: Path
 
