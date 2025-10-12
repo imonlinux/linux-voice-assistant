@@ -13,8 +13,8 @@ ssh <your_username>@<pi_IP_address>
 ## 2. If already installed Disable/Stop the entire the Linux Voice Assistant service. If not installed, proceed to step (3.):
 
 ```sh
-sudo systemctl disable --now linux-voice-assistant.service
-sudo rm /etc/systemd/system/linux-voice-assistant.service
+systemctl --user stop linux-voice-assistant.service
+systemctl --user disable --now linux-voice-assistant.service
 ```
 
 
@@ -69,10 +69,10 @@ pactl set-default-sink alsa_output.platform-soc_sound.stereo-fallback
 mpv --ao=pipewire --audio-device=default --audio-samplerate=44100 /usr/share/sounds/alsa/Front_Center.wav
 ```
 
-If volume is low, set it to 150%.
+If volume is low, set it to 100%.
 
 ```sh
-pactl set-sink-volume alsa_output.platform-soc_sound.stereo-fallback 150%
+pactl set-sink-volume alsa_output.platform-soc_sound.stereo-fallback 100%
 ```
 
 **Note that if you have a Raspbery Pi 3B or 4B, this may or may not seem to work, but it will output on the hat as intended.**
