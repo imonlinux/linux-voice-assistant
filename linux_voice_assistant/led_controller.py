@@ -15,7 +15,6 @@ _OFF = (0, 0, 0)
 _BLUE = (0, 0, 255)
 _YELLOW = (255, 255, 0)
 _GREEN = (0, 255, 0)
-_DIM_RED = (50, 0, 0) # ADDED for Mute
 
 
 class LedController(EventHandler):
@@ -34,6 +33,7 @@ class LedController(EventHandler):
         try:
             if interface == "gpio":
                 _LOGGER.debug(f"Initializing LEDs on GPIO data={data_pin}, clock={clock_pin}")
+                # Dynamically get GPIO pin objects from the board library
                 data_pin_obj = getattr(board, f"D{data_pin}")
                 clock_pin_obj = getattr(board, f"D{clock_pin}")
                 self.leds = adafruit_dotstar.DotStar(
@@ -47,6 +47,7 @@ class LedController(EventHandler):
             
             self._is_ready = True
             _LOGGER.info(f"LED Controller initialized using {interface} interface.")
+            # Signal that the system is ready
             self.run_action("blink", _GREEN, 2)
 
         except Exception:
@@ -78,10 +79,12 @@ class LedController(EventHandler):
         try:
             r, g, b = color
             while True:
+                # Fade in
                 for i in range(0, 101, 5):
                     brightness = i / 100.0
                     await self.color((int(r * brightness), int(g * brightness), int(b * brightness)))
                     await asyncio.sleep(speed)
+                # Fade out
                 for i in range(100, -1, -5):
                     brightness = i / 100.0
                     await self.color((int(r * brightness), int(g * brightness), int(b * brightness)))
@@ -89,8 +92,6 @@ class LedController(EventHandler):
         except asyncio.CancelledError:
             await self.color(_OFF)
 
-    # --- EVENT HANDLERS ---
-    
     @subscribe
     def ha_connected(self, data: dict):
         _LOGGER.debug("HA Connected, setting idle LED state.")
@@ -109,6 +110,7 @@ class LedController(EventHandler):
     @subscribe
     def voice_vad_start(self, data: dict):
         _LOGGER.debug("LED Event: voice_vad_start (user speaking)")
+        # Do nothing, allow the blue pulse to continue
         pass
 
     @subscribe
@@ -125,15 +127,3 @@ class LedController(EventHandler):
     def voice_run_end(self, data: dict):
         _LOGGER.debug("LED Event: voice_run_end")
         self.run_action("color", _OFF)
-        
-    # --- ADDED: Mute State Handlers ---
-    @subscribe
-    def mic_muted(self, data: dict):
-        _LOGGER.debug("LED Event: Mic muted")
-        self.run_action("color", _DIM_RED)
-
-    @subscribe
-    def mic_unmuted(self, data: dict):
-        _LOGGER.debug("LED Event: Mic unmuted")
-        # Return to the normal idle state (off)
-        self.voice_run_end(data)

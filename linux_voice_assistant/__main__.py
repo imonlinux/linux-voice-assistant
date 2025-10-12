@@ -12,7 +12,7 @@ from typing import Dict, List, Optional, Union
 import numpy as np
 import sounddevice as sd
 
-from .event_bus import EventBus, EventHandler, subscribe
+from .event_bus import EventBus
 from .led_controller import LedController
 from .microwakeword import MicroWakeWord, MicroWakeWordFeatures
 from .models import AvailableWakeWord, Preferences, ServerState, WakeWordType
@@ -34,31 +34,6 @@ if is_arm():
 else:
     _LIB_DIR = _REPO_DIR / "lib" / "linux_amd64"
 
-# -----------------------------------------------------------------------------
-# --- MIC MUTE HANDLER ---
-# -----------------------------------------------------------------------------
-
-class MicMuteHandler(EventHandler):
-    """Event handler for mic mute switch."""
-    @subscribe
-    def set_mic_mute(self, data: dict):
-        is_muted = data.get("state", False)
-        if self.state.mic_muted != is_muted:
-            self.state.mic_muted = is_muted
-            _LOGGER.debug("Mic muted = %s", is_muted)
-            if is_muted:
-                self.state.event_bus.publish("mic_muted")
-            else:
-                # --- THIS IS THE FIX ---
-                # Clear the audio queue of stale data before unmuting
-                _LOGGER.debug("Clearing stale audio queue...")
-                while not self.state.audio_queue.empty():
-                    try:
-                        self.state.audio_queue.get_nowait()
-                    except Queue.Empty:
-                        break
-                # -------------------------
-                self.state.event_bus.publish("mic_unmuted")
 
 # -----------------------------------------------------------------------------
 
@@ -238,7 +213,6 @@ async def main() -> None:
         clock_pin=args.led_clock_pin,
         data_pin=args.led_data_pin,
     )
-    mic_mute_handler = MicMuteHandler(state)
 
     process_audio_thread = threading.Thread(
         target=process_audio, args=(state,), daemon=True
@@ -292,10 +266,6 @@ def process_audio(state: ServerState):
 
     try:
         while True:
-            if state.mic_muted:
-                time.sleep(0.1)
-                continue
-
             audio_chunk = state.audio_queue.get()
             if audio_chunk is None:
                 break
