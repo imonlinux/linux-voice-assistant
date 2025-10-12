@@ -12,7 +12,7 @@ from typing import Dict, List, Optional, Union
 import numpy as np
 import sounddevice as sd
 
-from .event_bus import EventBus, EventHandler, subscribe # ADDED EventHandler, subscribe
+from .event_bus import EventBus, EventHandler, subscribe
 from .led_controller import LedController
 from .microwakeword import MicroWakeWord, MicroWakeWordFeatures
 from .models import AvailableWakeWord, Preferences, ServerState, WakeWordType
@@ -35,7 +35,7 @@ else:
     _LIB_DIR = _REPO_DIR / "lib" / "linux_amd64"
 
 # -----------------------------------------------------------------------------
-# --- ADDED MIC MUTE HANDLER ---
+# --- MIC MUTE HANDLER ---
 # -----------------------------------------------------------------------------
 
 class MicMuteHandler(EventHandler):
@@ -49,6 +49,15 @@ class MicMuteHandler(EventHandler):
             if is_muted:
                 self.state.event_bus.publish("mic_muted")
             else:
+                # --- THIS IS THE FIX ---
+                # Clear the audio queue of stale data before unmuting
+                _LOGGER.debug("Clearing stale audio queue...")
+                while not self.state.audio_queue.empty():
+                    try:
+                        self.state.audio_queue.get_nowait()
+                    except Queue.Empty:
+                        break
+                # -------------------------
                 self.state.event_bus.publish("mic_unmuted")
 
 # -----------------------------------------------------------------------------
@@ -56,7 +65,6 @@ class MicMuteHandler(EventHandler):
 
 async def main() -> None:
     parser = argparse.ArgumentParser()
-    # ... (all parser arguments are the same) ...
     parser.add_argument("--name", required=True)
     parser.add_argument(
         "--audio-input-device",
@@ -230,7 +238,6 @@ async def main() -> None:
         clock_pin=args.led_clock_pin,
         data_pin=args.led_data_pin,
     )
-    # --- ADDED: Instantiate Mic Mute Handler ---
     mic_mute_handler = MicMuteHandler(state)
 
     process_audio_thread = threading.Thread(
@@ -275,7 +282,6 @@ async def main() -> None:
 
 def process_audio(state: ServerState):
     """Process audio chunks from the microphone."""
-    # ... (variable initializations are the same) ...
     wake_words: List[Union[MicroWakeWord, OpenWakeWord]] = []
     micro_features: Optional[MicroWakeWordFeatures] = None
     micro_inputs: List[np.ndarray] = []
@@ -286,14 +292,11 @@ def process_audio(state: ServerState):
 
     try:
         while True:
-            # --- THIS IS THE CHANGE ---
-            # Check for mute status
             if state.mic_muted:
                 time.sleep(0.1)
                 continue
 
             audio_chunk = state.audio_queue.get()
-            # ... (rest of the function is the same) ...
             if audio_chunk is None:
                 break
             if state.satellite is None:
