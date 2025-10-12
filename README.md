@@ -16,6 +16,21 @@ See [the tutorial](docs/linux-voice-assistant-2mic-install.md) to build a satell
 - The volume control is now persistant between connections and reboots. The volume setting gets stored in prefernces.json and loaded when LVA starts.
 - ~~Microphone mute button entity added. Changes the LED event to dim red while muted.~~ (The mute switch does not survive a reboot or reconnect because unique_id not supported by aioesphomeapi version 41.13.0)
 
+### Add Full MQTT Control for LEDs and Mute
+- This branch introduces a comprehensive MQTT integration to bypass limitations in the pinned aioesphomeapi library and provide full remote control over the voice satellite's features and appearance.
+
+- It uses MQTT Discovery to automatically create and configure a device and its associated entities within Home Assistant. This allows for real-time control from the HA interface and enables powerful automations.
+
+#### Key Features:
+
+- A switch entity to mute and unmute the microphone.
+
+- A full suite of select and light entities to customize the effect, color, and brightness for each voice assistant state (Idle, Listening, Thinking, Responding, Error).
+
+- A number entity to configure the number of LEDs in the strip, allowing for use with custom hardware.
+
+- All settings are persistent, retained by the MQTT broker and re-applied whenever the application restarts.
+
 ## Installation
 
 Install system dependencies (`apt-get`):
