@@ -1,5 +1,5 @@
 [Unit]
-Description=Linux Voice Assistant (PulseAudio + MWW)
+Description=Linux Voice Assistant (PulseAudio)
 After=pulseaudio.service
 Wants=pulseaudio.service
 
@@ -9,7 +9,10 @@ WorkingDirectory=/home/pi/linux-voice-assistant
 Environment=PYTHONUNBUFFERED=1
 
 ExecStart=/home/pi/linux-voice-assistant/script/run \
-  --name 'Linux Satellite PA' \
+  --name 'Linux Voice Assistant' \
+  --wake-word-dir wakewords/openWakeWord  \
+  --wake-word-dir wakewords \
+  --stop-model stop \
   --audio-input-device default \
   --audio-output-device pulse/alsa_output.platform-soc_sound.stereo-fallback \
   --debug
