@@ -11,8 +11,10 @@ from aioesphomeapi.api_pb2 import (  # type: ignore[attr-defined]
     DeviceInfoResponse,
     ListEntitiesDoneResponse,
     ListEntitiesRequest,
+    ListEntitiesSwitchResponse, # ADDED
     MediaPlayerCommandRequest,
     SubscribeHomeAssistantStatesRequest,
+    SwitchCommandRequest, # ADDED
     VoiceAssistantAnnounceFinished,
     VoiceAssistantAnnounceRequest,
     VoiceAssistantAudio,
@@ -32,7 +34,7 @@ from aioesphomeapi.model import (
 from google.protobuf import message
 
 from .api_server import APIServer
-from .entity import MediaPlayerEntity
+from .entity import MediaPlayerEntity, MicMuteSwitchEntity # ADDED MicMuteSwitchEntity
 from .microwakeword import MicroWakeWord
 from .models import ServerState
 from .openwakeword import OpenWakeWord
@@ -59,6 +61,17 @@ class VoiceSatelliteProtocol(APIServer):
                 announce_player=state.tts_player,
             )
             self.state.entities.append(self.state.media_player_entity)
+        
+        # --- ADDED: Create Mic Mute Switch Entity ---
+        mic_mute_entity = MicMuteSwitchEntity(
+            server=self,
+            state=state,
+            key=len(state.entities),
+            name=f"{state.name} Mute Microphone",
+            object_id="linux_voice_assistant_mute",
+        )
+        self.state.entities.append(mic_mute_entity)
+        # --------------------------------------------
 
         self._is_streaming_audio = False
         self._tts_url: Optional[str] = None
@@ -87,7 +100,6 @@ class VoiceSatelliteProtocol(APIServer):
             self._is_streaming_audio = False
         elif event_type == VoiceAssistantEventType.VOICE_ASSISTANT_INTENT_PROGRESS:
             if data.get("tts_start_streaming") == "1":
-                # Start streaming early
                 self.play_tts()
         elif event_type == VoiceAssistantEventType.VOICE_ASSISTANT_INTENT_END:
             if data.get("continue_conversation") == "1":
@@ -102,8 +114,6 @@ class VoiceSatelliteProtocol(APIServer):
 
             self._tts_played = False
             self.state.event_bus.publish("voice_run_end")
-
-        # TODO: handle error
 
     def handle_timer_event(
         self,
@@ -120,26 +130,19 @@ class VoiceSatelliteProtocol(APIServer):
 
     def handle_message(self, msg: message.Message) -> Iterable[message.Message]:
         if isinstance(msg, VoiceAssistantEventResponse):
-            # Pipeline event
             data: Dict[str, str] = {}
             for arg in msg.data:
                 data[arg.name] = arg.value
-
             self.handle_voice_event(VoiceAssistantEventType(msg.event_type), data)
         elif isinstance(msg, VoiceAssistantAnnounceRequest):
             _LOGGER.debug("Announcing: %s", msg.text)
-
             assert self.state.media_player_entity is not None
-
             urls = []
             if msg.preannounce_media_id:
                 urls.append(msg.preannounce_media_id)
-
             urls.append(msg.media_id)
-
             self.state.stop_word.is_active = True
             self._continue_conversation = msg.start_conversation
-
             self.duck()
             yield from self.state.media_player_entity.play(
                 urls, announcement=True, done_callback=self._tts_finished
@@ -165,6 +168,7 @@ class VoiceSatelliteProtocol(APIServer):
                 ListEntitiesRequest,
                 SubscribeHomeAssistantStatesRequest,
                 MediaPlayerCommandRequest,
+                SwitchCommandRequest, # ADDED
             ),
         ):
             for entity in self.state.entities:
@@ -188,37 +192,26 @@ class VoiceSatelliteProtocol(APIServer):
                 max_active_wake_words=2,
             )
             _LOGGER.info("Connected to Home Assistant")
-            # --- THIS IS THE CHANGE ---
-            # Announce the connection so other components (like LEDs) can react.
             self.state.event_bus.publish("ha_connected")
         elif isinstance(msg, VoiceAssistantSetConfiguration):
-            # Change active wake words
             active_wake_words: Set[str] = set()
-
             for wake_word_id in msg.active_wake_words:
                 if wake_word_id in self.state.wake_words:
-                    # Already active
                     active_wake_words.add(wake_word_id)
                     continue
-
                 model_info = self.state.available_wake_words.get(wake_word_id)
                 if not model_info:
                     continue
-
                 _LOGGER.debug("Loading wake word: %s", model_info.config_path)
                 self.state.wake_words[wake_word_id] = model_info.load(
                     self.state.libtensorflowlite_c_path
                 )
-
                 _LOGGER.info("Wake word set: %s", wake_word_id)
                 active_wake_words.add(wake_word_id)
                 break
-
             for wake_word in self.state.wake_words.values():
                 wake_word.is_active = wake_word.id in active_wake_words
-
             _LOGGER.debug("Active wake words: %s", active_wake_words)
-
             self.state.preferences.active_wake_words = list(active_wake_words)
             self.state.save_preferences()
             self.state.wake_words_changed = True
@@ -226,19 +219,15 @@ class VoiceSatelliteProtocol(APIServer):
     def handle_audio(self, audio_chunk: bytes) -> None:
         if not self._is_streaming_audio:
             return
-
         self.send_messages([VoiceAssistantAudio(data=audio_chunk)])
 
     def wakeup(self, wake_word: Union[MicroWakeWord, OpenWakeWord]) -> None:
         self.state.event_bus.publish("voice_wakeword")
-
         if self._timer_finished:
-            # Stop timer instead
             self._timer_finished = False
             self.state.tts_player.stop()
             _LOGGER.debug("Stopping timer finished sound")
             return
-
         wake_word_phrase = wake_word.wake_word
         _LOGGER.debug("Detected wake word: %s", wake_word_phrase)
         self.send_messages(
@@ -251,7 +240,6 @@ class VoiceSatelliteProtocol(APIServer):
     def stop(self) -> None:
         self.state.stop_word.is_active = False
         self.state.tts_player.stop()
-
         if self._timer_finished:
             self._timer_finished = False
             _LOGGER.debug("Stopping timer finished sound")
@@ -262,12 +250,9 @@ class VoiceSatelliteProtocol(APIServer):
     def play_tts(self) -> None:
         if (not self._tts_url) or self._tts_played:
             return
-
         self.state.event_bus.publish("voice_tts_start", {"url": self._tts_url})
-
         self._tts_played = True
         _LOGGER.debug("Playing TTS response: %s", self._tts_url)
-
         self.state.stop_word.is_active = True
         self.state.tts_player.play(self._tts_url, done_callback=self._tts_finished)
 
@@ -283,21 +268,18 @@ class VoiceSatelliteProtocol(APIServer):
         self.state.event_bus.publish("voice_run_end")
         self.state.stop_word.is_active = False
         self.send_messages([VoiceAssistantAnnounceFinished()])
-
         if self._continue_conversation:
             self.send_messages([VoiceAssistantRequest(start=True)])
             self._is_streaming_audio = True
             _LOGGER.debug("Continuing conversation")
         else:
             self.unduck()
-
         _LOGGER.debug("TTS response finished")
 
     def _play_timer_finished(self) -> None:
         if not self._timer_finished:
             self.unduck()
             return
-
         self.state.tts_player.play(
             self.state.timer_finished_sound,
             done_callback=lambda: call_all(
