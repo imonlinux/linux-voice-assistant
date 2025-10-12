@@ -68,7 +68,7 @@ See `--help` for more options.
 
 * Implement echo-cancellation filter in PipeWire. (Improves wake word detection when audio is being played)
 * ~~Merge jianyu-li's PR from source project to add mute switch function in this branch~~
-* Implement MQTT entities to support advanced controls of the LVA.
+* ~~Implement MQTT entities to support advanced controls of the LVA.~~
 * ~~Configure LVA to advertise on Zeroconf/mDNS via Avahi for HA to auto detect (in progress)~~ (Not needed as Release v1.0.0 implemented in code)
 * Implement a single LVA systemd unit file that can be addapted using profiles and drop-ins (in progress)
 * Implement OWW model validation checks and error handling so that a bad model doesn't crash OWW
