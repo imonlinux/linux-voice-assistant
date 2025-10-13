@@ -8,6 +8,10 @@ Environment=PYTHONUNBUFFERED=1
 
 ExecStart=/home/pi/linux-voice-assistant/script/run \
   --name 'Linux Voice Assistant' \
+  --mqtt-host <IP_Adress> \
+  --mqtt-port 1883 \
+  --mqtt-username <user_name> \
+  --mqtt-password <password> \
   --wake-word-dir wakewords/openWakeWord  \
   --wake-word-dir wakewords \
   --stop-model stop \

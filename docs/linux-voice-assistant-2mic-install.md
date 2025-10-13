@@ -159,6 +159,211 @@ systemctl --user status linux-voice-assistant --no-pager -l
 ```
 </details>
 
+<details>
+<summary><strong>Optional (MQTT Controls)</strong></summary>
+
+
+## 🔌 MQTT Controls Overview
+
+The Linux Voice Assistant (LVA) creates several MQTT entities under the Home Assistant MQTT Discovery protocol. Each entity is prefixed by your LVA's unique device ID defined with the --name field in the LVA User-Mode Serviced Unit (e.g., `linux_voice_assistant`).
+
+---
+
+### 🎤 Microphone Mute (`switch` entity)
+
+Controls the microphone mute state.
+
+* **MQTT Discovery Topic:** `homeassistant/switch/<device_id>_mute/config`
+* **Name:** `[LVA Name] Mute Microphone`
+* **Icon:** `mdi:microphone-off`
+* **Functionality:** Toggles the microphone mute. When muted, the LEDs will display a dim red `solid` effect.
+
+---
+
+## 💡 LED Control for Linux Voice Assistant
+These are MQTT entities created by the Linux Voice Assistant for controlling its integrated LEDs (e.g., DotStar, NeoPixel). These entities integrate seamlessly with Home Assistant via MQTT Discovery, allowing you to manage LED effects, colors, brightness, and the number of connected LEDs directly from your Home Assistant interface.
+
+---
+
+### 🔢 Number of LEDs (`number` entity)
+
+This entity allows you to specify the physical number of addressable LEDs connected to your device.
+
+
+* **MQTT Discovery Topic:** `homeassistant/number/<device_id>_num_leds/config`
+* **Name:** `[LVA Name] Number of LEDs`
+* **Functionality:** Sets the total number of LEDs.
+* **Important:** This setting requires a **restart of the LVA service file** to take effect, as the LED hardware driver needs to be re-initialized. The value is persisted in `preferences.json`.
+
+---
+
+### ✨ State-Based LED Controls (`select` and `light` entities)
+
+For each distinct LVA state (Idle, Listening, Thinking, Responding, Error), a `select` entity for choosing an effect and a `light` entity for controlling color and brightness are created.
+
+* **States:**
+    * `idle` (e.g., `[LVA Name] Idle Effect`, `[LVA Name] Idle Color`)
+    * `listening` (e.g., `[LVA Name] Listening Effect`, `[LVA Name] Listening Color`)
+    * `thinking` (e.g., `[LVA Name] Thinking Effect`, `[LVA Name] Thinking Color`)
+    * `responding` (e.g., `[LVA Name] Responding Effect`, `[LVA Name] Responding Color`)
+    * `error` (e.g., `[LVA Name] Error Effect`, `[LVA Name] Error Color`)
+
+#### `select` Entities (Effect Selector)
+
+* **MQTT Discovery Topic:** `homeassistant/select/<device_id>_<state_name>_effect/config`
+* **Name:** `[LVA Name] [State Name] Effect`
+* **Icon:** `mdi:palette-swatch-variant`
+* **Functionality:** Allows selection of an animation/effect for the specific LVA state.
+
+#### `light` Entities (Color & Brightness Control)
+
+* **MQTT Discovery Topic:** `homeassistant/light/<device_id>_<state_name>_color/config`
+* **Name:** `[LVA Name] [State Name] Color`
+* **Functionality:** Controls the color and brightness for the specific LVA state when the selected effect uses color. Supports RGB color mode and brightness.
+
+---
+
+## 🎨 Available LED Effects
+
+The following effects can be selected via the `[State Name] Effect` (select) entities:
+
+| Effect Name | Description |
+| :--- | :--- |
+| **Off** | All LEDs are turned off. |
+| **Solid** | All LEDs display a single, constant color. |
+| **Slow Pulse** | LEDs slowly fade in and out. |
+| **Medium Pulse** | LEDs fade in and out at a moderate speed. |
+| **Fast Pulse** | LEDs rapidly fade in and out. |
+| **Slow Blink** | LEDs turn on and off slowly. |
+| **Medium Blink** | LEDs turn on and off at a moderate speed. |
+| **Fast Blink** | LEDs rapidly turn on and off. |
+| **Spin** | A single LED "spins" around the strip. |
+
+**Edit LVA user-mode service:**
+
+```bash
+systemctl --user edit --force --full linux-voice-assistant
+```
+
+**Add MQTT configuration entries to LVA user-mode service:**
+
+```bash
+  --mqtt-host <IP_Adress> \
+  --mqtt-port 1883 \
+  --mqtt-username <user_name> \
+  --mqtt-password <password> \
+```
+
+**Example (Alsa LVA User Mode Service File)**
+***Note: Change the MQTT values to match your system!***
+
+```bash
+[Unit]
+Description=Linux Voice Assistant
+
+[Service]
+Type=simple
+WorkingDirectory=/home/pi/linux-voice-assistant
+Environment=PYTHONUNBUFFERED=1
+
+ExecStart=/home/pi/linux-voice-assistant/script/run \
+  --name 'Linux Voice Assistant' \
+  --mqtt-host 192.168.1.2 \
+  --mqtt-port 1883 \
+  --mqtt-username mqtt \
+  --mqtt-password Ch@ngeMe_1st \
+  --wake-word-dir wakewords/openWakeWord  \
+  --wake-word-dir wakewords \
+  --stop-model stop \
+  --audio-input-device seeed-2mic-voicecard \
+  --audio-output-device alsa/plughw:CARD=seeed2micvoicec \
+  --debug 
+
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target
+```
+
+
+**Enable & start:**
+```bash
+systemctl --user daemon-reload
+systemctl --user restart linux-voice-assistant.service
+```
+
+**Verify:**
+```bash
+systemctl --user status linux-voice-assistant --no-pager -l
+```
+</details>
+
+<details>
+<summary><strong>Optional (Grove Port LEDs)</strong></summary>
+
+**Edit LVA user-mode service:**
+
+```bash
+systemctl --user edit --force --full linux-voice-assistant
+```
+
+**Add MQTT configuration entries to LVA user-mode service:**
+
+```bash
+  --led-interface gpio \
+  --led-data-pin 12 \
+  --led-clock-pin 13 \
+```
+
+**Example (Alsa LVA User Mode Service File with MQTT Enabled)**
+***Note: Change the GPIO values to match your system!***
+
+```bash
+[Unit]
+Description=Linux Voice Assistant
+
+[Service]
+Type=simple
+WorkingDirectory=/home/pi/linux-voice-assistant
+Environment=PYTHONUNBUFFERED=1
+
+ExecStart=/home/pi/linux-voice-assistant/script/run \
+  --name 'Linux Voice Assistant' \
+  --mqtt-host 192.168.1.2 \
+  --mqtt-port 1883 \
+  --mqtt-username mqtt \
+  --mqtt-password Ch@ngeMe_1st \
+  --led-interface gpio \
+  --led-data-pin 12 \
+  --led-clock-pin 13 \
+  --wake-word-dir wakewords/openWakeWord  \
+  --wake-word-dir wakewords \
+  --stop-model stop \
+  --audio-input-device seeed-2mic-voicecard \
+  --audio-output-device alsa/plughw:CARD=seeed2micvoicec \
+  --debug 
+
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target
+```
+
+
+**Enable & start:**
+```bash
+systemctl --user daemon-reload
+systemctl --user restart linux-voice-assistant.service
+```
+
+**Verify:**
+```bash
+systemctl --user status linux-voice-assistant --no-pager -l
+```
+</details>
+
 ## 6. Connect to Home Assistant
 
 ### If HA does not discover the new LVA:
