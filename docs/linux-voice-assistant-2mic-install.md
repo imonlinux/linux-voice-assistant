@@ -302,13 +302,22 @@ systemctl --user status linux-voice-assistant --no-pager -l
 <details>
 <summary><strong>Optional (Grove Port LEDs)</strong></summary>
 
+This optional configuration support the use of the ReSpeaker 2Mic Grove Port with APA102 LEDs.
+
+| Grove Pigtail | Function (on ReSpeaker Hat) | Solder to LED Strip |
+| :--- | :--- | :--- |
+| ⚫ **Black Wire** | Ground (GND) | **GND** (Ground) |
+| 🔴 **Red Wire** | Power (VCC) | **VCC / 5V** (Power) |
+| 🟡 **Yellow Wire** | GPIO12 (Signal 1) | **DI** (Data Input) |
+| ⚪ **White Wire** | GPIO13 (Signal 2) | **CI** (Clock Input) |
+
 **Edit LVA user-mode service:**
 
 ```bash
 systemctl --user edit --force --full linux-voice-assistant
 ```
 
-**Add MQTT configuration entries to LVA user-mode service:**
+**Add Grove (GPIO) configuration entries to LVA user-mode service:**
 
 ```bash
   --led-interface gpio \
