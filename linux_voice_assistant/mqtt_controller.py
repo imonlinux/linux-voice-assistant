@@ -21,19 +21,14 @@ class MqttController(EventHandler):
 
         self._device_name = self.state.name
         self._device_id = self.state.name.lower().replace(" ", "_")
-
         self._topic_prefix = f"lva/{self._device_id}"
+
+        self.CONFIGURABLE_STATES: List[str] = ["idle", "listening", "thinking", "responding", "error"]
         self.topics = {
-            "mute": {
-                "command": f"{self._topic_prefix}/mute/set",
-                "state": f"{self._topic_prefix}/mute/state",
-            },
-            "num_leds": {
-                "command": f"{self._topic_prefix}/num_leds/set",
-                "state": f"{self._topic_prefix}/num_leds/state",
-            }
+            "mute": { "command": f"{self._topic_prefix}/mute/set", "state": f"{self._topic_prefix}/mute/state" },
+            "num_leds": { "command": f"{self._topic_prefix}/num_leds/set", "state": f"{self._topic_prefix}/num_leds/state" }
         }
-        for state_name in ["idle", "listening", "thinking", "responding", "error"]:
+        for state_name in self.CONFIGURABLE_STATES:
             self.topics[state_name] = {
                 "effect_command": f"{self._topic_prefix}/{state_name}_effect/set",
                 "effect_state": f"{self._topic_prefix}/{state_name}_effect/state",
@@ -49,7 +44,6 @@ class MqttController(EventHandler):
         try:
             if self._username:
                 self._client.username_pw_set(self._username, self._password)
-            
             _LOGGER.debug("Connecting to MQTT broker at %s:%s", self._host, self._port)
             self._client.connect(self._host, self._port, 60)
             self._client.loop_start()
@@ -67,8 +61,7 @@ class MqttController(EventHandler):
             _LOGGER.info("Connected to MQTT broker")
             for entity_type in self.topics.values():
                 for topic_type, topic in entity_type.items():
-                    if "command" in topic_type:
-                        client.subscribe(topic)
+                    client.subscribe(topic)
             self._publish_discovery_configs()
         else:
             _LOGGER.error("Failed to connect to MQTT, return code %d", rc)
@@ -80,35 +73,53 @@ class MqttController(EventHandler):
         if msg.topic == self.topics["mute"]["command"]:
             self.state.event_bus.publish("set_mic_mute", {"state": payload_str.upper() == "ON"})
         
-        # --- THIS IS THE FIX ---
-        # The logic to save the preference was missing. It is now re-added.
         elif msg.topic == self.topics["num_leds"]["command"]:
             try:
                 num_leds = int(payload_str)
-                # First, publish the internal event so the LedController can log the message
                 self.state.event_bus.publish("set_num_leds", {"num_leds": num_leds})
-                # Then, save the setting to the preferences file
                 if self.state.preferences.num_leds != num_leds:
                     self.state.preferences.num_leds = num_leds
                     self.state.save_preferences()
-                # Finally, publish the state back to MQTT to confirm the change in HA
                 self.publish_num_leds_state(num_leds)
-            except ValueError:
-                _LOGGER.warning("Received invalid value for num_leds: %s", payload_str)
+            except ValueError: pass
         
-        for state_name in ["idle", "listening", "thinking", "responding", "error"]:
+        for state_name in self.CONFIGURABLE_STATES:
             state_topics = self.topics[state_name]
             if msg.topic == state_topics["effect_command"]:
                 effect_id = payload_str.lower().replace(" ", "_")
                 self.state.event_bus.publish(f"set_{state_name}_effect", {"effect": effect_id})
+            
             elif msg.topic == state_topics["light_command"]:
+                # --- THIS IS THE FIX ---
+                # This logic now correctly separates on/off from color/brightness
+                # and no longer overrides the selected effect.
                 try:
                     data = json.loads(payload_str)
-                    if data.get("state", "ON").upper() == "OFF":
-                        self.state.event_bus.publish(f"set_{state_name}_effect", {"effect": "off"})
-                    else:
-                        self.state.event_bus.publish(f"set_{state_name}_effect", {"effect": "solid"})
-                        self.state.event_bus.publish(f"set_{state_name}_color", data)
+                    
+                    if "state" in data:
+                        # Handle on/off commands
+                        if data["state"].upper() == "OFF":
+                            self.state.event_bus.publish(f"set_{state_name}_effect", {"effect": "off"})
+                        else: # ON command
+                            # When turning ON, we don't change the effect, just the color/brightness.
+                            # If the current effect is "Off", we should switch to something sensible like "Solid".
+                            self.state.event_bus.publish(f"turn_on_{state_name}")
+                    
+                    # Handle color or brightness changes
+                    if "color" in data or "brightness" in data:
+                         self.state.event_bus.publish(f"set_{state_name}_color", data)
+
+                except json.JSONDecodeError: pass
+            
+            # Handle retained state messages on startup
+            elif msg.topic == state_topics["effect_state"]:
+                effect_id = payload_str.lower().replace(" ", "_")
+                self.state.event_bus.publish(f"set_{state_name}_effect", {"effect": effect_id, "retained": True})
+            elif msg.topic == state_topics["light_state"]:
+                try:
+                    data = json.loads(payload_str)
+                    data["retained"] = True
+                    self.state.event_bus.publish(f"set_{state_name}_color", data)
                 except json.JSONDecodeError: pass
 
 
@@ -123,7 +134,7 @@ class MqttController(EventHandler):
         num_leds_cfg = { "name": "Number of LEDs", "unique_id": f"{self._device_id}_num_leds", "command_topic": self.topics["num_leds"]["command"], "state_topic": self.topics["num_leds"]["state"], "availability_topic": availability_topic, "min": 1, "max": 256, "step": 1, "icon": "mdi:counter", "device": device_info, "mode": "box", "entity_category": "config" }
         self._client.publish(f"homeassistant/number/{self._device_id}_num_leds/config", json.dumps(num_leds_cfg), retain=True)
 
-        for state_name in ["idle", "listening", "thinking", "responding", "error"]:
+        for state_name in self.CONFIGURABLE_STATES:
             capital_name = state_name.title()
             
             select_cfg = { "name": f"{capital_name} Effect", "unique_id": f"{self._device_id}_{state_name}_effect", "command_topic": self.topics[state_name]["effect_command"], "state_topic": self.topics[state_name]["effect_state"], "availability_topic": availability_topic, "options": options, "icon": "mdi:palette-swatch-variant", "device": device_info, "entity_category": "config" }
