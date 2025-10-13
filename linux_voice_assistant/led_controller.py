@@ -60,14 +60,15 @@ class LedController(EventHandler):
         coro = getattr(self, action_method_name)(*args)
         self.current_task = asyncio.run_coroutine_threadsafe(coro, self.loop)
 
-    def _apply_state_effect(self, state_name: str):
+    def _apply_state_effect(self, state_name: str, publish_state: bool = True):
         config = self.configs.get(state_name, self.configs["idle"])
         _LOGGER.debug(f"Applying effect for state '{state_name}': {config['effect']}")
         self.leds.brightness = config["brightness"]
         self.run_action(config["effect"], config["color"])
         
-        config["state_name"] = state_name
-        self.state.event_bus.publish("publish_state_to_mqtt", config)
+        if publish_state:
+            config["state_name"] = state_name
+            self.state.event_bus.publish("publish_state_to_mqtt", config)
 
     # --- Animations ---
     async def startup_sequence(self): await self.blink(_GREEN, 1)
@@ -128,6 +129,7 @@ class LedController(EventHandler):
     def _update_config(self, state_name: str, data: dict, apply: bool):
         config = self.configs[state_name]
         changed = False
+        is_retained = data.get("retained", False)
 
         new_effect = data.get("effect")
         if new_effect is not None and config["effect"] != new_effect:
@@ -144,27 +146,30 @@ class LedController(EventHandler):
         new_brightness = data.get("brightness")
         if new_brightness is not None:
             new_brightness_float = new_brightness / 255.0
-            # --- THIS IS THE FIX ---
-            # Compare floats with a tolerance, not for exact equality
             if abs(config["brightness"] - new_brightness_float) > 0.001:
                 config["brightness"] = new_brightness_float
                 changed = True
 
+        # --- THIS IS THE FIX ---
         if not changed:
+            # If it's a retained message for the idle state on startup, we still need to apply it once.
+            # But since nothing changed, we can assume it's already correct.
+            if is_retained and state_name == "idle":
+                self._apply_state_effect("idle", publish_state=False) # Apply visuals, but DO NOT publish back
             return
 
-        is_retained = data.get("retained", False)
-        
+        # If we get here, the configuration has changed.
         if is_retained:
             if state_name == "idle":
-                self._apply_state_effect("idle")
-            return
-        
-        if apply:
-             self._apply_state_effect(state_name)
+                 self._apply_state_effect("idle", publish_state=False) # Apply visuals, but DO NOT publish back
+            # For other retained messages, we just update config silently.
+        elif apply:
+             self._apply_state_effect(state_name) # Apply visuals AND publish back
         else:
+            # Config was updated for a non-active state, just publish it back to confirm.
             config["state_name"] = state_name
             self.state.event_bus.publish("publish_state_to_mqtt", config)
+
     
     @subscribe
     def set_idle_effect(self, data: dict): self._update_config("idle", data, True)
