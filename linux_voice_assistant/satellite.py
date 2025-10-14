@@ -65,7 +65,7 @@ class VoiceSatelliteProtocol(APIServer):
         self._tts_played = False
         self._continue_conversation = False
         self._timer_finished = False
-        self._is_speaking = False  # ADDED: Flag to track TTS state
+        self._is_speaking = False
 
     def handle_voice_event(
         self, event_type: VoiceAssistantEventType, data: Dict[str, str]
@@ -98,9 +98,6 @@ class VoiceSatelliteProtocol(APIServer):
             self._tts_url = data.get("url")
             self.play_tts()
         elif event_type == VoiceAssistantEventType.VOICE_ASSISTANT_RUN_END:
-            # --- THIS IS THE FIX ---
-            # Ignore this event if we are currently playing TTS audio.
-            # The real end event will be triggered by the _tts_finished callback.
             if self._is_speaking:
                 return
                 
@@ -109,6 +106,7 @@ class VoiceSatelliteProtocol(APIServer):
                 self._tts_finished()
 
             self._tts_played = False
+            self.state.stop_word.is_active = False # --- DEACTIVATE STOP WORD HERE ---
             self.state.event_bus.publish("voice_run_end")
         
         elif event_type == VoiceAssistantEventType.VOICE_ASSISTANT_ERROR:
@@ -251,7 +249,7 @@ class VoiceSatelliteProtocol(APIServer):
         if (not self._tts_url) or self._tts_played:
             return
             
-        self._is_speaking = True  # ADDED: Set flag before playing
+        self._is_speaking = True
         self._tts_played = True
         _LOGGER.debug("Playing TTS response: %s", self._tts_url)
         self.state.stop_word.is_active = True
@@ -266,9 +264,9 @@ class VoiceSatelliteProtocol(APIServer):
         self.state.music_player.unduck()
 
     def _tts_finished(self) -> None:
-        self._is_speaking = False  # ADDED: Clear flag when done
+        self._is_speaking = False
+        # self.state.stop_word.is_active = False # --- REMOVED FROM HERE ---
         self.state.event_bus.publish("voice_run_end")
-        self.state.stop_word.is_active = False
         self.send_messages([VoiceAssistantAnnounceFinished()])
         if self._continue_conversation:
             self.send_messages([VoiceAssistantRequest(start=True)])
