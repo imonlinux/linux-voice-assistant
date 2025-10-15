@@ -1,6 +1,6 @@
 """
 Media player using mpv in a subprocess.
-
+Includes logic to detect the audio server being used (Pirewire, PulseAudio, Alsa).
 This refactored version simplifies the audio backend selection logic,
 improves readability with docstrings, and standardizes method signatures.
 """
