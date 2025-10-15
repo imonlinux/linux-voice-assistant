@@ -66,6 +66,7 @@ class VoiceSatelliteProtocol(APIServer):
         self._continue_conversation = False
         self._timer_finished = False
         self._is_speaking = False
+        self._run_finished = False
 
     def handle_voice_event(
         self, event_type: VoiceAssistantEventType, data: Dict[str, str]
@@ -76,6 +77,7 @@ class VoiceSatelliteProtocol(APIServer):
             self._tts_url = data.get("url")
             self._tts_played = False
             self._continue_conversation = False
+            self._run_finished = False
         elif event_type == VoiceAssistantEventType.VOICE_ASSISTANT_STT_START:
             self.state.event_bus.publish("voice_stt_start", data)
         elif event_type == VoiceAssistantEventType.VOICE_ASSISTANT_STT_VAD_START:
@@ -92,27 +94,18 @@ class VoiceSatelliteProtocol(APIServer):
         elif event_type == VoiceAssistantEventType.VOICE_ASSISTANT_INTENT_END:
             if data.get("continue_conversation") == "1":
                 self._continue_conversation = True
-        elif event_type == VoiceAssistantEventType.VOICE_ASSISTANT_TTS_START:
-             self.state.event_bus.publish("voice_tts_start", data)
+        # --- MODIFIED: Removed TTS_START handler from here ---
         elif event_type == VoiceAssistantEventType.VOICE_ASSISTANT_TTS_END:
             self._tts_url = data.get("url")
             self.play_tts()
         elif event_type == VoiceAssistantEventType.VOICE_ASSISTANT_RUN_END:
-            if self._is_speaking:
-                return
-                
-            self._is_streaming_audio = False
-            if not self._tts_played:
-                self._tts_finished()
+            self._run_finished = True
+            if not self._is_speaking:
+                self._determine_final_state()
 
-            self._tts_played = False
-            self.state.stop_word.is_active = False # --- DEACTIVATE STOP WORD HERE ---
-            self.state.event_bus.publish("voice_run_end")
-        
         elif event_type == VoiceAssistantEventType.VOICE_ASSISTANT_ERROR:
             self.state.event_bus.publish("voice_error", data)
-            self.state.event_bus.publish("voice_run_end")
-
+            self._determine_final_state()
 
     def handle_timer_event(
         self,
@@ -245,10 +238,15 @@ class VoiceSatelliteProtocol(APIServer):
             _LOGGER.debug("TTS response stopped manually")
             self._tts_finished()
 
+    # --- MODIFIED: Added event publish to sync with audio start ---
     def play_tts(self) -> None:
         if (not self._tts_url) or self._tts_played:
             return
-            
+
+        # Only publish the start event the first time we begin speaking
+        if not self._is_speaking:
+            self.state.event_bus.publish("voice_tts_start", {})
+
         self._is_speaking = True
         self._tts_played = True
         _LOGGER.debug("Playing TTS response: %s", self._tts_url)
@@ -263,18 +261,30 @@ class VoiceSatelliteProtocol(APIServer):
         _LOGGER.debug("Unducking music")
         self.state.music_player.unduck()
 
-    def _tts_finished(self) -> None:
-        self._is_speaking = False
-        # self.state.stop_word.is_active = False # --- REMOVED FROM HERE ---
-        self.state.event_bus.publish("voice_run_end")
-        self.send_messages([VoiceAssistantAnnounceFinished()])
+    def _determine_final_state(self) -> None:
+        """Called when both TTS and the pipeline run are finished."""
+        self._is_streaming_audio = False
+        self.state.stop_word.is_active = False
+
         if self._continue_conversation:
             self.send_messages([VoiceAssistantRequest(start=True)])
             self._is_streaming_audio = True
             _LOGGER.debug("Continuing conversation")
+            self.state.event_bus.publish("voice_listen")
         else:
             self.unduck()
-        _LOGGER.debug("TTS response finished")
+            self.state.event_bus.publish("voice_run_end")
+            self.state.event_bus.publish("voice_idle")
+        
+        _LOGGER.debug("Final state determined")
+
+    def _tts_finished(self) -> None:
+        self._is_speaking = False
+        self.send_messages([VoiceAssistantAnnounceFinished()])
+        _LOGGER.debug("TTS audio playback finished")
+
+        if self._run_finished:
+            self._determine_final_state()
 
     def _play_timer_finished(self) -> None:
         if not self._timer_finished:
