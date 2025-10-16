@@ -32,6 +32,9 @@ dependencies = [
     "python-mpv>=1,<2",
     "zeroconf",
     "paho-mqtt",
+    "adafruit-circuitpython-dotstar",
+    "adafruit-circuitpython-neopixel",
+    "adafruit-circuitpython-neopixel-spi",
 ]
 
 [project.optional-dependencies]

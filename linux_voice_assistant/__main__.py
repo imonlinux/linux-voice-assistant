@@ -119,6 +119,12 @@ async def main() -> None:
         "--port", type=int, default=6053, help="Port for ESPHome server (default: 6053)"
     )
     parser.add_argument(
+        "--led-type",
+        choices=["dotstar", "neopixel"],
+        default="dotstar",
+        help="Type of LED strip (default: dotstar for APA102)",
+    )
+    parser.add_argument(
         "--led-interface",
         choices=["spi", "gpio"],
         default="spi",
@@ -136,7 +142,6 @@ async def main() -> None:
         default=12,
         help="GPIO pin for LED data (for Grove)",
     )
-    # --- ADDED NUM_LEDS ARGUMENT ---
     parser.add_argument(
         "--num-leds",
         type=int,
@@ -151,16 +156,24 @@ async def main() -> None:
         "--debug", action="store_true", help="Print DEBUG messages to console"
     )
     args = parser.parse_args()
-
+    
     logging.basicConfig(level=logging.DEBUG if args.debug else logging.INFO)
     _LOGGER.debug(args)
-    
     loop = asyncio.get_running_loop()
     event_bus = EventBus()
 
-    wake_word_dirs = [Path(ww_dir) for ww_dir in args.wake_word_dir]
+    preferences_path = Path(args.preferences_file)
+    if preferences_path.exists():
+        with open(preferences_path, "r", encoding="utf-8") as preferences_file:
+            preferences_dict = json.load(preferences_file)
+            preferences = Preferences(**preferences_dict)
+    else:
+        preferences = Preferences()
+    
+    preferences.num_leds = getattr(preferences, 'num_leds', args.num_leds)
+    
     available_wake_words: Dict[str, AvailableWakeWord] = {}
-    for wake_word_dir in wake_word_dirs:
+    for wake_word_dir in [Path(d) for d in args.wake_word_dir]:
         for model_config_path in wake_word_dir.glob("*.json"):
             model_id = model_config_path.stem
             if model_id == args.stop_model:
@@ -175,55 +188,34 @@ async def main() -> None:
                     trained_languages=model_config.get("trained_languages", []),
                     config_path=model_config_path,
                 )
+
     _LOGGER.debug("Available wake words: %s", list(sorted(available_wake_words.keys())))
     
-    preferences_path = Path(args.preferences_file)
-    if preferences_path.exists():
-        _LOGGER.debug("Loading preferences: %s", preferences_path)
-        with open(preferences_path, "r", encoding="utf-8") as preferences_file:
-            preferences_dict = json.load(preferences_file)
-            preferences = Preferences(**preferences_dict)
-    else:
-        preferences = Preferences()
-
-    # Set number of LEDs from command line default, then override with saved preference
-    preferences.num_leds = getattr(preferences, 'num_leds', args.num_leds)
-
-
     libtensorflowlite_c_path = _LIB_DIR / "libtensorflowlite_c.so"
-    _LOGGER.debug("libtensorflowlite_c path: %s", libtensorflowlite_c_path)
+    
     wake_models: Dict[str, Union[MicroWakeWord, OpenWakeWord]] = {}
     if preferences.active_wake_words:
         for wake_word_id in preferences.active_wake_words:
             wake_word = available_wake_words.get(wake_word_id)
-            if wake_word is None:
-                _LOGGER.warning("Unrecognized wake word id: %s", wake_word_id)
-                continue
-            _LOGGER.debug("Loading wake model: %s", wake_word_id)
+            if wake_word is None: continue
             wake_models[wake_word_id] = wake_word.load(libtensorflowlite_c_path)
     if not wake_models:
         wake_word_id = args.wake_model
-        wake_word = available_wake_words[wake_word_id]
-        _LOGGER.debug("Loading wake model: %s", wake_word_id)
-        wake_models[wake_word_id] = wake_word.load(libtensorflowlite_c_path)
+        wake_word = available_wake_words.get(wake_word_id)
+        if wake_word:
+             wake_models[wake_word_id] = wake_word.load(libtensorflowlite_c_path)
+    
     stop_model: Optional[MicroWakeWord] = None
-    for wake_word_dir in wake_word_dirs:
+    for wake_word_dir in [Path(d) for d in args.wake_word_dir]:
         stop_config_path = wake_word_dir / f"{args.stop_model}.json"
-        if not stop_config_path.exists():
-            continue
-        _LOGGER.debug("Loading stop model: %s", stop_config_path)
-        stop_model = MicroWakeWord.from_config(
-            stop_config_path, libtensorflowlite_c_path
-        )
+        if not stop_config_path.exists(): continue
+        stop_model = MicroWakeWord.from_config(stop_config_path, libtensorflowlite_c_path)
         break
     assert stop_model is not None
-    music_player = MpvMediaPlayer(
-        device=args.audio_output_device, initial_volume=preferences.volume_level
-    )
-    tts_player = MpvMediaPlayer(
-        device=args.audio_output_device, initial_volume=preferences.volume_level
-    )
-
+    
+    music_player = MpvMediaPlayer(device=args.audio_output_device, initial_volume=preferences.volume_level)
+    tts_player = MpvMediaPlayer(device=args.audio_output_device, initial_volume=preferences.volume_level)
+    
     state = ServerState(
         name=args.name,
         mac_address=get_mac(),
@@ -248,69 +240,42 @@ async def main() -> None:
     
     led_controller = LedController(
         state,
+        led_type=args.led_type,
         interface=args.led_interface,
         clock_pin=args.led_clock_pin,
         data_pin=args.led_data_pin,
-        num_leds=state.preferences.num_leds, # Pass number of LEDs
+        num_leds=state.preferences.num_leds,
     )
     
     mqtt_controller: Optional[MqttController] = None
     if args.mqtt_host:
-        mqtt_controller = MqttController(
-            state=state,
-            host=args.mqtt_host,
-            port=args.mqtt_port,
-            username=args.mqtt_username,
-            password=args.mqtt_password,
-        )
+        mqtt_controller = MqttController(state=state, host=args.mqtt_host, port=args.mqtt_port, username=args.mqtt_username, password=args.mqtt_password)
         mqtt_controller.start()
     
     mic_mute_handler = MicMuteHandler(state, mqtt_controller)
-
-    process_audio_thread = threading.Thread(
-        target=process_audio, args=(state,), daemon=True
-    )
+    process_audio_thread = threading.Thread(target=process_audio, args=(state,), daemon=True)
     process_audio_thread.start()
 
-    def sd_callback(indata, _frames, _time, _status):
-        state.audio_queue.put_nowait(bytes(indata))
+    def sd_callback(indata, _frames, _time, _status): state.audio_queue.put_nowait(bytes(indata))
     
-    server = await loop.create_server(
-        lambda: VoiceSatelliteProtocol(state), host=args.host, port=args.port
-    )
-
+    server = await loop.create_server(lambda: VoiceSatelliteProtocol(state), host=args.host, port=args.port)
     discovery = HomeAssistantZeroconf(port=args.port, name=args.name)
     await discovery.register_server()
 
     try:
-        _LOGGER.debug("Opening audio input device: %s", args.audio_input_device)
-        with sd.RawInputStream(
-            samplerate=16000,
-            blocksize=args.audio_input_block_size,
-            device=args.audio_input_device,
-            dtype="int16",
-            channels=1,
-            callback=sd_callback,
-        ):
+        with sd.RawInputStream(samplerate=16000, blocksize=args.audio_input_block_size, device=args.audio_input_device, dtype="int16", channels=1, callback=sd_callback):
             async with server:
                 _LOGGER.info("Server started (host=%s, port=%s)", args.host, args.port)
                 await server.serve_forever()
-    except KeyboardInterrupt:
-        pass
+    except KeyboardInterrupt: pass
     finally:
-        if mqtt_controller:
-            mqtt_controller.stop()
+        if mqtt_controller: mqtt_controller.stop()
         state.audio_queue.put_nowait(None)
         process_audio_thread.join()
 
     _LOGGER.debug("Server stopped")
 
-
-# -----------------------------------------------------------------------------
-
-
 def process_audio(state: ServerState):
-    """Process audio chunks from the microphone."""
     wake_words: List[Union[MicroWakeWord, OpenWakeWord]] = []
     micro_features: Optional[MicroWakeWordFeatures] = None
     micro_inputs: List[np.ndarray] = []
@@ -318,75 +283,45 @@ def process_audio(state: ServerState):
     oww_inputs: List[np.ndarray] = []
     has_oww = False
     last_active: Optional[float] = None
-
     try:
         while True:
             if state.mic_muted:
                 time.sleep(0.1)
                 continue
-
             audio_chunk = state.audio_queue.get()
-            if audio_chunk is None:
-                break
-            if state.satellite is None:
-                continue
+            if audio_chunk is None: break
+            if state.satellite is None: continue
             if (not wake_words) or (state.wake_words_changed and state.wake_words):
                 state.wake_words_changed = False
                 wake_words = [ww for ww in state.wake_words.values() if ww.is_active]
-                has_oww = False
-                for wake_word in wake_words:
-                    if isinstance(wake_word, OpenWakeWord):
-                        has_oww = True
+                has_oww = any(isinstance(ww, OpenWakeWord) for ww in wake_words)
                 if micro_features is None:
-                    micro_features = MicroWakeWordFeatures(
-                        libtensorflowlite_c_path=state.libtensorflowlite_c_path,
-                    )
+                    micro_features = MicroWakeWordFeatures(libtensorflowlite_c_path=state.libtensorflowlite_c_path)
                 if has_oww and (oww_features is None):
-                    oww_features = OpenWakeWordFeatures(
-                        melspectrogram_model=state.oww_melspectrogram_path,
-                        embedding_model=state.oww_embedding_path,
-                        libtensorflowlite_c_path=state.libtensorflowlite_c_path,
-                    )
+                    oww_features = OpenWakeWordFeatures(melspectrogram_model=state.oww_melspectrogram_path, embedding_model=state.oww_embedding_path, libtensorflowlite_c_path=state.libtensorflowlite_c_path)
             try:
                 state.satellite.handle_audio(audio_chunk)
                 assert micro_features is not None
-                micro_inputs.clear()
-                micro_inputs.extend(micro_features.process_streaming(audio_chunk))
+                micro_inputs.clear(); micro_inputs.extend(micro_features.process_streaming(audio_chunk))
                 if has_oww:
                     assert oww_features is not None
-                    oww_inputs.clear()
-                    oww_inputs.extend(oww_features.process_streaming(audio_chunk))
+                    oww_inputs.clear(); oww_inputs.extend(oww_features.process_streaming(audio_chunk))
                 for wake_word in wake_words:
                     activated = False
                     if isinstance(wake_word, MicroWakeWord):
-                        for micro_input in micro_inputs:
-                            if wake_word.process_streaming(micro_input):
-                                activated = True
+                        if any(wake_word.process_streaming(mi) for mi in micro_inputs): activated = True
                     elif isinstance(wake_word, OpenWakeWord):
-                        for oww_input in oww_inputs:
-                            for prob in wake_word.process_streaming(oww_input):
-                                if prob > 0.5:
-                                    activated = True
+                        if any(p > 0.5 for oi in oww_inputs for p in wake_word.process_streaming(oi)): activated = True
                     if activated:
                         now = time.monotonic()
-                        if (last_active is None) or (
-                            (now - last_active) > state.refractory_seconds
-                        ):
+                        if (last_active is None) or ((now - last_active) > state.refractory_seconds):
                             state.satellite.wakeup(wake_word)
                             last_active = now
-                stopped = False
-                for micro_input in micro_inputs:
-                    if state.stop_word.process_streaming(micro_input):
-                        stopped = True
-                if stopped and state.stop_word.is_active:
+                if any(state.stop_word.process_streaming(mi) for mi in micro_inputs) and state.stop_word.is_active:
                     state.satellite.stop()
-            except Exception:
-                _LOGGER.exception("Unexpected error handling audio")
-    except Exception:
-        _LOGGER.exception("Unexpected error processing audio")
-
-
-# -----------------------------------------------------------------------------
+            except Exception: _LOGGER.exception("Unexpected error handling audio")
+    except Exception: _LOGGER.exception("Unexpected error processing audio")
 
 if __name__ == "__main__":
+    print("--- __main__ block executing ---")
     asyncio.run(main())
