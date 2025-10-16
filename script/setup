@@ -17,20 +17,14 @@ builder = venv.EnvBuilder(with_pip=True)
 context = builder.ensure_directories(_VENV_DIR)
 builder.create(_VENV_DIR)
 
-# Upgrade dependencies
+# Upgrade pip and setuptools
 pip = [context.env_exe, "-m", "pip"]
-subprocess.check_call(pip + ["install", "--upgrade", "pip"])
-subprocess.check_call(pip + ["install", "--upgrade", "setuptools", "wheel"])
-subprocess.check_call(pip + ["install", "--upgrade", "python-mpv"])
-subprocess.check_call(pip + ["install", "--upgrade", "gpiozero"])
-subprocess.check_call(pip + ["install", "--upgrade", "spidev"])
-subprocess.check_call(pip + ["install", "--upgrade", "adafruit-circuitpython-dotstar"])
+subprocess.check_call(pip + ["install", "--upgrade", "pip", "setuptools", "wheel"])
 
-# Install requirements
-subprocess.check_call(pip + ["install", "-e", str(_PROGRAM_DIR)])
-
+# Install the project and all its dependencies from pyproject.toml
 if args.dev:
-    # Install dev requirements
-    subprocess.check_call(
-        pip + ["install", "-e", f"{_PROGRAM_DIR}[dev]"]
-    )
+    # Install with dev dependencies
+    subprocess.check_call(pip + ["install", "-e", f"{_PROGRAM_DIR}[dev]"])
+else:
+    # Install with regular dependencies
+    subprocess.check_call(pip + ["install", "-e", str(_PROGRAM_DIR)])
