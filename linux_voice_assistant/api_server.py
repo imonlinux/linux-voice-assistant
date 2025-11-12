@@ -57,9 +57,7 @@ class APIServer(asyncio.Protocol):
             )
             return
 
-        if isinstance(msg_inst, AuthenticationRequest):
-            self.send_messages([AuthenticationResponse()])
-        elif isinstance(msg_inst, DisconnectRequest):
+        if isinstance(msg_inst, DisconnectRequest):
             self.send_messages([DisconnectResponse()])
             _LOGGER.debug("Disconnect requested")
             if self._transport:
