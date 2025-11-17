@@ -59,23 +59,45 @@ class MqttController(EventHandler):
     def _on_connect(self, client, userdata, flags, rc):
         if rc == 0:
             _LOGGER.info("Connected to MQTT broker")
-            for entity_type in self.topics.values():
-                for topic_type, topic in entity_type.items():
-                    client.subscribe(topic)
+            # Subscribe to all command topics
+            client.subscribe(f"{self._topic_prefix}/+/set") # Wildcard for all commands
+            
+            # Subscribe to retained state topics to sync on startup
+            client.subscribe(f"{self._topic_prefix}/+/state") 
+
             self._publish_discovery_configs()
         else:
             _LOGGER.error("Failed to connect to MQTT, return code %d", rc)
 
     def _on_message(self, client, userdata, msg):
-        payload_str = msg.payload.decode()
-        _LOGGER.debug("Received MQTT message on topic %s", msg.topic)
+        """
+        Handles incoming MQTT messages (runs in MQTT thread).
+        This must not block or modify shared state.
+        It schedules the real handler to run on the main asyncio loop.
+        """
+        try:
+            topic = msg.topic
+            payload = msg.payload.decode()
+            _LOGGER.debug("Received MQTT message on topic %s (from MQTT thread)", msg.topic)
+            
+            # Schedule the actual processing on the main event loop
+            self.state.loop.call_soon_threadsafe(self._handle_message_on_loop, topic, payload)
+        except Exception:
+            _LOGGER.exception("Error in _on_message")
 
-        if msg.topic == self.topics["mute"]["command"]:
-            self.state.event_bus.publish("set_mic_mute", {"state": payload_str.upper() == "ON"})
+    def _handle_message_on_loop(self, topic: str, payload: str):
+        """
+This method runs on the main asyncio loop and safely handles
+the MQTT message logic and state changes.
+"""
+        _LOGGER.debug("Handling message for topic %s on main loop", topic)
+
+        if topic == self.topics["mute"]["command"]:
+            self.state.event_bus.publish("set_mic_mute", {"state": payload.upper() == "ON"})
         
-        elif msg.topic == self.topics["num_leds"]["command"]:
+        elif topic == self.topics["num_leds"]["command"]:
             try:
-                num_leds = int(payload_str)
+                num_leds = int(payload)
                 self.state.event_bus.publish("set_num_leds", {"num_leds": num_leds})
                 if self.state.preferences.num_leds != num_leds:
                     self.state.preferences.num_leds = num_leds
@@ -85,43 +107,35 @@ class MqttController(EventHandler):
         
         for state_name in self.CONFIGURABLE_STATES:
             state_topics = self.topics[state_name]
-            if msg.topic == state_topics["effect_command"]:
-                effect_id = payload_str.lower().replace(" ", "_")
+            if topic == state_topics["effect_command"]:
+                effect_id = payload.lower().replace(" ", "_")
                 self.state.event_bus.publish(f"set_{state_name}_effect", {"effect": effect_id})
             
-            elif msg.topic == state_topics["light_command"]:
-                # --- THIS IS THE FIX ---
-                # This logic now correctly separates on/off from color/brightness
-                # and no longer overrides the selected effect.
+            elif topic == state_topics["light_command"]:
                 try:
-                    data = json.loads(payload_str)
+                    data = json.loads(payload)
                     
                     if "state" in data:
-                        # Handle on/off commands
                         if data["state"].upper() == "OFF":
                             self.state.event_bus.publish(f"set_{state_name}_effect", {"effect": "off"})
                         else: # ON command
-                            # When turning ON, we don't change the effect, just the color/brightness.
-                            # If the current effect is "Off", we should switch to something sensible like "Solid".
                             self.state.event_bus.publish(f"turn_on_{state_name}")
                     
-                    # Handle color or brightness changes
                     if "color" in data or "brightness" in data:
-                         self.state.event_bus.publish(f"set_{state_name}_color", data)
+                        self.state.event_bus.publish(f"set_{state_name}_color", data)
 
                 except json.JSONDecodeError: pass
             
             # Handle retained state messages on startup
-            elif msg.topic == state_topics["effect_state"]:
-                effect_id = payload_str.lower().replace(" ", "_")
+            elif topic == state_topics["effect_state"]:
+                effect_id = payload.lower().replace(" ", "_")
                 self.state.event_bus.publish(f"set_{state_name}_effect", {"effect": effect_id, "retained": True})
-            elif msg.topic == state_topics["light_state"]:
+            elif topic == state_topics["light_state"]:
                 try:
-                    data = json.loads(payload_str)
+                    data = json.loads(payload)
                     data["retained"] = True
                     self.state.event_bus.publish(f"set_{state_name}_color", data)
                 except json.JSONDecodeError: pass
-
 
     def _publish_discovery_configs(self):
         availability_topic = f"{self._topic_prefix}/availability"
