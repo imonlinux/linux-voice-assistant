@@ -47,9 +47,8 @@ class LedController(EventHandler):
             # Universal Hardware Initialization
             if led_type == "neopixel":
                 if interface == "spi":
-                    # --- THIS IS THE FIX ---
                     import busio
-                    import neopixel_spi # The module name is just 'neopixel_spi'
+                    import neopixel_spi 
                     _LOGGER.debug(f"Initializing {self.num_leds} NeoPixel LEDs on hardware SPI")
                     spi = busio.SPI(board.SCLK, MOSI=board.MOSI)
                     self.leds = neopixel_spi.NeoPixel_SPI(spi, self.num_leds, auto_write=False)
@@ -76,7 +75,6 @@ class LedController(EventHandler):
         except Exception:
             _LOGGER.exception("Failed to initialize LED controller. LEDs will be disabled.")
 
-    # ... (The rest of the file is identical and does not need to be changed)
     def run_action(self, action_method_name: str, *args: Any) -> None:
         if not self._is_ready: return
         if self.current_task and not self.current_task.done(): self.current_task.cancel()
@@ -92,6 +90,7 @@ class LedController(EventHandler):
         if publish_state:
             config["state_name"] = state_name
             self.state.event_bus.publish("publish_state_to_mqtt", config)
+            
     async def startup_sequence(self, color=None, brightness=None): await self.blink(_GREEN, 1.0)
     async def off(self, color, brightness): self.leds.fill(_OFF); self.leds.show()
     async def solid(self, color: Tuple[int, int, int], brightness: float):
@@ -112,8 +111,8 @@ class LedController(EventHandler):
                     self.leds.fill((int(r*mod), int(g*mod), int(b*mod))); self.leds.show(); await asyncio.sleep(speed)
         except asyncio.CancelledError: self.leds.fill(_OFF); self.leds.show()
     async def slow_pulse(self, color, brightness): await self._base_pulse(color, brightness, 0.05)
-    async def medium_pulse(self, color, brightness): await self._base_pulse(color, 0.02)
-    async def fast_pulse(self, color, brightness): await self._base_pulse(color, 0.008)
+    async def medium_pulse(self, color, brightness): await self._base_pulse(color, brightness, 0.02)
+    async def fast_pulse(self, color, brightness): await self._base_pulse(color, brightness, 0.008)
     
     async def _base_blink(self, color: Tuple[int, int, int], brightness: float, speed: float):
         try:
@@ -134,26 +133,34 @@ class LedController(EventHandler):
             while True:
                 self.leds.fill(_OFF); self.leds[i % self.num_leds] = bright_color; self.leds.show(); i += 1; await asyncio.sleep(speed)
         except asyncio.CancelledError: self.leds.fill(_OFF); self.leds.show()
+
+    # --- MODIFIED STATE SUBSCRIPTIONS ---
+    
     @subscribe
-    def ha_connected(self, data: dict): self._apply_state_effect("idle")
+    def voice_idle(self, data: dict): self._apply_state_effect("idle")
+
     @subscribe
-    def voice_wakeword(self, data: dict): self._apply_state_effect("listening")
+    def voice_listen(self, data: dict): self._apply_state_effect("listening")
+
     @subscribe
-    def voice_stt_start(self, data: dict): self._apply_state_effect("listening")
+    def voice_thinking(self, data: dict): self._apply_state_effect("thinking")
+
     @subscribe
-    def voice_vad_start(self, data: dict): pass
-    @subscribe
-    def voice_stt_end(self, data: dict): self._apply_state_effect("thinking")
-    @subscribe
-    def voice_tts_start(self, data: dict): self._apply_state_effect("responding")
+    def voice_responding(self, data: dict): self._apply_state_effect("responding")
+
     @subscribe
     def voice_error(self, data: dict): self._apply_state_effect("error")
-    @subscribe
-    def voice_run_end(self, data: dict): self._apply_state_effect("idle")
+
+    # --- REMOVED REDUNDANT SUBSCRIPTIONS ---
+    # (e.g., voice_wakeword, voice_stt_end, etc.)
+
     @subscribe
     def mic_muted(self, data: dict): self.run_action("solid", _DIM_RED, 1.0)
+    
     @subscribe
     def mic_unmuted(self, data: dict): self._apply_state_effect("idle")
+    
+    # --- MQTT CONFIG SUBSCRIPTIONS (Unchanged) ---
     
     def _update_config(self, state_name: str, data: dict, apply: bool):
         config = self.configs[state_name]; changed = False; is_retained = data.get("retained", False)
