@@ -1,5 +1,0 @@
-aioesphomeapi
-sounddevice
-gpiozero
-spidev
-adafruit-circuitpython-dotstar
