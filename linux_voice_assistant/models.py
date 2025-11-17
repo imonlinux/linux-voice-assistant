@@ -21,6 +21,15 @@ if TYPE_CHECKING:
 _LOGGER = logging.getLogger(__name__)
 
 
+class SatelliteState(str, Enum):
+    """Voice satellite state."""
+    IDLE = "idle"
+    LISTENING = "listening"  # Wake word detected
+    THINKING = "thinking"    # VAD, waiting for STT/intent
+    RESPONDING = "responding"  # Playing TTS
+    ERROR = "error"
+
+
 class WakeWordType(str, Enum):
     MICRO_WAKE_WORD = "micro"
     OPEN_WAKE_WORD = "openWakeWord"
@@ -60,7 +69,7 @@ class AvailableWakeWord:
 class Preferences:
     active_wake_words: List[str] = field(default_factory=list)
     volume_level: float = 1.0
-    num_leds: int = 3  # THIS LINE WAS MISSING
+    num_leds: int = 3
 
 
 @dataclass
@@ -86,7 +95,6 @@ class ServerState:
     oww_embedding_path: Path
 
     # --- Fields WITH default values ---
-    media_player_entity: "Optional[MediaPlayerEntity]" = None
     satellite: "Optional[VoiceSatelliteProtocol]" = None
     wake_words_changed: bool = False
     refractory_seconds: float = 2.0
