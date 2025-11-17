@@ -213,8 +213,16 @@ async def main() -> None:
         break
     assert stop_model is not None
     
-    music_player = MpvMediaPlayer(device=args.audio_output_device, initial_volume=preferences.volume_level)
-    tts_player = MpvMediaPlayer(device=args.audio_output_device, initial_volume=preferences.volume_level)
+    music_player = MpvMediaPlayer(
+        loop=loop,  # <-- MODIFIED
+        device=args.audio_output_device,
+        initial_volume=preferences.volume_level
+    )
+    tts_player = MpvMediaPlayer(
+        loop=loop,  # <-- MODIFIED
+        device=args.audio_output_device,
+        initial_volume=preferences.volume_level
+    )
     
     state = ServerState(
         name=args.name,
