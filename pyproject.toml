@@ -36,6 +36,8 @@ dependencies = [
     "adafruit-circuitpython-neopixel",
     "adafruit-circuitpython-neopixel-spi",
     "RPi.GPIO",
+    "gpiozero",
+    "spidev",
 ]
 
 [project.optional-dependencies]
