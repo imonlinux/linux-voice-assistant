@@ -6,6 +6,7 @@ improves readability with docstrings, and standardizes method signatures.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from threading import Lock, Timer
@@ -71,7 +72,13 @@ def _select_backend(player: MPV, device: Optional[str]) -> None:
 
 class MpvMediaPlayer:
     """A media player class that wraps the python-mpv library."""
-    def __init__(self, device: Optional[str] = None, initial_volume: float = 1.0) -> None:
+    def __init__(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        device: Optional[str] = None,
+        initial_volume: float = 1.0
+    ) -> None:
+        self.loop = loop  # <-- ADDED
         self.player = MPV(
             video=False,
             terminal=False,
@@ -180,15 +187,16 @@ class MpvMediaPlayer:
             self._run_done_callback()
 
     def _run_done_callback(self) -> None:
-        """Safely runs the done_callback if it exists."""
+        """Safely runs the done_callback on the main asyncio loop."""
         with self._done_callback_lock:
             cb = self._done_callback
             self._done_callback = None
         if cb:
             try:
-                cb()
+                # Use call_soon_threadsafe to run the callback on the main loop
+                self.loop.call_soon_threadsafe(cb)  # <-- MODIFIED
             except Exception:
-                _LOGGER.exception("Error in done_callback")
+                _LOGGER.exception("Error scheduling done_callback")
 
     def _mpv_log(self, level: str, prefix: str, text: str) -> None:
         """Routes mpv's internal logs to our logger."""
