@@ -1,10 +1,12 @@
 import asyncio
 import logging
-from typing import Any, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple
 
 import board
 
-from .event_bus import EventHandler, subscribe
+from .config import LedConfig
+from .event_bus import EventBus, EventHandler, subscribe
+from .models import Preferences
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -21,17 +23,15 @@ _PURPLE = (128, 0, 255)
 class LedController(EventHandler):
     def __init__(
         self,
-        state,
-        led_type: str = "dotstar",
-        interface: str = "spi",
-        clock_pin: int = 13,
-        data_pin: int = 12,
-        num_leds: int = 3,
+        loop: asyncio.AbstractEventLoop,
+        event_bus: EventBus,
+        config: LedConfig,
+        preferences: Preferences,
     ):
-        super().__init__(state)
-        self.loop = state.loop
-        self.num_leds = num_leds
-        self.current_task = None
+        super().__init__(event_bus)
+        self.loop = loop
+        self.num_leds = preferences.num_leds  # Get num_leds from preferences
+        self.current_task: Optional[asyncio.Task] = None
         self._is_ready = False
         self.leds = None
         
@@ -44,9 +44,8 @@ class LedController(EventHandler):
         }
 
         try:
-            # Universal Hardware Initialization
-            if led_type == "neopixel":
-                if interface == "spi":
+            if config.led_type == "neopixel":
+                if config.interface == "spi":
                     import busio
                     import neopixel_spi 
                     _LOGGER.debug(f"Initializing {self.num_leds} NeoPixel LEDs on hardware SPI")
@@ -54,26 +53,29 @@ class LedController(EventHandler):
                     self.leds = neopixel_spi.NeoPixel_SPI(spi, self.num_leds, auto_write=False)
                 else: # GPIO
                     import neopixel
-                    _LOGGER.debug(f"Initializing {self.num_leds} NeoPixel LEDs on GPIO data={data_pin}")
-                    pin_object = getattr(board, f"D{data_pin}")
+                    _LOGGER.debug(f"Initializing {self.num_leds} NeoPixel LEDs on GPIO data={config.data_pin}")
+                    pin_object = getattr(board, f"D{config.data_pin}")
                     self.leds = neopixel.NeoPixel(pin_object, self.num_leds, auto_write=False)
             else: # dotstar
                 import adafruit_dotstar
-                if interface == "gpio":
-                    _LOGGER.debug(f"Initializing {self.num_leds} DotStar LEDs on GPIO data={data_pin}, clock={clock_pin}")
-                    data_pin_obj = getattr(board, f"D{data_pin}")
-                    clock_pin_obj = getattr(board, f"D{clock_pin}")
+                if config.interface == "gpio":
+                    _LOGGER.debug(f"Initializing {self.num_leds} DotStar LEDs on GPIO data={config.data_pin}, clock={config.clock_pin}")
+                    data_pin_obj = getattr(board, f"D{config.data_pin}")
+                    clock_pin_obj = getattr(board, f"D{config.clock_pin}")
                     self.leds = adafruit_dotstar.DotStar(clock_pin_obj, data_pin_obj, self.num_leds, auto_write=False)
                 else: # SPI
                     _LOGGER.debug(f"Initializing {self.num_leds} DotStar LEDs on hardware SPI")
                     self.leds = adafruit_dotstar.DotStar(board.SCLK, board.MOSI, self.num_leds, auto_write=False)
             
             self._is_ready = True
-            _LOGGER.info(f"LED Controller initialized for {self.num_leds} {led_type} LEDs.")
+            _LOGGER.info(f"LED Controller initialized for {self.num_leds} {config.led_type} LEDs.")
             self.run_action("startup_sequence")
 
         except Exception:
             _LOGGER.exception("Failed to initialize LED controller. LEDs will be disabled.")
+
+        # Subscribe to events *after* __init__ is complete
+        self._subscribe_all_methods()
 
     def run_action(self, action_method_name: str, *args: Any) -> None:
         if not self._is_ready: return
@@ -89,7 +91,7 @@ class LedController(EventHandler):
         
         if publish_state:
             config["state_name"] = state_name
-            self.state.event_bus.publish("publish_state_to_mqtt", config)
+            self.event_bus.publish("publish_state_to_mqtt", config)
             
     async def startup_sequence(self, color=None, brightness=None): await self.blink(_GREEN, 1.0)
     async def off(self, color, brightness): self.leds.fill(_OFF); self.leds.show()
@@ -134,33 +136,23 @@ class LedController(EventHandler):
                 self.leds.fill(_OFF); self.leds[i % self.num_leds] = bright_color; self.leds.show(); i += 1; await asyncio.sleep(speed)
         except asyncio.CancelledError: self.leds.fill(_OFF); self.leds.show()
 
-    # --- MODIFIED STATE SUBSCRIPTIONS ---
-    
+    # --- State Subscriptions ---
     @subscribe
     def voice_idle(self, data: dict): self._apply_state_effect("idle")
-
     @subscribe
     def voice_listen(self, data: dict): self._apply_state_effect("listening")
-
     @subscribe
     def voice_thinking(self, data: dict): self._apply_state_effect("thinking")
-
     @subscribe
     def voice_responding(self, data: dict): self._apply_state_effect("responding")
-
     @subscribe
     def voice_error(self, data: dict): self._apply_state_effect("error")
-
-    # --- REMOVED REDUNDANT SUBSCRIPTIONS ---
-    # (e.g., voice_wakeword, voice_stt_end, etc.)
-
     @subscribe
     def mic_muted(self, data: dict): self.run_action("solid", _DIM_RED, 1.0)
-    
     @subscribe
     def mic_unmuted(self, data: dict): self._apply_state_effect("idle")
     
-    # --- MQTT CONFIG SUBSCRIPTIONS (Unchanged) ---
+    # --- MQTT Config Subscriptions ---
     
     def _update_config(self, state_name: str, data: dict, apply: bool):
         config = self.configs[state_name]; changed = False; is_retained = data.get("retained", False)
@@ -179,7 +171,7 @@ class LedController(EventHandler):
             return
         if changed:
             if apply: self._apply_state_effect(state_name)
-            else: config["state_name"] = state_name; self.state.event_bus.publish("publish_state_to_mqtt", config)
+            else: config["state_name"] = state_name; self.event_bus.publish("publish_state_to_mqtt", config)
     
     @subscribe
     def set_idle_effect(self, data: dict): self._update_config("idle", data, True)
@@ -201,6 +193,7 @@ class LedController(EventHandler):
     def set_error_effect(self, data: dict): self._update_config("error", data, False)
     @subscribe
     def set_error_color(self, data: dict): self._update_config("error", data, False)
+    
     @subscribe
     def set_num_leds(self, data: dict):
         num_leds = data.get("num_leds")

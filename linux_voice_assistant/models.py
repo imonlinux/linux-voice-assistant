@@ -67,24 +67,25 @@ class Preferences:
 
 @dataclass
 class ServerState:
+    """A simple dataclass to hold core application state."""
     # --- Fields WITHOUT default values ---
     name: str
     mac_address: str
+    event_bus: EventBus
+    loop: asyncio.AbstractEventLoop
     entities: "List[ESPHomeEntity]"
+    music_player: "MpvMediaPlayer"
+    tts_player: "MpvMediaPlayer"
     available_wake_words: "Dict[str, AvailableWakeWord]"
     wake_words: "Dict[str, Union[MicroWakeWord, OpenWakeWord]]"
     active_wake_words: Set[str]
     stop_word: "MicroWakeWord"
-    music_player: "MpvMediaPlayer"
-    tts_player: "MpvMediaPlayer"
     wakeup_sound: str
     timer_finished_sound: str
-    preferences: Preferences
     preferences_path: Path
-    event_bus: EventBus
-    loop: asyncio.AbstractEventLoop
-    download_dir: Path  # <-- ADDED
-
+    download_dir: Path
+    preferences: Preferences  # <-- MOVED UP
+    
     # --- Fields WITH default values ---
     satellite: "Optional[VoiceSatelliteProtocol]" = None
     wake_words_changed: bool = False
