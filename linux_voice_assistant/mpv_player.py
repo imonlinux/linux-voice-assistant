@@ -31,43 +31,69 @@ def _select_backend(player: MPV, device: Optional[str]) -> None:
     """
     Selects the best available audio output backend for mpv.
     
-    The selection follows a clear priority:
-    1. A fully qualified device string (e.g., 'alsa/plughw:...') is used directly.
-    2. A simple device name tries PipeWire, then PulseAudio, then ALSA.
-    3. No device specified (or 'default') tries the default for PipeWire, PulseAudio, and ALSA in order.
+    1. If a specific 'device' is given (e.g., 'alsa/plughw:CARD=...'), it is used directly.
+    2. If 'device' is None, it queries mpv for available devices and picks the first
+       available backend in the preferred order (pipewire > pulse > alsa).
+    3. If all else fails, it falls back to 'auto'.
     """
-    candidates: List[Tuple[str, str]] = []
     
-    # Define the preferred order of audio outputs
-    preferred_ao_order = ["pipewire", "pulse", "alsa"]
-
+    # 1. Explicit Path: User provided a specific device. Use it directly.
     if device:
-        # If a full device path is given (e.g., "alsa/plughw:...")
-        for prefix in preferred_ao_order:
-            if device.startswith(f"{prefix}/"):
-                candidates.append((prefix, device))
-                break
-        
-        # If it's a simple name or "default"
-        if not candidates:
-            for ao in preferred_ao_order:
-                candidates.append((ao, f"{ao}/{device}"))
-    else:
-        # If no device is specified, try the default for each backend
-        for ao in preferred_ao_order:
-            candidates.append((ao, f"{ao}/default"))
-
-    # Try to set the audio output from the generated candidates
-    for ao, audio_device in candidates:
+        _LOGGER.debug(f"User specified audio device: {device}")
         try:
-            player["ao"] = ao
-            player["audio-device"] = audio_device
-            _LOGGER.debug("mpv backend selected: ao=%s, audio-device=%s", ao, audio_device)
-            return
-        except Exception:
-            continue
-            
-    _LOGGER.warning("No suitable audio output backend could be found.")
+            # If it's a full path like 'alsa/plughw:...'
+            if '/' in device:
+                ao, _ = device.split('/', 1)
+                player["ao"] = ao
+                player["audio-device"] = device
+                _LOGGER.info(f"mpv backend set (explicit): ao={ao}, audio-device={device}")
+                return
+            else:
+                # Ambiguous name like 'default'. Fall through to auto-detection.
+                _LOGGER.debug(f"Ambiguous device name '{device}', falling back to auto-detection.")
+        except Exception as e:
+            _LOGGER.warning(f"Failed to parse explicit audio device {device}: {e}. Falling back to auto-detection.")
+
+    # 2. Automatic Path: No device specified or fallback from ambiguous name.
+    _LOGGER.debug("Starting audio backend auto-detection.")
+    
+    available_device_names = set()
+    try:
+        available_devices = player.audio_device_list
+        if not available_devices:
+            _LOGGER.warning("mpv returned an empty list of audio devices. Will try defaults.")
+        else:
+            available_device_names = {dev['name'] for dev in available_devices}
+            _LOGGER.debug(f"Available audio devices found: {available_device_names}")
+    except Exception as e:
+        _LOGGER.error(f"Failed to query mpv for audio devices: {e}. Will try defaults.")
+
+    # Our preferred order of drivers
+    preferred_drivers = ["pipewire", "pulse", "alsa"]
+    
+    if available_device_names:
+        for driver in preferred_drivers:
+            # Check if ANY device in the list starts with this driver's prefix
+            prefix = f"{driver}/"
+            # Also check for the simple driver name, e.g., 'alsa'
+            if any(name.startswith(prefix) for name in available_device_names) or (driver in available_device_names):
+                try:
+                    # --- THIS IS THE FIX ---
+                    # For pulse and pipewire, set audio-device to "default"
+                    # For alsa, it's safer to use "alsa" as the device
+                    device_name = "default" if driver in ["pipewire", "pulse"] else driver
+                    
+                    player["ao"] = driver
+                    player["audio-device"] = device_name
+                    _LOGGER.info(f"Auto-detected and set active backend: ao={driver}, audio-device={device_name}")
+                    return
+                except Exception as e:
+                    _LOGGER.warning(f"Failed to set auto-detected driver {driver}: {e}")
+
+    # 3. Fallback Path: No devices found, or no prefix matched.
+    _LOGGER.warning("Could not find a preferred driver in mpv's list. Telling mpv to use 'auto'.")
+    player["ao"] = "auto"
+    player["audio-device"] = "auto"
 
 
 class MpvMediaPlayer:
@@ -78,7 +104,7 @@ class MpvMediaPlayer:
         device: Optional[str] = None,
         initial_volume: float = 1.0
     ) -> None:
-        self.loop = loop  # <-- ADDED
+        self.loop = loop
         self.player = MPV(
             video=False,
             terminal=False,
@@ -91,7 +117,7 @@ class MpvMediaPlayer:
             msg_level=os.environ.get("LVA_MPV_MSG_LEVEL", "all=warn"),
         )
 
-        _select_backend(self.player, device)
+        _select_backend(self.player, device) # <-- This is the updated function
         self.set_volume(int(initial_volume * 100))
 
         self.is_playing: bool = False
@@ -194,7 +220,7 @@ class MpvMediaPlayer:
         if cb:
             try:
                 # Use call_soon_threadsafe to run the callback on the main loop
-                self.loop.call_soon_threadsafe(cb)  # <-- MODIFIED
+                self.loop.call_soon_threadsafe(cb)
             except Exception:
                 _LOGGER.exception("Error scheduling done_callback")
 
