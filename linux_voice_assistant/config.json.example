@@ -1,0 +1,61 @@
+{
+  "app": {
+    "name": "Linux Voice Assistant",
+    "debug": true,
+    "wakeup_sound": "sounds/wake_word_triggered.flac",
+    "timer_finished_sound": "sounds/timer_finished.flac",
+    "preferences_file": "preferences.json"
+  },
+  "audio": {
+    // This is the "manual bypass" for audio.
+    // Set to "null" to use auto-detection (recommended).
+    // Set to specific device names to force them.
+    "input_device": "seeed-2mic-voicecard",
+    "output_device": "alsa/plughw:CARD=seeed2micvoicec",
+    "input_block_size": 1024
+  },
+  "wake_word": {
+    // A list of directories to scan for wake word models
+    "directories": [
+      "wakewords",
+      "wakewords/openWakeWord"
+    ],
+    // The default wake word to use if none is set in preferences
+    "model": "okay_nabu",
+    "stop_model": "stop",
+    "refractory_seconds": 2.0,
+    // Paths are relative to the project root
+    "oww_melspectrogram_model": "wakewords/openWakeWord/melspectrogram.tflite",
+    "oww_embedding_model": "wakewords/openWakeWord/embedding_model.tflite"
+  },
+  "esphome": {
+    // Network settings for the satellite server
+    "host": "0.0.0.0",
+    "port": 6053
+  },
+  "led": {
+    // "led_type" can be "dotstar" (APA102) or "neopixel" (WS2812B)
+    "led_type": "dotstar",
+
+    // "interface" can be "spi" (hardware SPI) or "gpio" (bit-banging)
+    "interface": "spi",
+
+    // --- GPIO Settings ---
+    // These are ONLY used if interface is "gpio"
+    // For Grove on Pi: clock=13, data=12
+    "clock_pin": 13,
+    "data_pin": 12,
+
+    // Default number of LEDs. This is overridden by
+    // "num_leds" in preferences.json after first run.
+    "num_leds": 3
+  },
+  "mqtt": {
+    // "host" is the only required field to enable MQTT.
+    // If "host" is null or this section is omitted, MQTT is disabled.
+    "host": "192.168.1.2",
+    "port": 1883,
+    "username": "mqtt_username",
+    "password": "mqtt_password"
+  }
+}
