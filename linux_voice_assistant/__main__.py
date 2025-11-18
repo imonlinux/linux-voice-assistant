@@ -12,6 +12,7 @@ from typing import Dict, List, Optional, Union
 import numpy as np
 import sounddevice as sd
 
+from .config import Config, load_config_from_json  # <-- NEW
 from .event_bus import EventBus, EventHandler, subscribe
 from .led_controller import LedController
 from .mqtt_controller import MqttController
@@ -26,9 +27,6 @@ from .zeroconf import HomeAssistantZeroconf
 _LOGGER = logging.getLogger(__name__)
 _MODULE_DIR = Path(__file__).parent
 _REPO_DIR = _MODULE_DIR.parent
-_WAKEWORDS_DIR = _REPO_DIR / "wakewords"
-_OWW_DIR = _WAKEWORDS_DIR / "openWakeWord"
-_SOUNDS_DIR = _REPO_DIR / "sounds"
 
 if is_arm():
     _LIB_DIR = _REPO_DIR / "lib" / "linux_arm64"
@@ -69,100 +67,27 @@ class MicMuteHandler(EventHandler):
 
 async def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--name", required=True)
     parser.add_argument(
-        "--audio-input-device",
-        default="default",
-        help="sounddevice name for input device",
-    )
-    parser.add_argument("--audio-input-block-size", type=int, default=1024)
-    parser.add_argument("--audio-output-device", help="mpv name for output device")
-    parser.add_argument(
-        "--wake-word-dir",
-        default=[_WAKEWORDS_DIR],
-        action="append",
-        help="Directory with wake word models (.tflite) and configs (.json)",
-    )
-    parser.add_argument(
-        "--wake-model", default="okay_nabu", help="Id of active wake model"
-    )
-    parser.add_argument("--stop-model", default="stop", help="Id of stop model")
-    parser.add_argument(
-        "--refractory-seconds",
-        default=2.0,
-        type=float,
-        help="Seconds before wake word can be activated again",
-    )
-    parser.add_argument(
-        "--oww-melspectrogram-model",
-        default=_OWW_DIR / "melspectrogram.tflite",
-        help="Path to openWakeWord melspectrogram model",
-    )
-    parser.add_argument(
-        "--oww-embedding-model",
-        default=_OWW_DIR / "embedding_model.tflite",
-        help="Path to openWakeWord embedding model",
-    )
-    parser.add_argument(
-        "--wakeup-sound", default=str(_SOUNDS_DIR / "wake_word_triggered.flac")
-    )
-    parser.add_argument(
-        "--timer-finished-sound", default=str(_SOUNDS_DIR / "timer_finished.flac")
-    )
-    parser.add_argument("--preferences-file", default=_REPO_DIR / "preferences.json")
-    parser.add_argument(
-        "--host",
-        default="0.0.0.0",
-        help="Address for ESPHome server (default: 0.0.0.0)",
-    )
-    parser.add_argument(
-        "--port", type=int, default=6053, help="Port for ESPHome server (default: 6053)"
-    )
-    parser.add_argument(
-        "--led-type",
-        choices=["dotstar", "neopixel"],
-        default="dotstar",
-        help="Type of LED strip (default: dotstar for APA102)",
-    )
-    parser.add_argument(
-        "--led-interface",
-        choices=["spi", "gpio"],
-        default="spi",
-        help="Interface for LEDs (default: spi)",
-    )
-    parser.add_argument(
-        "--led-clock-pin",
-        type=int,
-        default=13,
-        help="GPIO pin for LED clock (for Grove)",
-    )
-    parser.add_argument(
-        "--led-data-pin",
-        type=int,
-        default=12,
-        help="GPIO pin for LED data (for Grove)",
-    )
-    parser.add_argument(
-        "--num-leds",
-        type=int,
-        default=3,
-        help="Number of LEDs in the strip",
-    )
-    parser.add_argument("--mqtt-host", help="MQTT broker host")
-    parser.add_argument("--mqtt-port", type=int, default=1883, help="MQTT broker port")
-    parser.add_argument("--mqtt-username", help="MQTT broker username")
-    parser.add_argument("--mqtt-password", help="MQTT broker password")
-    parser.add_argument(
-        "--debug", action="store_true", help="Print DEBUG messages to console"
+        "-c",
+        "--config",
+        type=Path,
+        required=True,
+        help="Path to configuration.json file",
     )
     args = parser.parse_args()
+
+    # --- Load Configuration ---
+    config = load_config_from_json(args.config)
+
+    # --- Setup Logging ---
+    logging.basicConfig(level=logging.DEBUG if config.app.debug else logging.INFO)
+    _LOGGER.debug("Configuration loaded: %s", config)
     
-    logging.basicConfig(level=logging.DEBUG if args.debug else logging.INFO)
-    _LOGGER.debug(args)
     loop = asyncio.get_running_loop()
     event_bus = EventBus()
 
-    preferences_path = Path(args.preferences_file)
+    # --- Load Preferences ---
+    preferences_path = _REPO_DIR / config.app.preferences_file
     if preferences_path.exists():
         with open(preferences_path, "r", encoding="utf-8") as preferences_file:
             preferences_dict = json.load(preferences_file)
@@ -170,13 +95,21 @@ async def main() -> None:
     else:
         preferences = Preferences()
     
-    preferences.num_leds = getattr(preferences, 'num_leds', args.num_leds)
+    # Set default num_leds from config, allowing preferences to override
+    preferences.num_leds = getattr(preferences, 'num_leds', config.led.num_leds)
     
+    # --- Load Wake Words ---
     available_wake_words: Dict[str, AvailableWakeWord] = {}
-    for wake_word_dir in [Path(d) for d in args.wake_word_dir]:
+    
+    # Add default directories if none are specified
+    if not config.wake_word.directories:
+        config.wake_word.directories = ["wakewords", "wakewords/openWakeWord"]
+
+    for ww_dir_str in config.wake_word.directories:
+        wake_word_dir = _REPO_DIR / ww_dir_str
         for model_config_path in wake_word_dir.glob("*.json"):
             model_id = model_config_path.stem
-            if model_id == args.stop_model:
+            if model_id == config.wake_word.stop_model:
                 continue
             with open(model_config_path, "r", encoding="utf-8") as model_config_file:
                 model_config = json.load(model_config_file)
@@ -193,39 +126,46 @@ async def main() -> None:
     
     libtensorflowlite_c_path = _LIB_DIR / "libtensorflowlite_c.so"
     
+    # --- Load Active Wake Word Models ---
     wake_models: Dict[str, Union[MicroWakeWord, OpenWakeWord]] = {}
     if preferences.active_wake_words:
         for wake_word_id in preferences.active_wake_words:
             wake_word = available_wake_words.get(wake_word_id)
             if wake_word is None: continue
             wake_models[wake_word_id] = wake_word.load(libtensorflowlite_c_path)
+    
+    # Load default model if no preferences are set
     if not wake_models:
-        wake_word_id = args.wake_model
+        wake_word_id = config.wake_word.model
         wake_word = available_wake_words.get(wake_word_id)
         if wake_word:
              wake_models[wake_word_id] = wake_word.load(libtensorflowlite_c_path)
     
+    # --- Load Stop Model ---
     stop_model: Optional[MicroWakeWord] = None
-    for wake_word_dir in [Path(d) for d in args.wake_word_dir]:
-        stop_config_path = wake_word_dir / f"{args.stop_model}.json"
+    for ww_dir_str in config.wake_word.directories:
+        wake_word_dir = _REPO_DIR / ww_dir_str
+        stop_config_path = wake_word_dir / f"{config.wake_word.stop_model}.json"
         if not stop_config_path.exists(): continue
         stop_model = MicroWakeWord.from_config(stop_config_path, libtensorflowlite_c_path)
         break
     assert stop_model is not None
     
+    # --- Initialize Media Players ---
     music_player = MpvMediaPlayer(
-        loop=loop,  # <-- MODIFIED
-        device=args.audio_output_device,
+        loop=loop,
+        device=config.audio.output_device,
         initial_volume=preferences.volume_level
     )
     tts_player = MpvMediaPlayer(
-        loop=loop,  # <-- MODIFIED
-        device=args.audio_output_device,
+        loop=loop,
+        device=config.audio.output_device,
         initial_volume=preferences.volume_level
     )
     
+    # --- Create Global Server State ---
     state = ServerState(
-        name=args.name,
+        name=config.app.name,
         mac_address=get_mac(),
         audio_queue=Queue(),
         entities=[],
@@ -234,50 +174,78 @@ async def main() -> None:
         stop_word=stop_model,
         music_player=music_player,
         tts_player=tts_player,
-        wakeup_sound=args.wakeup_sound,
-        timer_finished_sound=args.timer_finished_sound,
+        wakeup_sound=str(_REPO_DIR / config.app.wakeup_sound),
+        timer_finished_sound=str(_REPO_DIR / config.app.timer_finished_sound),
         preferences=preferences,
         preferences_path=preferences_path,
         libtensorflowlite_c_path=libtensorflowlite_c_path,
         event_bus=event_bus,
         loop=loop,
-        oww_melspectrogram_path=Path(args.oww_melspectrogram_model),
-        oww_embedding_path=Path(args.oww_embedding_model),
-        refractory_seconds=args.refractory_seconds,
+        oww_melspectrogram_path=(_REPO_DIR / config.wake_word.oww_melspectrogram_model),
+        oww_embedding_path=(_REPO_DIR / config.wake_word.oww_embedding_model),
+        refractory_seconds=config.wake_word.refractory_seconds,
     )
     
+    # --- Initialize Controllers ---
     led_controller = LedController(
         state,
-        led_type=args.led_type,
-        interface=args.led_interface,
-        clock_pin=args.led_clock_pin,
-        data_pin=args.led_data_pin,
+        led_type=config.led.led_type,
+        interface=config.led.interface,
+        clock_pin=config.led.clock_pin,
+        data_pin=config.led.data_pin,
         num_leds=state.preferences.num_leds,
     )
     
     mqtt_controller: Optional[MqttController] = None
-    if args.mqtt_host:
-        mqtt_controller = MqttController(state=state, host=args.mqtt_host, port=args.mqtt_port, username=args.mqtt_username, password=args.mqtt_password)
+    if config.mqtt.enabled:
+        mqtt_controller = MqttController(
+            state=state,
+            host=config.mqtt.host,
+            port=config.mqtt.port,
+            username=config.mqtt.username,
+            password=config.mqtt.password
+        )
         mqtt_controller.start()
     
     mic_mute_handler = MicMuteHandler(state, mqtt_controller)
+    
+    # --- Start Audio Processing Thread ---
     process_audio_thread = threading.Thread(target=process_audio, args=(state,), daemon=True)
     process_audio_thread.start()
 
-    def sd_callback(indata, _frames, _time, _status): state.audio_queue.put_nowait(bytes(indata))
+    def sd_callback(indata, _frames, _time, _status): 
+        state.audio_queue.put_nowait(bytes(indata))
     
-    server = await loop.create_server(lambda: VoiceSatelliteProtocol(state), host=args.host, port=args.port)
-    discovery = HomeAssistantZeroconf(port=args.port, name=args.name)
+    # --- Start ESPHome Server ---
+    server = await loop.create_server(
+        lambda: VoiceSatelliteProtocol(state), 
+        host=config.esphome.host, 
+        port=config.esphome.port
+    )
+    discovery = HomeAssistantZeroconf(port=config.esphome.port, name=config.app.name)
     await discovery.register_server()
 
+    # --- Run Forever ---
     try:
-        with sd.RawInputStream(samplerate=16000, blocksize=args.audio_input_block_size, device=args.audio_input_device, dtype="int16", channels=1, callback=sd_callback):
+        input_device = config.audio.input_device if config.audio.input_device else "default"
+        with sd.RawInputStream(
+            samplerate=16000,
+            blocksize=config.audio.input_block_size,
+            device=input_device,
+            dtype="int16",
+            channels=1,
+            callback=sd_callback
+        ):
             async with server:
-                _LOGGER.info("Server started (host=%s, port=%s)", args.host, args.port)
+                _LOGGER.info("Server started (host=%s, port=%s)", config.esphome.host, config.esphome.port)
                 await server.serve_forever()
-    except KeyboardInterrupt: pass
+    except KeyboardInterrupt: 
+        pass
+    except sd.PortAudioError as e:
+        _LOGGER.critical("Failed to open audio input device '%s': %s", input_device, e)
     finally:
-        if mqtt_controller: mqtt_controller.stop()
+        if mqtt_controller: 
+            mqtt_controller.stop()
         state.audio_queue.put_nowait(None)
         process_audio_thread.join()
 

@@ -60,7 +60,7 @@ class VoiceSatelliteProtocol(APIServer):
         self.state.entities.append(self.media_player_entity)
 
         # State machine
-        self._state: SatelliteState = SatelliteState.IDLE
+        self._state: SatelliteState = SatelliteState.STARTING  # <-- MODIFIED
         self._is_streaming_audio: bool = False # Is HA requesting audio?
 
         # Announce/TTS state
@@ -255,7 +255,7 @@ class VoiceSatelliteProtocol(APIServer):
         self.send_messages([VoiceAssistantAudio(data=audio_chunk)])
 
     def wakeup(self, wake_word: Union[MicroWakeWord, OpenWakeWord]) -> None:
-        if self._state != SatelliteState.IDLE:
+        if self._state not in (SatelliteState.IDLE, SatelliteState.STARTING):
             return # Already awake
             
         if self._timer_finished:

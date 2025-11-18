@@ -23,6 +23,7 @@ _LOGGER = logging.getLogger(__name__)
 
 class SatelliteState(str, Enum):
     """Voice satellite state."""
+    STARTING = "starting"  # <-- ADDED
     IDLE = "idle"
     LISTENING = "listening"  # Wake word detected
     THINKING = "thinking"    # VAD, waiting for STT/intent
