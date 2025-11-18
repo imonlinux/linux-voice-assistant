@@ -6,16 +6,15 @@ import logging
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 from pathlib import Path
-from queue import Queue
-from typing import TYPE_CHECKING, Dict, List, Optional, Union
+from typing import TYPE_CHECKING, Dict, List, Optional, Set, Union
 
 from .event_bus import EventBus
 
 if TYPE_CHECKING:
+    from pymicro_wakeword import MicroWakeWord
+    from pyopen_wakeword import OpenWakeWord
     from .entity import ESPHomeEntity, MediaPlayerEntity
-    from .microwakeword import MicroWakeWord
     from .mpv_player import MpvMediaPlayer
-    from .openwakeword import OpenWakeWord
     from .satellite import VoiceSatelliteProtocol
 
 _LOGGER = logging.getLogger(__name__)
@@ -23,11 +22,11 @@ _LOGGER = logging.getLogger(__name__)
 
 class SatelliteState(str, Enum):
     """Voice satellite state."""
-    STARTING = "starting"  # <-- ADDED
+    STARTING = "starting"
     IDLE = "idle"
-    LISTENING = "listening"  # Wake word detected
-    THINKING = "thinking"    # VAD, waiting for STT/intent
-    RESPONDING = "responding"  # Playing TTS
+    LISTENING = "listening"
+    THINKING = "thinking"
+    RESPONDING = "responding"
     ERROR = "error"
 
 
@@ -42,26 +41,19 @@ class AvailableWakeWord:
     type: WakeWordType
     wake_word: str
     trained_languages: List[str]
-    config_path: Path
+    wake_word_path: Path
 
-    def load(
-        self, libtensorflowlite_c_path: Path
-    ) -> "Union[MicroWakeWord, OpenWakeWord]":
+    def load(self) -> "Union[MicroWakeWord, OpenWakeWord]":
         if self.type == WakeWordType.MICRO_WAKE_WORD:
-            from .microwakeword import MicroWakeWord
-
-            return MicroWakeWord.from_config(
-                config_path=self.config_path,
-                libtensorflowlite_c_path=libtensorflowlite_c_path,
-            )
+            from pymicro_wakeword import MicroWakeWord
+            return MicroWakeWord.from_config(config_path=self.wake_word_path)
 
         if self.type == WakeWordType.OPEN_WAKE_WORD:
-            from .openwakeword import OpenWakeWord
-
-            return OpenWakeWord.from_config(
-                config_path=self.config_path,
-                libtensorflowlite_c_path=libtensorflowlite_c_path,
-            )
+            from pyopen_wakeword import OpenWakeWord
+            
+            oww_model = OpenWakeWord.from_model(model_path=self.wake_word_path)
+            setattr(oww_model, "wake_word", self.wake_word)
+            return oww_model
 
         raise ValueError(f"Unexpected wake word type: {self.type}")
 
@@ -78,10 +70,10 @@ class ServerState:
     # --- Fields WITHOUT default values ---
     name: str
     mac_address: str
-    audio_queue: "Queue[Optional[bytes]]"
     entities: "List[ESPHomeEntity]"
     available_wake_words: "Dict[str, AvailableWakeWord]"
     wake_words: "Dict[str, Union[MicroWakeWord, OpenWakeWord]]"
+    active_wake_words: Set[str]
     stop_word: "MicroWakeWord"
     music_player: "MpvMediaPlayer"
     tts_player: "MpvMediaPlayer"
@@ -89,11 +81,9 @@ class ServerState:
     timer_finished_sound: str
     preferences: Preferences
     preferences_path: Path
-    libtensorflowlite_c_path: Path
     event_bus: EventBus
     loop: asyncio.AbstractEventLoop
-    oww_melspectrogram_path: Path
-    oww_embedding_path: Path
+    download_dir: Path  # <-- ADDED
 
     # --- Fields WITH default values ---
     satellite: "Optional[VoiceSatelliteProtocol]" = None
