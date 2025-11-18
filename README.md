@@ -53,7 +53,7 @@ script/setup
 
 ## Running
 
-Use `script/run -c linux_voice_assistant/config.json` or `python3 -m linux_voice_assistant -c linux_voice_assistant/config.json`
+Use `script/run` or `python3 -m linux_voice_assistant`
 
 See `linux_voice_assistant/config.json.example` for more options.
 
