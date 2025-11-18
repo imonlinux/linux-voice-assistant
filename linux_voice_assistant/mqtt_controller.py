@@ -1,10 +1,13 @@
+import asyncio
 import json
 import logging
-from typing import TYPE_CHECKING, List
+from typing import TYPE_CHECKING, List, Optional
 
 import paho.mqtt.client as mqtt
 
-from .event_bus import EventHandler, subscribe
+from .config import MqttConfig
+from .event_bus import EventBus, EventHandler, subscribe
+from .models import Preferences
 
 if TYPE_CHECKING:
     from .models import ServerState
@@ -12,16 +15,29 @@ if TYPE_CHECKING:
 _LOGGER = logging.getLogger(__name__)
 
 class MqttController(EventHandler):
-    def __init__(self, state: "ServerState", host: str, port: int, username: str, password: str):
-        super().__init__(state)
-        self._host = host
-        self._port = port
-        self._username = username
-        self._password = password
-
-        self._device_name = self.state.name
-        self._device_id = self.state.name.lower().replace(" ", "_")
+    def __init__(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        event_bus: EventBus,
+        config: MqttConfig,
+        app_name: str,
+        mac_address: str,
+        preferences: Preferences,
+    ):
+        super().__init__(event_bus)
+        self.loop = loop
+        self.preferences = preferences
+        
+        self._host = config.host
+        self._port = config.port
+        self._username = config.username
+        self._password = config.password
+        
+        self._device_name = app_name
+        self._device_id = app_name.lower().replace(" ", "_")
         self._topic_prefix = f"lva/{self._device_id}"
+        
+        self._is_muted = False # Internal state
 
         self.CONFIGURABLE_STATES: List[str] = ["idle", "listening", "thinking", "responding", "error"]
         self.topics = {
@@ -39,6 +55,9 @@ class MqttController(EventHandler):
         self._client = mqtt.Client()
         self._client.on_connect = self._on_connect
         self._client.on_message = self._on_message
+
+        # Subscribe to events *after* __init__ is complete
+        self._subscribe_all_methods()
 
     def start(self):
         try:
@@ -59,49 +78,33 @@ class MqttController(EventHandler):
     def _on_connect(self, client, userdata, flags, rc):
         if rc == 0:
             _LOGGER.info("Connected to MQTT broker")
-            # Subscribe to all command topics
-            client.subscribe(f"{self._topic_prefix}/+/set") # Wildcard for all commands
-            
-            # Subscribe to retained state topics to sync on startup
+            client.subscribe(f"{self._topic_prefix}/+/set")
             client.subscribe(f"{self._topic_prefix}/+/state") 
-
             self._publish_discovery_configs()
         else:
             _LOGGER.error("Failed to connect to MQTT, return code %d", rc)
 
     def _on_message(self, client, userdata, msg):
-        """
-        Handles incoming MQTT messages (runs in MQTT thread).
-        This must not block or modify shared state.
-        It schedules the real handler to run on the main asyncio loop.
-        """
         try:
             topic = msg.topic
             payload = msg.payload.decode()
             _LOGGER.debug("Received MQTT message on topic %s (from MQTT thread)", msg.topic)
-            
-            # Schedule the actual processing on the main event loop
-            self.state.loop.call_soon_threadsafe(self._handle_message_on_loop, topic, payload)
+            self.loop.call_soon_threadsafe(self._handle_message_on_loop, topic, payload)
         except Exception:
             _LOGGER.exception("Error in _on_message")
 
     def _handle_message_on_loop(self, topic: str, payload: str):
-        """
-This method runs on the main asyncio loop and safely handles
-the MQTT message logic and state changes.
-"""
         _LOGGER.debug("Handling message for topic %s on main loop", topic)
 
         if topic == self.topics["mute"]["command"]:
-            self.state.event_bus.publish("set_mic_mute", {"state": payload.upper() == "ON"})
+            # Publish event for MicMuteHandler to process
+            self.event_bus.publish("set_mic_mute", {"state": payload.upper() == "ON"})
         
         elif topic == self.topics["num_leds"]["command"]:
             try:
                 num_leds = int(payload)
-                self.state.event_bus.publish("set_num_leds", {"num_leds": num_leds})
-                if self.state.preferences.num_leds != num_leds:
-                    self.state.preferences.num_leds = num_leds
-                    self.state.save_preferences()
+                # Publish event for LedController and MicMuteHandler (to save)
+                self.event_bus.publish("set_num_leds", {"num_leds": num_leds})
                 self.publish_num_leds_state(num_leds)
             except ValueError: pass
         
@@ -109,32 +112,29 @@ the MQTT message logic and state changes.
             state_topics = self.topics[state_name]
             if topic == state_topics["effect_command"]:
                 effect_id = payload.lower().replace(" ", "_")
-                self.state.event_bus.publish(f"set_{state_name}_effect", {"effect": effect_id})
+                self.event_bus.publish(f"set_{state_name}_effect", {"effect": effect_id})
             
             elif topic == state_topics["light_command"]:
                 try:
                     data = json.loads(payload)
-                    
                     if "state" in data:
                         if data["state"].upper() == "OFF":
-                            self.state.event_bus.publish(f"set_{state_name}_effect", {"effect": "off"})
+                            self.event_bus.publish(f"set_{state_name}_effect", {"effect": "off"})
                         else: # ON command
-                            self.state.event_bus.publish(f"turn_on_{state_name}")
+                            self.event_bus.publish(f"turn_on_{state_name}")
                     
                     if "color" in data or "brightness" in data:
-                        self.state.event_bus.publish(f"set_{state_name}_color", data)
-
+                        self.event_bus.publish(f"set_{state_name}_color", data)
                 except json.JSONDecodeError: pass
             
-            # Handle retained state messages on startup
             elif topic == state_topics["effect_state"]:
                 effect_id = payload.lower().replace(" ", "_")
-                self.state.event_bus.publish(f"set_{state_name}_effect", {"effect": effect_id, "retained": True})
+                self.event_bus.publish(f"set_{state_name}_effect", {"effect": effect_id, "retained": True})
             elif topic == state_topics["light_state"]:
                 try:
                     data = json.loads(payload)
                     data["retained"] = True
-                    self.state.event_bus.publish(f"set_{state_name}_color", data)
+                    self.event_bus.publish(f"set_{state_name}_color", data)
                 except json.JSONDecodeError: pass
 
     def _publish_discovery_configs(self):
@@ -160,10 +160,12 @@ the MQTT message logic and state changes.
         _LOGGER.debug("Published all MQTT discovery configs")
         self._client.publish(availability_topic, "online", retain=True)
         
-        self.publish_mute_state(self.state.mic_muted)
-        self.publish_num_leds_state(self.state.preferences.num_leds)
+        # Publish initial state from internal values
+        self.publish_mute_state(self._is_muted)
+        self.publish_num_leds_state(self.preferences.num_leds)
 
     def publish_mute_state(self, is_muted: bool):
+        self._is_muted = is_muted
         self._client.publish(self.topics["mute"]["state"], "ON" if is_muted else "OFF", retain=True)
     
     def publish_num_leds_state(self, num_leds: int):
@@ -184,3 +186,13 @@ the MQTT message logic and state changes.
                 "color": { "r": data.get("color")[0], "g": data.get("color")[1], "b": data.get("color")[2] }
             }
             self._client.publish(state_topics["light_state"], json.dumps(light_state), retain=True)
+            
+    # --- Listen for state changes from other components ---
+    
+    @subscribe
+    def mic_muted(self, data: dict):
+        self.publish_mute_state(True)
+        
+    @subscribe
+    def mic_unmuted(self, data: dict):
+        self.publish_mute_state(False)
