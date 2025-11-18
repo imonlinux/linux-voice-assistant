@@ -9,6 +9,7 @@ See [the tutorial](docs/linux-voice-assistant-2mic-install.md) to build a satell
 
 ### What's working:
 - This fork is from https://github.com/OHF-Voice/linux-voice-assistant Release v1.0.0 which introduces the ablity to use both MicroWakeWord and OpenWakeWord detections models.
+- Refactor: Sync with Upstream Architectural Changes (Nov 2025) incudes the 7 commits since the release of v1.0.0.
 - Updated to support LED Events including GPIO based LED controls. Defaults to the ReSpeaker 2Mic Hat SPI leds, but you can use the Grove port GPIO12/13 by updating the config.json file.
 - Updated to support running either APA102 or WS2812B LEDs from the SPI interface using a Micro Connectors 40-pin GPIO 1 to 2 Expansion Board. See the tutorial for instructions.
 - Now supports **ALSA, PulseAudio and PipeWire** playback backends using the updated `linux_voice_assistant/mpv_player.py`.
