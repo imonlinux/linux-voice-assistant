@@ -23,7 +23,7 @@ class WakeWordConfig:
     model: str = "okay_nabu"
     stop_model: str = "stop"
     refractory_seconds: float = 2.0
-    download_dir: str = "local"  # <-- ADDED
+    download_dir: str = "local"
 
 @dataclass
 class ESPHomeConfig:
