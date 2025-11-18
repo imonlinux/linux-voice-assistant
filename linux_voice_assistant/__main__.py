@@ -134,9 +134,10 @@ async def main() -> None:
     finally:
         # --- 10. Cleanup ---
         _LOGGER.debug("Shutting down...")
-        state.shutdown = True # Signal audio thread to stop
+        state.shutdown = True
         audio_thread.join()
         
+        # Check for and stop the MQTT controller (set in _init_controllers)
         if hasattr(state, "mqtt_controller") and state.mqtt_controller:
             _LOGGER.debug("Stopping MQTT controller...")
             state.mqtt_controller.stop()
@@ -403,96 +404,93 @@ def _process_audio(state: ServerState, mic, block_size: int):
     has_oww = False
     last_active: Optional[float] = None
     
+    is_muted_flag = False
+    
     try:
-        while True:
-            # --- THIS IS THE FIX ---
-            # Wait while muted. This loop will spin until unmuted.
-            if state.mic_muted:
-                _LOGGER.debug("Audio thread muted.")
-                while state.mic_muted:
-                    if state.shutdown:
-                        _LOGGER.debug("Shutdown signal received, stopping audio thread.")
-                        return # Exit thread
-                    time.sleep(0.1)
-
-                # --- Just unmuted ---
-                _LOGGER.debug("Audio thread unmuted, clearing buffers.")
-                micro_features.reset()
-                if oww_features is not None:
-                    oww_features.reset()
-                last_active = time.monotonic() # Start refractory period
+        _LOGGER.debug("Opening audio input device: %s", mic.name)
+        with mic.recorder(samplerate=16000, channels=1, blocksize=block_size) as mic_in:
+            while True:
+                if state.shutdown:
+                    _LOGGER.debug("Shutdown signal received, stopping audio thread.")
+                    break
                 
-                # Re-open microphone to flush OS buffer
-                _LOGGER.debug("Re-opening microphone to flush OS buffers...")
-                with mic.recorder(samplerate=16000, channels=1, blocksize=block_size) as mic_in:
-                    mic_in.flush() # Discard any stale data
-                    _LOGGER.debug("Microphone flushed.")
-                    # Fall through to the main recording loop
-            # --- END FIX ---
-            
-            _LOGGER.debug("Opening audio input device: %s", mic.name)
-            with mic.recorder(samplerate=16000, channels=1, blocksize=block_size) as mic_in:
-                # --- This is now the main recording loop ---
-                while not state.mic_muted: 
-                    if state.shutdown:
-                        _LOGGER.debug("Shutdown signal received, stopping audio thread.")
-                        return # Exit thread
+                if state.mic_muted:
+                    if not is_muted_flag:
+                        _LOGGER.debug("Audio thread muted.")
+                        is_muted_flag = True
+                    time.sleep(0.1)
+                    continue
+                
+                if is_muted_flag:
+                    _LOGGER.debug("Audio thread unmuted, clearing buffers.")
+                    micro_features.reset()
+                    if oww_features is not None:
+                        oww_features.reset()
+                    last_active = time.monotonic()
                     
-                    audio_chunk_array = mic_in.record(block_size).reshape(-1)
-                    audio_chunk = (
-                        (np.clip(audio_chunk_array, -1.0, 1.0) * 32767.0)
-                        .astype("<i2")
-                        .tobytes()
-                    )
-
-                    if state.satellite is None:
-                        time.sleep(0.01)
-                        continue
+                    is_muted_flag = False
                     
-                    if (not wake_words) or (state.wake_words_changed):
-                        state.wake_words_changed = False
-                        wake_words = [
-                            ww for ww in state.wake_words.values() 
-                            if ww.id in state.active_wake_words
-                        ]
-                        has_oww = any(isinstance(ww, OpenWakeWord) for ww in wake_words)
-                        
-                        if has_oww and (oww_features is None):
-                            _LOGGER.debug("Initializing OpenWakeWord features...")
-                            oww_features = OpenWakeWordFeatures.from_builtin()
+                    _LOGGER.debug("Flushing stale audio buffer...")
+                    for _ in range(8):
+                        mic_in.record(block_size)
+                    _LOGGER.debug("Stale audio buffer cleared.")
+                    continue
+
+                audio_chunk_array = mic_in.record(block_size).reshape(-1)
+                audio_chunk = (
+                    (np.clip(audio_chunk_array, -1.0, 1.0) * 32767.0)
+                    .astype("<i2")
+                    .tobytes()
+                )
+
+                if state.satellite is None:
+                    time.sleep(0.01)
+                    continue
+                
+                if (not wake_words) or (state.wake_words_changed):
+                    state.wake_words_changed = False
+                    wake_words = [
+                        ww for ww in state.wake_words.values() 
+                        if ww.id in state.active_wake_words
+                    ]
+                    has_oww = any(isinstance(ww, OpenWakeWord) for ww in wake_words)
                     
-                    try:
-                        micro_inputs.clear(); micro_inputs.extend(micro_features.process_streaming(audio_chunk))
+                    if has_oww and (oww_features is None):
+                        _LOGGER.debug("Initializing OpenWakeWord features...")
+                        oww_features = OpenWakeWordFeatures.from_builtin()
+                
+                try:
+                    micro_inputs.clear(); micro_inputs.extend(micro_features.process_streaming(audio_chunk))
+                    
+                    if has_oww:
+                        assert oww_features is not None
+                        oww_inputs.clear(); oww_inputs.extend(oww_features.process_streaming(audio_chunk))
+                    
+                    for wake_word in wake_words:
+                        activated = False
+                        if isinstance(wake_word, MicroWakeWord):
+                            if any(wake_word.process_streaming(mi) for mi in micro_inputs): activated = True
+                        elif isinstance(wake_word, OpenWakeWord):
+                            if any(p > 0.5 for oi in oww_inputs for p in wake_word.process_streaming(oi)): activated = True
                         
-                        if has_oww:
-                            assert oww_features is not None
-                            oww_inputs.clear(); oww_inputs.extend(oww_features.process_streaming(audio_chunk))
-                        
-                        for wake_word in wake_words:
-                            activated = False
-                            if isinstance(wake_word, MicroWakeWord):
-                                if any(wake_word.process_streaming(mi) for mi in micro_inputs): activated = True
-                            elif isinstance(wake_word, OpenWakeWord):
-                                if any(p > 0.5 for oi in oww_inputs for p in wake_word.process_streaming(oi)): activated = True
-                            
-                            if activated:
-                                now = time.monotonic()
-                                if (last_active is None) or ((now - last_active) > state.refractory_seconds):
-                                    state.loop.call_soon_threadsafe(state.satellite.wakeup, wake_word)
-                                    last_active = now
-                        
-                        stopped = False
-                        for micro_input in micro_inputs:
-                            if state.stop_word.process_streaming(micro_input):
-                                stopped = True
+                        if activated:
+                            now = time.monotonic()
+                            if (last_active is None) or ((now - last_active) > state.refractory_seconds):
+                                state.loop.call_soon_threadsafe(state.satellite.wakeup, wake_word)
+                                last_active = now
+                    
+                    stopped = False
+                    for micro_input in micro_inputs:
+                        if state.stop_word.process_streaming(micro_input):
+                            stopped = True
 
-                        if stopped and (state.stop_word.id in state.active_wake_words):
-                            state.loop.call_soon_threadsafe(state.satellite.stop)
-                            
-                        state.loop.call_soon_threadsafe(state.satellite.handle_audio, audio_chunk)
+                    if stopped and (state.stop_word.id in state.active_wake_words):
+                        state.loop.call_soon_threadsafe(state.satellite.stop)
+                        
+                    state.loop.call_soon_threadsafe(state.satellite.handle_audio, audio_chunk)
 
-                    except Exception: 
-                        _LOGGER.exception("Unexpected error handling audio")
+                except Exception: 
+                    _LOGGER.exception("Unexpected error handling audio")
     
     except Exception as e:
         _LOGGER.critical("A soundcard error occurred: %s", e)
