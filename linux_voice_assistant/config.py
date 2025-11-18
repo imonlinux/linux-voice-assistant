@@ -23,8 +23,7 @@ class WakeWordConfig:
     model: str = "okay_nabu"
     stop_model: str = "stop"
     refractory_seconds: float = 2.0
-    oww_melspectrogram_model: str = "wakewords/openWakeWord/melspectrogram.tflite"
-    oww_embedding_model: str = "wakewords/openWakeWord/embedding_model.tflite"
+    download_dir: str = "local"
 
 @dataclass
 class ESPHomeConfig:
@@ -88,10 +87,6 @@ def load_config_from_json(config_path: Path) -> Config:
         raise
 
     # --- Step 2: Create config objects from raw data ---
-    # This nested loading allows users to omit entire sections (like 'audio')
-    # and still get the defaults.
-    
-    # 'app' is the only required section
     if "app" not in raw_data:
         raise ValueError("Configuration file must contain an 'app' section with a 'name'.")
     
@@ -103,7 +98,6 @@ def load_config_from_json(config_path: Path) -> Config:
     mqtt_config = MqttConfig(**raw_data.get("mqtt", {}))
     
     # --- Step 3: Set MQTT 'enabled' flag ---
-    # If host is provided, automatically enable MQTT
     if mqtt_config.host:
         mqtt_config.enabled = True
 
@@ -117,6 +111,5 @@ def load_config_from_json(config_path: Path) -> Config:
         mqtt=mqtt_config,
     )
 
-# Logger is needed for the load function
 import logging
 _LOGGER = logging.getLogger(__name__)
