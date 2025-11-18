@@ -49,9 +49,9 @@ _LOGGER = logging.getLogger(__name__)
 
 class VoiceSatelliteProtocol(APIServer):
     def __init__(self, state: ServerState) -> None:
-        super().__init__(state.name)
+        super().__init>(state.name)
         self.state = state
-        self.state.satellite = self  # <-- ADDED BACK
+        self.state.satellite = self
 
         self.media_player_entity = MediaPlayerEntity(
             server=self,
