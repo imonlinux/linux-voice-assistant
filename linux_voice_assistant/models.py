@@ -84,14 +84,15 @@ class ServerState:
     timer_finished_sound: str
     preferences_path: Path
     download_dir: Path
-    preferences: Preferences  # <-- MOVED UP
+    preferences: Preferences
     
     # --- Fields WITH default values ---
     satellite: "Optional[VoiceSatelliteProtocol]" = None
     wake_words_changed: bool = False
     refractory_seconds: float = 2.0
     mic_muted: bool = False
-
+    shutdown: bool = False
+    
     def save_preferences(self) -> None:
         """Save preferences as JSON."""
         _LOGGER.debug("Saving preferences: %s", self.preferences_path)
