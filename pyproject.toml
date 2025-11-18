@@ -51,7 +51,7 @@ dev = [
 ]
 
 [project.urls]
-"Source Code" = "https://github.com/imonlinux/linux-voice-assistant" # <-- MODIFIED
+"Source Code" = "https://github.com/imonlinux/linux-voice-assistant"
 
 [tool.setuptools]
 platforms = ["any"]
