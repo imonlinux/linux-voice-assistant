@@ -11,7 +11,6 @@ from typing import Dict, Optional, Set, Union
 from urllib.parse import urlparse, urlunparse
 from urllib.request import urlopen
 
-# pylint: disable=no-name-in-module
 from aioesphomeapi.api_pb2 import (
     DeviceInfoRequest,
     DeviceInfoResponse,
@@ -25,7 +24,7 @@ from aioesphomeapi.api_pb2 import (
     VoiceAssistantConfigurationRequest,
     VoiceAssistantConfigurationResponse,
     VoiceAssistantEventResponse,
-    VoiceAssistantExternalWakeWord, # <-- ADDED
+    VoiceAssistantExternalWakeWord,
     VoiceAssistantRequest,
     VoiceAssistantSetConfiguration,
     VoiceAssistantTimerEventResponse,
@@ -42,7 +41,7 @@ from pyopen_wakeword import OpenWakeWord
 
 from .api_server import APIServer
 from .entity import MediaPlayerEntity
-from .models import AvailableWakeWord, ServerState, SatelliteState, WakeWordType # <-- ADDED
+from .models import AvailableWakeWord, ServerState, SatelliteState, WakeWordType
 from .util import call_all
 
 _LOGGER = logging.getLogger(__name__)
@@ -51,9 +50,8 @@ _LOGGER = logging.getLogger(__name__)
 class VoiceSatelliteProtocol(APIServer):
     def __init__(self, state: ServerState) -> None:
         super().__init__(state.name)
-
         self.state = state
-        self.state.satellite = self
+        self.state.satellite = self  # <-- ADDED BACK
 
         self.media_player_entity = MediaPlayerEntity(
             server=self,
@@ -70,16 +68,14 @@ class VoiceSatelliteProtocol(APIServer):
         self._state: SatelliteState = SatelliteState.STARTING
         self._is_streaming_audio: bool = False
 
-        # Announce/TTS state
         self._tts_url: Optional[str] = None
         self._continue_conversation: bool = False
         self._timer_finished: bool = False
 
-        # Flags set by events, processed in _determine_final_state
         self._run_end_received: bool = False
         self._tts_end_received: bool = False
         
-        self._external_wake_words: Dict[str, VoiceAssistantExternalWakeWord] = {} # <-- ADDED
+        self._external_wake_words: Dict[str, VoiceAssistantExternalWakeWord] = {}
 
     def _set_state(self, new_state: SatelliteState):
         if self._state == new_state:
@@ -210,7 +206,6 @@ class VoiceSatelliteProtocol(APIServer):
             if isinstance(msg, ListEntitiesRequest):
                 yield ListEntitiesDoneResponse()
         elif isinstance(msg, VoiceAssistantConfigurationRequest):
-            # --- MODIFIED ---
             available_wake_words = [
                 VoiceAssistantWakeWord(
                     id=ww.id,
@@ -220,7 +215,6 @@ class VoiceSatelliteProtocol(APIServer):
                 for ww in self.state.available_wake_words.values()
             ]
 
-            # Add external wake words
             self._external_wake_words.clear()
             for eww in msg.external_wake_words:
                 if eww.model_type != "micro":
@@ -244,7 +238,6 @@ class VoiceSatelliteProtocol(APIServer):
                 ],
                 max_active_wake_words=2,
             )
-            # --- END MODIFIED ---
             
             _LOGGER.info("Connected to Home Assistant")
             self._set_state(SatelliteState.IDLE)
@@ -258,9 +251,7 @@ class VoiceSatelliteProtocol(APIServer):
                     
                 model_info = self.state.available_wake_words.get(wake_word_id)
                 
-                # --- ADDED ---
                 if not model_info:
-                    # Check external wake words (may require download)
                     external_wake_word = self._external_wake_words.get(wake_word_id)
                     if not external_wake_word:
                         _LOGGER.warning("Unknown wake word: %s", wake_word_id)
@@ -268,10 +259,9 @@ class VoiceSatelliteProtocol(APIServer):
 
                     model_info = self._download_external_wake_word(external_wake_word)
                     if not model_info:
-                        continue # download failed
+                        continue
 
                     self.state.available_wake_words[wake_word_id] = model_info
-                # --- END ADDED ---
 
                 _LOGGER.debug("Loading wake word: %s", model_info.wake_word_path)
                 self.state.wake_words[wake_word_id] = model_info.load()
@@ -288,9 +278,8 @@ class VoiceSatelliteProtocol(APIServer):
             self.state.wake_words_changed = True
 
     def handle_audio(self, audio_chunk: bytes) -> None:
-        if not self._is_streaming_audio:
-            return
-        self.send_messages([VoiceAssistantAudio(data=audio_chunk)])
+        if self._is_streaming_audio:
+            self.send_messages([VoiceAssistantAudio(data=audio_chunk)])
 
     def wakeup(self, wake_word: Union[MicroWakeWord, OpenWakeWord]) -> None:
         if self._state not in (SatelliteState.IDLE, SatelliteState.STARTING):
@@ -372,7 +361,6 @@ class VoiceSatelliteProtocol(APIServer):
             ),
         )
 
-    # --- ADDED ---
     def _download_external_wake_word(
         self, external_wake_word: VoiceAssistantExternalWakeWord
     ) -> Optional[AvailableWakeWord]:
@@ -382,7 +370,6 @@ class VoiceSatelliteProtocol(APIServer):
         config_path = eww_dir / f"{external_wake_word.id}.json"
         should_download_config = not config_path.exists()
 
-        # Check if we need to download the model file
         model_path = eww_dir / f"{external_wake_word.id}.tflite"
         should_download_model = True
         if model_path.exists():
@@ -399,7 +386,6 @@ class VoiceSatelliteProtocol(APIServer):
                     )
 
         if should_download_config or should_download_model:
-            # Download config
             _LOGGER.debug("Downloading %s to %s", external_wake_word.url, config_path)
             with urlopen(external_wake_word.url) as request:
                 if request.status != 200:
@@ -414,7 +400,6 @@ class VoiceSatelliteProtocol(APIServer):
                     shutil.copyfileobj(request, model_file)
 
         if should_download_model:
-            # Download model file
             parsed_url = urlparse(external_wake_word.url)
             parsed_url = parsed_url._replace(
                 path=posixpath.join(posixpath.dirname(parsed_url.path), model_path.name)
@@ -437,9 +422,8 @@ class VoiceSatelliteProtocol(APIServer):
             type=WakeWordType.MICRO_WAKE_WORD,
             wake_word=external_wake_word.wake_word,
             trained_languages=external_wake_word.trained_languages,
-            wake_word_path=config_path, # micro-wakeword loads from config
+            wake_word_path=config_path,
         )
-    # --- END ADDED ---
 
     def connection_lost(self, exc):
         super().connection_lost(exc)
