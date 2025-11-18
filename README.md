@@ -9,10 +9,10 @@ See [the tutorial](docs/linux-voice-assistant-2mic-install.md) to build a satell
 
 ### What's working:
 - This fork is from https://github.com/OHF-Voice/linux-voice-assistant Release v1.0.0 which introduces the ablity to use both MicroWakeWord and OpenWakeWord detections models.
-- Updated to support LED Events including GPIO based LED controls. Defaults to the ReSpeaker 2Mic Hat SPI leds, but you can use the Grove port GPIO12/13 by adding run config statements.
+- Updated to support LED Events including GPIO based LED controls. Defaults to the ReSpeaker 2Mic Hat SPI leds, but you can use the Grove port GPIO12/13 by updating the config.json file.
 - Updated to support running either APA102 or WS2812B LEDs from the SPI interface using a Micro Connectors 40-pin GPIO 1 to 2 Expansion Board. See the tutorial for instructions.
 - Now supports **ALSA, PulseAudio and PipeWire** playback backends using the updated `linux_voice_assistant/mpv_player.py`.
-- LVA will detect PipeWire, PulseAudio, and Alse audio backends and automatically use them in this order. You can override the by using the run configurations.
+- LVA will detect PipeWire, PulseAudio, and Alse audio backends and automatically use them in this order. You can override the by using the config.json file.
 - You can choose between all MWW and OWW wake word within HA after the VLA is registered. Choosen wake words are saved to preferences.json in the linux-voice-assistant folder.
 - The volume control is now persistant between connections and reboots. The volume setting gets stored in prefernces.json and loaded when LVA starts.
 
@@ -46,18 +46,18 @@ Install system dependencies (`apt-get`):
 Clone and install project:
 
 ``` sh
-git clone https://github.com/OHF-Voice/linux-voice-assistant.git
+git clone https://github.com/imonlinux/linux-voice-assistant.git
 cd linux-voice-assistant
 script/setup
 ```
 
 ## Running
 
-Use `script/run` or `python3 -m linux_voice_assistant`
+Use `script/run -c linux_voice_assistant/config.json` or `python3 -m linux_voice_assistant -c linux_voice_assistant/config.json`
 
-See `--help` for more options.
+See `linux_voice_assistant/config.json.example` for more options.
 
-## Connecting to Home Assistant
+## Connecting to Home Assistant if not auto detected
 
 1. In Home Assistant, go to "Settings" -> "Device & services"
 2. Click the "Add integration" button
@@ -72,9 +72,9 @@ See `--help` for more options.
 * ~~Merge jianyu-li's PR from source project to add mute switch function in this branch~~
 * ~~Implement MQTT entities to support advanced controls of the LVA.~~
 * ~~Configure LVA to advertise on Zeroconf/mDNS via Avahi for HA to auto detect (in progress)~~ (Not needed as Release v1.0.0 implemented in code)
-* Implement a single LVA systemd unit file that can be addapted using profiles and drop-ins (in progress)
+* ~~Implement a single LVA systemd unit file that can be addapted using profiles and drop-ins (in progress)~~
 * Implement OWW model validation checks and error handling so that a bad model doesn't crash OWW
-* Make the selection of the right ALSA ar PA device more scripted
+* ~~Make the selection of the right ALSA ar PA device more scripted~~
 * ~~Make a Docker of the project~~ Already done in parent repo.
 * ~~Add sensor entity that displays which wake word engine is being used for HA~~ (Not needed as you can use both at the same time)
 * Could this be an DEB package?
