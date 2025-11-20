@@ -8,14 +8,16 @@ Supports announcments, start/continue conversation, and timers.
 See [the tutorial](docs/linux-voice-assistant-2mic-install.md) to build a satellite using a [Raspberry Pi Zero 2 W](https://www.raspberrypi.com/products/raspberry-pi-zero-2-w/) and a [ReSpeaker 2Mic HAT](https://wiki.keyestudio.com/Ks0314_keyestudio_ReSpeaker_2-Mic_Pi_HAT_V1.0). 
 
 ### What's working:
-- This fork is from https://github.com/OHF-Voice/linux-voice-assistant Release v1.0.0 which introduces the ablity to use both MicroWakeWord and OpenWakeWord detections models.
-- Refactor: Sync with Upstream Architectural Changes (Nov 2025) incudes the 7 commits since the release of v1.0.0.
+- This fork is from https://github.com/OHF-Voice/linux-voice-assistant Release v1.0.0 which introduces the ability to use both MicroWakeWord and OpenWakeWord detections models.
+- Refactor: Sync with Upstream architectural changes, includes the 7 commits since the release of v1.0.0.
+- **Core Refactor (Nov 2025):** Major architectural cleanup moving audio logic to a dedicated engine.
+- **Persistent Device Identity:** (solves the "new device discovered on every boot" issue).
+- **Performance Optimization:** Optimized audio threading for lower CPU usage when muted and improved responsiveness (reduced latency) when unmuted.
+- **Non-Blocking Operations:** Wake word model downloads are now handled in background threads, preventing the device (LEDs/MQTT) from freezing during configuration updates.
 - Updated to support LED Events including GPIO based LED controls. Defaults to the ReSpeaker 2Mic Hat SPI leds, but you can use the Grove port GPIO12/13 by updating the config.json file.
 - Updated to support running either APA102 or WS2812B LEDs from the SPI interface using a Micro Connectors 40-pin GPIO 1 to 2 Expansion Board. See the tutorial for instructions.
-- Now supports **ALSA, PulseAudio and PipeWire** playback backends using the updated `linux_voice_assistant/mpv_player.py`.
-- LVA will detect PipeWire, PulseAudio, and Alse audio backends and automatically use them in this order. You can override the by using the config.json file.
-- You can choose between all MWW and OWW wake word within HA after the VLA is registered. Choosen wake words are saved to preferences.json in the linux-voice-assistant folder.
-- The volume control is now persistant between connections and reboots. The volume setting gets stored in prefernces.json and loaded when LVA starts.
+- You can choose between all MWW and OWW wake word within HA after the VLA is registered. Chosen wake words are saved to preferences.json in the linux-voice-assistant folder.
+- The volume control is now persistent between connections and reboots. The volume setting gets stored in preferences.json and loaded when LVA starts.
 
 ### Add Full MQTT Control for LEDs and Mute
 - This branch introduces a comprehensive MQTT integration to bypass limitations in the pinned aioesphomeapi library and provide full remote control over the voice satellite's features and appearance.
