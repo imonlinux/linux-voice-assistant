@@ -53,18 +53,52 @@ class VoiceSatelliteProtocol(APIServer):
     def __init__(self, state: ServerState) -> None:
         super().__init__(state.name)
         self.state = state
-        self.state.satellite = self 
+        self.state.satellite = self
 
-        self.media_player_entity = MediaPlayerEntity(
-            server=self,
-            state=state,
-            key=len(state.entities),
-            name="Media Player",
-            object_id="linux_voice_assistant_media_player",
-            music_player=state.music_player,
-            announce_player=state.tts_player,
-        )
-        self.state.entities.append(self.media_player_entity)
+        # --- Ensure exactly one MediaPlayerEntity with a stable key ---
+        if self.state.entities:
+            existing = self.state.entities[0]
+            if not isinstance(existing, MediaPlayerEntity):
+                _LOGGER.warning(
+                    "First ESPHome entity is not MediaPlayerEntity (%r). "
+                    "Replacing it with a new MediaPlayerEntity.",
+                    type(existing),
+                )
+                self.media_player_entity = MediaPlayerEntity(
+                    server=self,
+                    state=state,
+                    key=0,
+                    name="Media Player",
+                    object_id="linux_voice_assistant_media_player",
+                    music_player=state.music_player,
+                    announce_player=state.tts_player,
+                )
+                self.state.entities[0] = self.media_player_entity
+            else:
+                # Reuse existing entity but bind it to the current protocol
+                self.media_player_entity = existing
+                self.media_player_entity.server = self
+                self.media_player_entity.key = 0
+        else:
+            # First connection in this process: create the media player once
+            self.media_player_entity = MediaPlayerEntity(
+                server=self,
+                state=state,
+                key=0,
+                name="Media Player",
+                object_id="linux_voice_assistant_media_player",
+                music_player=state.music_player,
+                announce_player=state.tts_player,
+            )
+            self.state.entities.append(self.media_player_entity)
+
+        # If more entities somehow accumulated, prune them to avoid confusing HA
+        if len(self.state.entities) > 1:
+            _LOGGER.warning(
+                "Pruning %d extra ESPHome entities; keeping only the first.",
+                len(self.state.entities) - 1,
+            )
+            del self.state.entities[1:]
 
         # State machine
         self._state: SatelliteState = SatelliteState.STARTING
@@ -76,15 +110,16 @@ class VoiceSatelliteProtocol(APIServer):
 
         self._run_end_received: bool = False
         self._tts_end_received: bool = False
-        self._is_announcement: bool = False # <--- FIX: Track if current audio is an announcement
-        
+        # Track if current audio is an announcement
+        self._is_announcement: bool = False
+
         self._external_wake_words: Dict[str, VoiceAssistantExternalWakeWord] = {}
 
     def _set_state(self, new_state: SatelliteState):
         if self._state == new_state:
             return
 
-        _LOGGER.debug(f"State transition: {self._state} -> {new_state}")
+        _LOGGER.debug("State transition: %s -> %s", self._state, new_state)
         self._state = new_state
 
         if new_state == SatelliteState.IDLE:
@@ -110,21 +145,22 @@ class VoiceSatelliteProtocol(APIServer):
         if event_type == VoiceAssistantEventType.VOICE_ASSISTANT_RUN_START:
             self._run_end_received = False
             self._tts_end_received = False
-            self._is_announcement = False # <--- Reset announcement flag on new run
+            self._is_announcement = False
             self._tts_url = data.get("url")
             self._continue_conversation = False
-        
+
         elif event_type == VoiceAssistantEventType.VOICE_ASSISTANT_STT_START:
             self._set_state(SatelliteState.LISTENING)
-        
+
         elif event_type == VoiceAssistantEventType.VOICE_ASSISTANT_STT_VAD_START:
             self.state.event_bus.publish("voice_vad_start", data)
-        
+
         elif event_type == VoiceAssistantEventType.VOICE_ASSISTANT_STT_END:
             self._is_streaming_audio = False
             self._set_state(SatelliteState.THINKING)
-        
+
         elif event_type == VoiceAssistantEventType.VOICE_ASSISTANT_STT_VAD_END:
+            # No-op for now; could be used for LED cues
             pass
 
         elif event_type == VoiceAssistantEventType.VOICE_ASSISTANT_INTENT_END:
@@ -138,7 +174,7 @@ class VoiceSatelliteProtocol(APIServer):
             self._tts_url = data.get("url")
             self._tts_end_received = True
             self.play_tts()
-            
+
         elif event_type == VoiceAssistantEventType.VOICE_ASSISTANT_RUN_END:
             self._run_end_received = True
             if self._state != SatelliteState.RESPONDING:
@@ -147,7 +183,6 @@ class VoiceSatelliteProtocol(APIServer):
         elif event_type == VoiceAssistantEventType.VOICE_ASSISTANT_ERROR:
             self._set_state(SatelliteState.ERROR)
             self.state.loop.call_later(5.0, self._set_state, SatelliteState.IDLE)
-
 
     def handle_timer_event(
         self,
@@ -172,15 +207,15 @@ class VoiceSatelliteProtocol(APIServer):
             for arg in msg.data:
                 data[arg.name] = arg.value
             self.handle_voice_event(VoiceAssistantEventType(msg.event_type), data)
-        
+
         elif isinstance(msg, VoiceAssistantAnnounceRequest):
             _LOGGER.debug("Announcing: %s", msg.text)
-            urls = []
+            urls: List[str] = []
             if msg.preannounce_media_id:
                 urls.append(msg.preannounce_media_id)
             urls.append(msg.media_id)
-            
-            self._is_announcement = True # <--- FIX: Mark this as an announcement
+
+            self._is_announcement = True
             self.state.active_wake_words.add(self.state.stop_word.id)
             self._continue_conversation = msg.start_conversation
             self.duck()
@@ -188,10 +223,10 @@ class VoiceSatelliteProtocol(APIServer):
             yield from self.media_player_entity.play(
                 urls, announcement=True, done_callback=self._tts_finished
             )
-        
+
         elif isinstance(msg, VoiceAssistantTimerEventResponse):
             self.handle_timer_event(VoiceAssistantTimerEventType(msg.event_type), msg)
-        
+
         elif isinstance(msg, DeviceInfoRequest):
             yield DeviceInfoResponse(
                 uses_password=False,
@@ -205,7 +240,7 @@ class VoiceSatelliteProtocol(APIServer):
                     | VoiceAssistantFeature.TIMERS
                 ),
             )
-        
+
         elif isinstance(
             msg,
             (
@@ -219,9 +254,9 @@ class VoiceSatelliteProtocol(APIServer):
 
             if isinstance(msg, ListEntitiesRequest):
                 yield ListEntitiesDoneResponse()
-        
+
         elif isinstance(msg, VoiceAssistantConfigurationRequest):
-            available_wake_words = [
+            available_wake_words: List[VoiceAssistantWakeWord] = [
                 VoiceAssistantWakeWord(
                     id=ww.id,
                     wake_word=ww.wake_word,
@@ -230,10 +265,15 @@ class VoiceSatelliteProtocol(APIServer):
                 for ww in self.state.available_wake_words.values()
             ]
 
+            # Reset external wake words cache and add new ones
             self._external_wake_words.clear()
             for eww in msg.external_wake_words:
                 if eww.model_type != "micro":
-                    _LOGGER.warning("Skipping external wake word %s (type=%s)", eww.id, eww.model_type)
+                    _LOGGER.warning(
+                        "Skipping external wake word %s (type=%s)",
+                        eww.id,
+                        eww.model_type,
+                    )
                     continue
 
                 available_wake_words.append(
@@ -244,36 +284,39 @@ class VoiceSatelliteProtocol(APIServer):
                     )
                 )
                 self._external_wake_words[eww.id] = eww
-            
+
             yield VoiceAssistantConfigurationResponse(
                 available_wake_words=available_wake_words,
                 active_wake_words=[
-                    ww.id for ww in self.state.wake_words.values() 
+                    ww.id
+                    for ww in self.state.wake_words.values()
                     if ww.id in self.state.active_wake_words
                 ],
                 max_active_wake_words=2,
             )
-            
+
             _LOGGER.info("Connected to Home Assistant")
             self._set_state(SatelliteState.IDLE)
             self.state.event_bus.publish("ha_connected")
-        
+
         elif isinstance(msg, VoiceAssistantSetConfiguration):
-            # FIX: Offload to background task to prevent blocking the loop during download
+            # Offload to background task to prevent blocking the loop during download
             self.state.loop.create_task(self._handle_set_configuration_task(msg))
             # Yield nothing immediately; response will be sent asynchronously
 
-    async def _handle_set_configuration_task(self, msg: VoiceAssistantSetConfiguration) -> None:
+    async def _handle_set_configuration_task(
+        self, msg: VoiceAssistantSetConfiguration
+    ) -> None:
         """Asynchronous handler for SetConfiguration to avoid blocking I/O."""
         active_wake_words: Set[str] = set()
-        
+
         for wake_word_id in msg.active_wake_words:
             if wake_word_id in self.state.wake_words:
                 active_wake_words.add(wake_word_id)
                 continue
-                
+
             model_info = self.state.available_wake_words.get(wake_word_id)
-            
+
             if not model_info:
                 external_wake_word = self._external_wake_words.get(wake_word_id)
                 if not external_wake_word:
@@ -289,14 +332,14 @@ class VoiceSatelliteProtocol(APIServer):
 
             _LOGGER.debug("Loading wake word: %s", model_info.wake_word_path)
             self.state.wake_words[wake_word_id] = model_info.load()
-            
+
             _LOGGER.info("Wake word set: %s", wake_word_id)
             active_wake_words.add(wake_word_id)
             break
-        
+
         self.state.active_wake_words = active_wake_words
         _LOGGER.debug("Active wake words: %s", active_wake_words)
-        
+
         self.state.preferences.active_wake_words = list(active_wake_words)
         self.state.save_preferences()
         self.state.wake_words_changed = True
@@ -308,13 +351,13 @@ class VoiceSatelliteProtocol(APIServer):
     def wakeup(self, wake_word: Union[MicroWakeWord, OpenWakeWord]) -> None:
         if self._state not in (SatelliteState.IDLE, SatelliteState.STARTING):
             return
-            
+
         if self._timer_finished:
             self._timer_finished = False
             self.state.tts_player.stop()
             _LOGGER.debug("Stopping timer finished sound")
             return
-            
+
         wake_word_phrase = getattr(wake_word, "wake_word", "wake word")
         _LOGGER.debug("Detected wake word: %s", wake_word_phrase)
         self.send_messages(
@@ -359,7 +402,7 @@ class VoiceSatelliteProtocol(APIServer):
             self._set_state(SatelliteState.LISTENING)
         else:
             self._set_state(SatelliteState.IDLE)
-        
+
         _LOGGER.debug("Final state determined")
 
     def _tts_finished(self) -> None:
@@ -367,15 +410,14 @@ class VoiceSatelliteProtocol(APIServer):
         self.send_messages([VoiceAssistantAnnounceFinished()])
         _LOGGER.debug("TTS audio playback finished")
 
-        # FIX: If this was just an announcement, we are done.
-        # Or if we received the official Run End.
+        # If this was just an announcement, we are done,
+        # or if we received the official Run End.
         if self._is_announcement or self._run_end_received:
             self._determine_final_state()
             self._is_announcement = False
         else:
             if self._state == SatelliteState.RESPONDING:
                 self._set_state(SatelliteState.THINKING)
-
 
     def _play_timer_finished(self) -> None:
         if not self._timer_finished:
@@ -393,8 +435,8 @@ class VoiceSatelliteProtocol(APIServer):
     ) -> Optional[AvailableWakeWord]:
         """Wrapper to run the blocking download in a thread executor."""
         return await self.state.loop.run_in_executor(
-            None, 
-            functools.partial(self._download_external_wake_word_sync, external_wake_word)
+            None,
+            functools.partial(self._download_external_wake_word_sync, external_wake_word),
         )
 
     def _download_external_wake_word_sync(
@@ -423,7 +465,9 @@ class VoiceSatelliteProtocol(APIServer):
                     )
 
         if should_download_config or should_download_model:
-            _LOGGER.debug("Downloading %s to %s", external_wake_word.url, config_path)
+            _LOGGER.debug(
+                "Downloading %s to %s", external_wake_word.url, config_path
+            )
             try:
                 with urlopen(external_wake_word.url, timeout=10) as request:
                     if request.status != 200:
@@ -436,9 +480,9 @@ class VoiceSatelliteProtocol(APIServer):
 
                     with open(config_path, "wb") as model_file:
                         shutil.copyfileobj(request, model_file)
-            except Exception as e:
-                 _LOGGER.error("Exception downloading config: %s", e)
-                 return None
+            except Exception as exc:  # noqa: BLE001
+                _LOGGER.error("Exception downloading config: %s", exc)
+                return None
 
         if should_download_model:
             parsed_url = urlparse(external_wake_word.url)
@@ -452,15 +496,17 @@ class VoiceSatelliteProtocol(APIServer):
                 with urlopen(model_url, timeout=10) as request:
                     if request.status != 200:
                         _LOGGER.warning(
-                            "Failed to download: %s, status=%s", model_url, request.status
+                            "Failed to download: %s, status=%s",
+                            model_url,
+                            request.status,
                         )
                         return None
 
                     with open(model_path, "wb") as model_file:
                         shutil.copyfileobj(request, model_file)
-            except Exception as e:
-                 _LOGGER.error("Exception downloading model: %s", e)
-                 return None
+            except Exception as exc:  # noqa: BLE001
+                _LOGGER.error("Exception downloading model: %s", exc)
+                return None
 
         return AvailableWakeWord(
             id=external_wake_word.id,
