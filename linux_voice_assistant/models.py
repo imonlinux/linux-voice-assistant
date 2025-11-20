@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import threading
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -13,7 +14,7 @@ from .event_bus import EventBus
 if TYPE_CHECKING:
     from pymicro_wakeword import MicroWakeWord
     from pyopen_wakeword import OpenWakeWord
-    from .entity import ESPHomeEntity, MediaPlayerEntity
+    from .entity import ESPHomeEntity
     from .mpv_player import MpvMediaPlayer
     from .satellite import VoiceSatelliteProtocol
 
@@ -92,7 +93,19 @@ class ServerState:
     refractory_seconds: float = 2.0
     mic_muted: bool = False
     shutdown: bool = False
+
+    # Threading event to pause the audio thread efficiently when muted
+    # set() = Mic is ON (Audio processing running)
+    # clear() = Mic is OFF (Audio processing paused)
+    mic_muted_event: threading.Event = field(default_factory=threading.Event)
     
+    def __post_init__(self):
+        """Ensure the threading event matches the boolean state on init."""
+        if not self.mic_muted:
+            self.mic_muted_event.set()
+        else:
+            self.mic_muted_event.clear()
+
     def save_preferences(self) -> None:
         """Save preferences as JSON."""
         _LOGGER.debug("Saving preferences: %s", self.preferences_path)
