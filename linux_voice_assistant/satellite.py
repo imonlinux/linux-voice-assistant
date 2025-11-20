@@ -76,6 +76,7 @@ class VoiceSatelliteProtocol(APIServer):
 
         self._run_end_received: bool = False
         self._tts_end_received: bool = False
+        self._is_announcement: bool = False # <--- FIX: Track if current audio is an announcement
         
         self._external_wake_words: Dict[str, VoiceAssistantExternalWakeWord] = {}
 
@@ -109,6 +110,7 @@ class VoiceSatelliteProtocol(APIServer):
         if event_type == VoiceAssistantEventType.VOICE_ASSISTANT_RUN_START:
             self._run_end_received = False
             self._tts_end_received = False
+            self._is_announcement = False # <--- Reset announcement flag on new run
             self._tts_url = data.get("url")
             self._continue_conversation = False
         
@@ -177,6 +179,8 @@ class VoiceSatelliteProtocol(APIServer):
             if msg.preannounce_media_id:
                 urls.append(msg.preannounce_media_id)
             urls.append(msg.media_id)
+            
+            self._is_announcement = True # <--- FIX: Mark this as an announcement
             self.state.active_wake_words.add(self.state.stop_word.id)
             self._continue_conversation = msg.start_conversation
             self.duck()
@@ -363,8 +367,11 @@ class VoiceSatelliteProtocol(APIServer):
         self.send_messages([VoiceAssistantAnnounceFinished()])
         _LOGGER.debug("TTS audio playback finished")
 
-        if self._run_end_received:
+        # FIX: If this was just an announcement, we are done.
+        # Or if we received the official Run End.
+        if self._is_announcement or self._run_end_received:
             self._determine_final_state()
+            self._is_announcement = False
         else:
             if self._state == SatelliteState.RESPONDING:
                 self._set_state(SatelliteState.THINKING)
