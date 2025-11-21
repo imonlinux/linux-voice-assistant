@@ -351,6 +351,133 @@ systemctl --user status linux-voice-assistant --no-pager -l
 ```
 </details>
 
+<details>
+<summary><strong>Optional (Acoustic Echo Cancellation) </strong></summary>
+
+This optional configuration support the use AEC and require either a working PipeWire-Pulse or PulseAudio backend.
+
+Enable the echo cancel PulseAudio module:
+
+```bash
+pactl load-module module-echo-cancel \
+  aec_method=webrtc \
+  aec_args="analog_gain_control=1 digital_gain_control=1 noise_suppression=1"
+```
+
+If successfully loaded you will see an ID presented after the command. Keep this ID as you may need it to "tune" the AEC.
+
+```bash
+pactl load-module module-echo-cancel \
+  aec_method=webrtc \
+  aec_args="analog_gain_control=1 digital_gain_control=1 noise_suppression=1"
+536870916
+```
+
+Determine the names of the echo cancellation audio devices. On my system it is "Echo-Cancel Source" and "pipewire/echo-cancel-sink":
+
+```bash
+~/linux-voice-assistant/linux_voice_assistant/script/run --list-input-devices
+Input devices
+=============
+[0] Built-in Audio Stereo
+[1] Echo-Cancel Source
+```
+
+```bash
+~/linux-voice-assistant/linux_voice_assistant/script/run --list-output-devices
+Output devices
+==============
+auto: Autoselect device
+pipewire: Default (pipewire)
+pipewire/alsa_output.platform-soc_sound.stereo-fallback: Built-in Audio Stereo
+pipewire/echo-cancel-sink: Echo-Cancel Sink
+pulse/alsa_output.platform-soc_sound.stereo-fallback: Built-in Audio Stereo
+pulse/echo-cancel-sink: Echo-Cancel Sink
+alsa: Default (alsa)
+alsa/sysdefault: Default Audio Device
+alsa/lavrate: Rate Converter Plugin Using Libav/FFmpeg Library
+alsa/samplerate: Rate Converter Plugin Using Samplerate Library
+alsa/speexrate: Rate Converter Plugin Using Speex Resampler
+alsa/jack: JACK Audio Connection Kit
+alsa/oss: Open Sound System
+alsa/pipewire: PipeWire Sound Server
+alsa/speex: Plugin using Speex DSP (resample, agc, denoise, echo, dereverb)
+alsa/upmix: Plugin for channel upmix (4,6,8)
+alsa/vdownmix: Plugin for channel downmix (stereo) with a simple spacialization
+alsa/playback: playback
+alsa/capture: capture
+alsa/dmixed: dmixed
+alsa/array: array
+alsa/plughw:CARD=vc4hdmi,DEV=0: vc4-hdmi, MAI PCM i2s-hifi-0/Hardware device with all software conversions
+alsa/sysdefault:CARD=vc4hdmi: vc4-hdmi, MAI PCM i2s-hifi-0/Default Audio Device
+alsa/hdmi:CARD=vc4hdmi,DEV=0: vc4-hdmi, MAI PCM i2s-hifi-0/HDMI Audio Output
+alsa/dmix:CARD=vc4hdmi,DEV=0: vc4-hdmi, MAI PCM i2s-hifi-0/Direct sample mixing device
+alsa/usbstream:CARD=vc4hdmi: vc4-hdmi/USB Stream Output
+alsa/plughw:CARD=seeed2micvoicec,DEV=0: seeed-2mic-voicecard, bcm2835-i2s-wm8960-hifi wm8960-hifi-0/Hardware device with all software conversions
+alsa/sysdefault:CARD=seeed2micvoicec: seeed-2mic-voicecard, bcm2835-i2s-wm8960-hifi wm8960-hifi-0/Default Audio Device
+alsa/dmix:CARD=seeed2micvoicec,DEV=0: seeed-2mic-voicecard, bcm2835-i2s-wm8960-hifi wm8960-hifi-0/Direct sample mixing device
+alsa/usbstream:CARD=seeed2micvoicec: seeed-2mic-voicecard/USB Stream Output
+jack: Default (jack)
+sdl: Default (sdl)
+```
+
+**Edit LVA config.json file:**
+
+```bash
+nano ~/linux-voice-assistant/linux_voice_assistant/config.json
+```
+
+**Add AEC configuration entries to LVA config.json file:**
+
+```bash
+  "audio": {
+    "input_device": "Echo-Cancel Source",
+    "input_block_size": 1024,
+    "output_device": "pipewire/echo-cancel-sink"
+  }
+```
+
+**Example (LVA config.json file with MQTT, Grove Port, and AEC enabled)**
+***Note: Change the source and sink values to match your system!***
+
+```bash
+{
+  "app": {
+    "name": "Linux Voice Assistant"
+  },
+  "mqtt": {
+    "host": "192.168.1.2",
+    "port": 1883,
+    "username": "mqtt_username",
+    "password": "mqtt_password"
+  },
+  "led": {
+    "led_type": "dotstar",
+    "interface": "gpio",
+    "clock_pin": 13,
+    "data_pin": 12,
+    "num_leds": 10
+  },
+  "audio": {
+    "input_device": "Echo-Cancel Source",
+    "input_block_size": 1024,
+    "output_device": "pipewire/echo-cancel-sink"
+  }
+}
+```
+
+
+**Enable & start:**
+```bash
+systemctl --user restart linux-voice-assistant.service
+```
+
+**Verify:**
+```bash
+systemctl --user status linux-voice-assistant --no-pager -l
+```
+</details>
+
 ## 6. Connect to Home Assistant
 
 ### If HA does not discover the new LVA:
