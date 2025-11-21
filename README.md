@@ -18,6 +18,7 @@ See [the tutorial](docs/linux-voice-assistant-2mic-install.md) to build a satell
 - Updated to support running either APA102 or WS2812B LEDs from the SPI interface using a Micro Connectors 40-pin GPIO 1 to 2 Expansion Board. See the tutorial for instructions.
 - You can choose between all MWW and OWW wake word within HA after the VLA is registered. Chosen wake words are saved to preferences.json in the linux-voice-assistant folder.
 - The volume control is now persistent between connections and reboots. The volume setting gets stored in preferences.json and loaded when LVA starts.
+- **Acoustic Echo Cancellation (AEC) using WebRTC.** See [the tutorial](docs/linux-voice-assistant-2mic-install.md) for instructions on implementation and tuning.
 
 ### Add Full MQTT Control for LEDs and Mute
 - This branch introduces a comprehensive MQTT integration to bypass limitations in the pinned aioesphomeapi library and provide full remote control over the voice satellite's features and appearance.
@@ -71,7 +72,7 @@ See `linux_voice_assistant/config.json.example` for more options.
 
 ## ToDo:
 
-* Implement echo-cancellation filter in PipeWire. (Improves wake word detection when audio is being played)
+* ~~Implement echo-cancellation filter in PipeWire/PulseAudio.~~ (Taken from upstream and successfully tested)
 * ~~Merge jianyu-li's PR from source project to add mute switch function in this branch~~
 * ~~Implement MQTT entities to support advanced controls of the LVA.~~
 * ~~Configure LVA to advertise on Zeroconf/mDNS via Avahi for HA to auto detect (in progress)~~ (Not needed as Release v1.0.0 implemented in code)

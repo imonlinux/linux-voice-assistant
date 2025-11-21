@@ -171,13 +171,16 @@ def _init_basics() -> Tuple[Config, asyncio.AbstractEventLoop, EventBus]:
 
     if args.list_output_devices:
         print("Output devices\n" + "=" * 14)
+        exit_code = 0
         try:
             player = MpvMediaPlayer(loop=None)
             for speaker in player.player.audio_device_list:
                 print(speaker["name"] + ":", speaker["description"])
         except Exception as e:
             _LOGGER.error("Failed to list output devices: %s", e)
-        sys.exit(1)
+            exit_code = 1
+
+        sys.exit(exit_code)
 
     config_path = args.config
     if not config_path.is_absolute():
