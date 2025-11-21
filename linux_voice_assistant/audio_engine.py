@@ -33,7 +33,7 @@ class AudioEngine:
         self._thread = threading.Thread(
             target=self._process_audio,
             daemon=True,
-            name="AudioEngineThread"
+            name="AudioEngineThread",
         )
         self._thread.start()
 
@@ -48,23 +48,23 @@ class AudioEngine:
     def _process_audio(self):
         """Main audio processing loop."""
         _LOGGER.debug("Audio engine started.")
-        
+
         micro_features = MicroWakeWordFeatures()
         oww_features: Optional[OpenWakeWordFeatures] = None
-        
+
         wake_words: List[Union[MicroWakeWord, OpenWakeWord]] = []
         micro_inputs: List[np.ndarray] = []
         oww_inputs: List[np.ndarray] = []
         has_oww = False
         last_active: Optional[float] = None
-        
+
         try:
             while True:
                 # --- Handle Mute State ---
                 if not self.state.mic_muted_event.is_set():
                     _LOGGER.debug("Audio thread muted. Waiting...")
                     self.state.mic_muted_event.wait()
-                    
+
                     if self.state.shutdown:
                         return
 
@@ -73,27 +73,33 @@ class AudioEngine:
                     micro_features.reset()
                     if oww_features is not None:
                         oww_features.reset()
-                    
-                    # FIX: Allow immediate activation (don't set to 'now')
-                    last_active = None 
-                    
+
+                    # Allow immediate activation (don't enforce refractory here)
+                    last_active = None
+
                     # Flush hardware buffer
                     try:
-                        with self.mic.recorder(samplerate=16000, channels=1, blocksize=self.block_size) as mic_in:
+                        with self.mic.recorder(
+                            samplerate=16000,
+                            channels=1,
+                            blocksize=self.block_size,
+                        ) as mic_in:
                             mic_in.flush()
                     except Exception as e:
                         _LOGGER.warning("Error flushing mic: %s", e)
-                
+
                 if self.state.shutdown:
                     return
-                
+
                 # --- Main Recording Loop ---
                 _LOGGER.debug("Opening audio input device: %s", self.mic.name)
-                with self.mic.recorder(samplerate=16000, channels=1, blocksize=self.block_size) as mic_in:
+                with self.mic.recorder(
+                    samplerate=16000, channels=1, blocksize=self.block_size
+                ) as mic_in:
                     while self.state.mic_muted_event.is_set():
                         if self.state.shutdown:
-                            return 
-                        
+                            return
+
                         audio_chunk_array = mic_in.record(self.block_size).reshape(-1)
                         audio_chunk = (
                             (np.clip(audio_chunk_array, -1.0, 1.0) * 32767.0)
@@ -104,60 +110,141 @@ class AudioEngine:
                         if self.state.satellite is None:
                             time.sleep(0.01)
                             continue
-                        
+
                         # Update active wake words if changed
                         if (not wake_words) or (self.state.wake_words_changed):
                             self.state.wake_words_changed = False
                             wake_words = [
-                                ww for ww in self.state.wake_words.values() 
+                                ww
+                                for ww in self.state.wake_words.values()
                                 if ww.id in self.state.active_wake_words
                             ]
-                            has_oww = any(isinstance(ww, OpenWakeWord) for ww in wake_words)
-                            
+                            has_oww = any(
+                                isinstance(ww, OpenWakeWord) for ww in wake_words
+                            )
+
                             if has_oww and (oww_features is None):
-                                _LOGGER.debug("Initializing OpenWakeWord features...")
+                                _LOGGER.debug(
+                                    "Initializing OpenWakeWord features..."
+                                )
                                 oww_features = OpenWakeWordFeatures.from_builtin()
-                        
+
+                            _LOGGER.debug(
+                                "Rebuilt wake_words list: %s (has_oww=%s, active_ids=%s)",
+                                [
+                                    getattr(ww, "wake_word", getattr(ww, "id", "?"))
+                                    for ww in wake_words
+                                ],
+                                has_oww,
+                                self.state.active_wake_words,
+                            )
+
                         try:
                             # Feature extraction
                             micro_inputs.clear()
-                            micro_inputs.extend(micro_features.process_streaming(audio_chunk))
-                            
+                            micro_inputs.extend(
+                                micro_features.process_streaming(audio_chunk)
+                            )
+
                             if has_oww and oww_features:
                                 oww_inputs.clear()
-                                oww_inputs.extend(oww_features.process_streaming(audio_chunk))
-                            
-                            # Detection
+                                oww_inputs.extend(
+                                    oww_features.process_streaming(audio_chunk)
+                                )
+
+                            # Wake word detection
                             for wake_word in wake_words:
                                 activated = False
                                 if isinstance(wake_word, MicroWakeWord):
-                                    if any(wake_word.process_streaming(mi) for mi in micro_inputs): 
+                                    if any(
+                                        wake_word.process_streaming(mi)
+                                        for mi in micro_inputs
+                                    ):
                                         activated = True
                                 elif isinstance(wake_word, OpenWakeWord):
-                                    if any(p > 0.5 for oi in oww_inputs for p in wake_word.process_streaming(oi)): 
+                                    if any(
+                                        p > 0.5
+                                        for oi in oww_inputs
+                                        for p in wake_word.process_streaming(oi)
+                                    ):
                                         activated = True
-                                
+
                                 if activated:
+                                    wake_phrase = getattr(
+                                        wake_word, "wake_word", "wake word"
+                                    )
+                                    wake_id = getattr(wake_word, "id", None)
+                                    _LOGGER.debug(
+                                        "Wake word ACTIVATED: %s (id=%s)",
+                                        wake_phrase,
+                                        wake_id,
+                                    )
                                     now = time.monotonic()
-                                    if (last_active is None) or ((now - last_active) > self.state.refractory_seconds):
-                                        self.state.loop.call_soon_threadsafe(self.state.satellite.wakeup, wake_word)
+                                    if (last_active is None) or (
+                                        (now - last_active)
+                                        > self.state.refractory_seconds
+                                    ):
+                                        _LOGGER.debug(
+                                            "Wake word ACCEPTED (phrase=%s); "
+                                            "triggering wakeup (Δt=%.2f, refractory=%.2f)",
+                                            wake_phrase,
+                                            0.0
+                                            if last_active is None
+                                            else now - last_active,
+                                            self.state.refractory_seconds,
+                                        )
+                                        self.state.loop.call_soon_threadsafe(
+                                            self.state.satellite.wakeup, wake_word
+                                        )
                                         last_active = now
-                            
+                                    else:
+                                        _LOGGER.debug(
+                                            "Wake word REJECTED by refractory period "
+                                            "(phrase=%s, Δt=%.2f < %.2f)",
+                                            wake_phrase,
+                                            now - last_active,
+                                            self.state.refractory_seconds,
+                                        )
+
                             # Stop word detection
                             stopped = False
                             for micro_input in micro_inputs:
                                 if self.state.stop_word.process_streaming(micro_input):
                                     stopped = True
 
-                            if stopped and (self.state.stop_word.id in self.state.active_wake_words):
-                                self.state.loop.call_soon_threadsafe(self.state.satellite.stop)
-                                
-                            # Pass audio to satellite (for voice streaming)
-                            self.state.loop.call_soon_threadsafe(self.state.satellite.handle_audio, audio_chunk)
+                            if stopped:
+                                _LOGGER.debug(
+                                    "Stop wake word ACTIVATED (id=%s, active_wake_words=%s)",
+                                    getattr(self.state.stop_word, "id", None),
+                                    self.state.active_wake_words,
+                                )
 
-                        except Exception: 
+                            if (
+                                stopped
+                                and self.state.stop_word.id
+                                in self.state.active_wake_words
+                            ):
+                                _LOGGER.debug(
+                                    "Stop wake word ACCEPTED; calling satellite.stop()"
+                                )
+                                self.state.loop.call_soon_threadsafe(
+                                    self.state.satellite.stop
+                                )
+                            elif stopped:
+                                _LOGGER.debug(
+                                    "Stop wake word TRIGGERED but IGNORED because "
+                                    "id=%s not in active_wake_words",
+                                    getattr(self.state.stop_word, "id", None),
+                                )
+
+                            # Pass audio to satellite (for voice streaming)
+                            self.state.loop.call_soon_threadsafe(
+                                self.state.satellite.handle_audio, audio_chunk
+                            )
+
+                        except Exception:
                             _LOGGER.exception("Unexpected error handling audio")
-        
+
         except Exception as e:
             _LOGGER.critical("A soundcard error occurred: %s", e)
             self.state.loop.call_soon_threadsafe(self.state.loop.stop)
