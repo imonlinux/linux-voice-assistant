@@ -376,7 +376,7 @@ pactl load-module module-echo-cancel \
 Determine the names of the echo cancellation audio devices. On my system it is "Echo-Cancel Source" and "pipewire/echo-cancel-sink":
 
 ```bash
-~/linux-voice-assistant/linux_voice_assistant/script/run --list-input-devices
+~/linux-voice-assistant/script/run --list-input-devices
 Input devices
 =============
 [0] Built-in Audio Stereo
@@ -384,7 +384,7 @@ Input devices
 ```
 
 ```bash
-~/linux-voice-assistant/linux_voice_assistant/script/run --list-output-devices
+~/linux-voice-assistant/script/run --list-output-devices
 Output devices
 ==============
 auto: Autoselect device
