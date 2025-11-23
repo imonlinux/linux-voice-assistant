@@ -113,7 +113,12 @@ class VoiceSatelliteProtocol(APIServer):
         # Track if current audio is an announcement
         self._is_announcement: bool = False
 
+        # External wake words announced by Home Assistant
         self._external_wake_words: Dict[str, VoiceAssistantExternalWakeWord] = {}
+
+    # -------------------------------------------------------------------------
+    # State machine helpers
+    # -------------------------------------------------------------------------
 
     def _set_state(self, new_state: SatelliteState):
         if self._state == new_state:
@@ -136,6 +141,10 @@ class VoiceSatelliteProtocol(APIServer):
             self.state.event_bus.publish("voice_responding")
         elif new_state == SatelliteState.ERROR:
             self.state.event_bus.publish("voice_error")
+
+    # -------------------------------------------------------------------------
+    # Voice assistant events
+    # -------------------------------------------------------------------------
 
     def handle_voice_event(
         self, event_type: VoiceAssistantEventType, data: Dict[str, str]
@@ -197,6 +206,10 @@ class VoiceSatelliteProtocol(APIServer):
                 self.duck()
                 self._play_timer_finished()
 
+    # -------------------------------------------------------------------------
+    # Main message handler (called by APIServer)
+    # -------------------------------------------------------------------------
+
     def handle_message(self, msg: message.Message) -> Iterable[message.Message]:
         """
         Handles incoming messages from Home Assistant.
@@ -256,6 +269,7 @@ class VoiceSatelliteProtocol(APIServer):
                 yield ListEntitiesDoneResponse()
 
         elif isinstance(msg, VoiceAssistantConfigurationRequest):
+            # Build list of available wake words (built-in + external)
             available_wake_words: List[VoiceAssistantWakeWord] = [
                 VoiceAssistantWakeWord(
                     id=ww.id,
@@ -285,13 +299,17 @@ class VoiceSatelliteProtocol(APIServer):
                 )
                 self._external_wake_words[eww.id] = eww
 
+            _LOGGER.debug(
+                "VoiceAssistantConfigurationRequest: external_wake_words=%s",
+                [eww.id for eww in msg.external_wake_words],
+            )
+
+            # IMPORTANT: Use self.state.active_wake_words directly here, instead of
+            # filtering through self.state.wake_words (which may not yet contain
+            # newly requested models while they're still loading).
             yield VoiceAssistantConfigurationResponse(
                 available_wake_words=available_wake_words,
-                active_wake_words=[
-                    ww.id
-                    for ww in self.state.wake_words.values()
-                    if ww.id in self.state.active_wake_words
-                ],
+                active_wake_words=sorted(self.state.active_wake_words),
                 max_active_wake_words=2,
             )
 
@@ -300,18 +318,41 @@ class VoiceSatelliteProtocol(APIServer):
             self.state.event_bus.publish("ha_connected")
 
         elif isinstance(msg, VoiceAssistantSetConfiguration):
-            # Offload to background task to prevent blocking the loop during download
+            requested_ids = list(msg.active_wake_words)
+            _LOGGER.debug(
+                "VoiceAssistantSetConfiguration received: active_wake_words=%s",
+                requested_ids,
+            )
+
+            # Update the active_wake_words set immediately so that the *next*
+            # VoiceAssistantConfigurationRequest sees the new state, even while
+            # we are still downloading/loading models in the background.
+            self.state.active_wake_words = set(requested_ids)
+
+            # Offload heavy work (downloads + model loading) to a background task
             self.state.loop.create_task(self._handle_set_configuration_task(msg))
-            # Yield nothing immediately; response will be sent asynchronously
+            # Yield nothing immediately; response to ConfigurationRequest is handled
+            # separately in the VoiceAssistantConfigurationRequest branch.
+
+    # -------------------------------------------------------------------------
+    # SetConfiguration handler (async, runs in background)
+    # -------------------------------------------------------------------------
 
     async def _handle_set_configuration_task(
         self, msg: VoiceAssistantSetConfiguration
     ) -> None:
         """Asynchronous handler for SetConfiguration to avoid blocking I/O."""
+        requested_ids = list(msg.active_wake_words)
+        _LOGGER.debug(
+            "Applying SetConfiguration: requested active_wake_words=%s",
+            requested_ids,
+        )
+
         active_wake_words: Set[str] = set()
 
-        for wake_word_id in msg.active_wake_words:
+        for wake_word_id in requested_ids:
             if wake_word_id in self.state.wake_words:
+                # Already loaded in this process; just mark it active.
                 active_wake_words.add(wake_word_id)
                 continue
 
@@ -335,14 +376,21 @@ class VoiceSatelliteProtocol(APIServer):
 
             _LOGGER.info("Wake word set: %s", wake_word_id)
             active_wake_words.add(wake_word_id)
-            break
+            # Do NOT break; we want to process all requested wake words.
 
+        # Finalize active wake words with the subset that actually succeeded
         self.state.active_wake_words = active_wake_words
-        _LOGGER.debug("Active wake words: %s", active_wake_words)
+        _LOGGER.debug(
+            "Active wake words after SetConfiguration: %s", active_wake_words
+        )
 
         self.state.preferences.active_wake_words = list(active_wake_words)
         self.state.save_preferences()
         self.state.wake_words_changed = True
+
+    # -------------------------------------------------------------------------
+    # Audio handling and wake word triggers
+    # -------------------------------------------------------------------------
 
     def handle_audio(self, audio_chunk: bytes) -> None:
         if self._is_streaming_audio:
@@ -430,6 +478,10 @@ class VoiceSatelliteProtocol(APIServer):
             ),
         )
 
+    # -------------------------------------------------------------------------
+    # External wake word download helpers
+    # -------------------------------------------------------------------------
+
     async def _download_external_wake_word(
         self, external_wake_word: VoiceAssistantExternalWakeWord
     ) -> Optional[AvailableWakeWord]:
@@ -515,6 +567,10 @@ class VoiceSatelliteProtocol(APIServer):
             trained_languages=external_wake_word.trained_languages,
             wake_word_path=config_path,
         )
+
+    # -------------------------------------------------------------------------
+    # Connection lifecycle
+    # -------------------------------------------------------------------------
 
     def connection_lost(self, exc):
         super().connection_lost(exc)
