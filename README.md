@@ -12,7 +12,6 @@ See [the tutorial](docs/linux-voice-assistant-2mic-install.md) to build a satell
 - This fork is from https://github.com/OHF-Voice/linux-voice-assistant Release v1.0.0 which introduces the ability to use both MicroWakeWord and OpenWakeWord detections models.
 - Refactor: Sync with Upstream architectural changes, includes the 7 commits since the release of v1.0.0.
 - **Core Refactor (Nov 2025):** Major architectural cleanup moving audio logic to a dedicated engine.
-- **Persistent Device Identity:** (solves the "new device discovered on every boot" issue).
 - **Performance Optimization:** Optimized audio threading for lower CPU usage when muted and improved responsiveness (reduced latency) when unmuted.
 - **Non-Blocking Operations:** Wake word model downloads are now handled in background threads, preventing the device (LEDs/MQTT) from freezing during configuration updates.
 - Updated to support LED Events including GPIO based LED controls. Defaults to the ReSpeaker 2Mic Hat SPI leds, but you can use the Grove port GPIO12/13 by updating the config.json file.
