@@ -3,6 +3,7 @@
 Experimental Linux voice assistant (LVA) for [Home Assistant][homeassistant] that uses the [ESPHome][esphome] protocol/API (via [aioesphomeapi](https://github.com/esphome/aioesphomeapi)).
 
 Runs on Linux `aarch64` and `x86_64` platforms. Tested with Python 3.13 and Python 3.11.
+**Confirmed working on Rasberry OS (Trixie)
 Supports announcments, start/continue conversation, and timers.
 
 See [the tutorial](docs/linux-voice-assistant-2mic-install.md) to build a satellite using a [Raspberry Pi Zero 2 W](https://www.raspberrypi.com/products/raspberry-pi-zero-2-w/) and a [ReSpeaker 2Mic HAT](https://wiki.keyestudio.com/Ks0314_keyestudio_ReSpeaker_2-Mic_Pi_HAT_V1.0). 
