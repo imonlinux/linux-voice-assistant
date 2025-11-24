@@ -190,7 +190,26 @@ class VoiceSatelliteProtocol(APIServer):
                 self._determine_final_state()
 
         elif event_type == VoiceAssistantEventType.VOICE_ASSISTANT_ERROR:
+            code = data.get("code")
+            message = data.get("message")
+            _LOGGER.debug(
+                "VoiceAssistant error received: code=%s, message=%s", code, message
+            )
+
+            # Treat "no text recognized" as a benign outcome, not a hard error.
+            if code == "stt-no-text-recognized":
+                _LOGGER.debug(
+                    "No text recognized from STT; treating as benign and returning to IDLE."
+                )
+                # Ensure we stop streaming audio for this run
+                self._is_streaming_audio = False
+                # Go directly back to IDLE (unduck, idle LEDs, etc.)
+                self._set_state(SatelliteState.IDLE)
+                return
+
+            # All other errors follow the normal error path.
             self._set_state(SatelliteState.ERROR)
+            # After a brief period, return to IDLE automatically.
             self.state.loop.call_later(5.0, self._set_state, SatelliteState.IDLE)
 
     def handle_timer_event(
