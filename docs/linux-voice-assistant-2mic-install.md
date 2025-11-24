@@ -23,8 +23,8 @@ This guide reproduces a working setup of the **linux-voice-assistant** project w
 ```bash
 sudo apt update
 sudo apt upgrade
-sudo apt install libportaudio2 build-essential git \
-      libmpv-dev mpv python3.11-dev 
+sudo apt install build-essential git \
+      libmpv-dev mpv python3-dev 
 sudo reboot
 ```
 
