@@ -12,9 +12,7 @@
 This guide reproduces a working setup of the **linux-voice-assistant** project with **Wyoming OpenWakeWord** and **MicroWakeWord** on a Raspberry PI Zero 2W and a Respeaker 2‑mic HAT (e.g., seeed-2mic-voicecard). It assumes a fresh system with sudo access and the default "pi" user. Included is the option to use PipeWire or PulseAudio instead of ALSA.
 
 ## Prerequisites
-- Raspberry Pi OS Lite (64-bit)
-  - Linux 6.12.34+rpt-rpi-v8 #1 SMP PREEMPT Debian 1:6.12.34-1+rpt1~bookworm
-  - (2025-06-26) aarch64 GNU/Linux
+- Raspberry Pi OS Lite (64-bit) (Bookworm or Trixie)
 - Default Python 3.11+ recommended
 - A ReSpeaker 2‑mic sound card or compatable
 - Network access to your Home Assistant instance
@@ -465,6 +463,28 @@ nano ~/linux-voice-assistant/linux_voice_assistant/config.json
   }
 }
 ```
+
+**AEP Tuning Options (aec_args)**
+
+In order to modify the echo cancellation device setting, you must first remove the previously installed modules.
+
+Remove AEP module (use the module ID listed when AEP module was loaded):
+
+```bash
+pactl unload-module 536870916
+```
+
+AEP tuning settings:
+
+| Setting                | Allowed Values | Typical Value | What It Does                                                                 | When To Change                                                                                  |
+|------------------------|----------------|---------------|-------------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------|
+| `analog_gain_control`  | `0` or `1`     | `0`           | Lets WebRTC AEC “ride” the hardware/analog mic gain.                         | Leave `0` when you already tuned mic gain in ALSA/Pulse. Use `1` only if your mic is too quiet and you want auto-leveling at the expense of some consistency. |
+| `digital_gain_control` | `0` or `1`     | `1`           | Software AGC on the captured signal (after the ADC).                         | Keep `1` for voice assistants so wake-word and STT get a stable level. Turn `0` if you already run separate AGC or notice pumping/breathing.                  |
+| `noise_suppression`    | `0` or `1`     | `1`           | Enables WebRTC noise reduction on the mic signal.                            | Keep `1` in most cases (fans, room noise). Try `0` if audio sounds “underwater” or dull and your environment is already very quiet.                          |
+| `extended_filter`*     | `0` or `1`     | `1` (often)   | Uses a more robust AEC filter that handles tricky echo paths / long delays.  | Use `1` for speaker-in-room setups (like LVA) unless CPU is extremely constrained.                                      |
+| `delay_agnostic`*      | `0` or `1`     | `1` (often)   | Makes AEC less sensitive to exact playback/capture latency.                  | Keep `1` if devices/paths change or Bluetooth is involved. Set `0` only if you know latency is rock-stable and want to shave a bit of CPU.                  |
+| `drift_compensation`*  | `0` or `1`     | `1` (often)   | Compensates for clock drift between capture and playback devices.            | Use `1` if mic and speakers are on different hardware (USB mic + HDMI/Bluetooth out). `0` is OK when both share the same clock (onboard codec only).        |
+| `voice_detection`*     | `0` or `1`     | `0` or `1`    | Simple VAD that can help AEC and noise suppression focus on speech segments. | Try `1` if you see good wake-word hits but noisy STT. Use `0` if it seems to cut off very quiet speech or initial phonemes.                                 |
 
 
 **Enable & start:**
