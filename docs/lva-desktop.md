@@ -7,21 +7,21 @@
 ```bash
 sudo apt update
 sudo apt install \
-  libmpv-dev git python3-dev
+  libmpv-dev git python3-dev mpv
 ```
 
 ### Fedora based distro:
 
 ```bash
 sudo dnf install \
-  mpv-devel python3-devel git
+  mpv-devel python3-devel git mpv
 ```
 
 ### Arch based distro:
 
 ```bash
 sudo pacman -Syu \
-  python-pip python-virtualenv 
+  python-pip python-virtualenv mpv
 ```
 
 ### 2. Open Firewall for LVA:
