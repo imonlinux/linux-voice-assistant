@@ -39,6 +39,8 @@ dependencies = [
     "RPi.GPIO",
     "gpiozero",
     "spidev",
+    "PyQt5",
+    "PyQt6",
 ]
 
 [project.optional-dependencies]
