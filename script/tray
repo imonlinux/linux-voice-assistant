@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Resolve repo root (one level up from this script)
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# Activate venv if present
+if [[ -d "$ROOT_DIR/.venv" ]]; then
+  # shellcheck disable=SC1090
+  source "$ROOT_DIR/.venv/bin/activate"
+fi
+
+cd "$ROOT_DIR"
+
+# Run the tray client
+exec python lva_tray_client.py "$@"
+
