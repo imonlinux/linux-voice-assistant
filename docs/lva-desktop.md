@@ -52,6 +52,7 @@ git clone https://github.com/imonlinux/linux-voice-assistant.git
 
 ```bash
 cd linux-voice-assistant/
+chmod +x script/tray
 script/setup
 ```
 
