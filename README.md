@@ -16,6 +16,7 @@ Want to run the satellite on a Linux desktop using a simple tray client? See [th
 - This fork is from https://github.com/OHF-Voice/linux-voice-assistant Release v1.0.0 which introduces the ability to use both MicroWakeWord and OpenWakeWord detections models.
 - Refactor: Sync with Upstream architectural changes, includes the 7 commits since the release of v1.0.0.
 - **Core Refactor (Nov 2025):** Major architectural cleanup moving audio logic to a dedicated engine.
+- **Changed Alarm to include a Duration Setting:** Added a MQTT control to make the alarm duration adjustable.
 - **Performance Optimization:** Optimized audio threading for lower CPU usage when muted and improved responsiveness (reduced latency) when unmuted.
 - **Non-Blocking Operations:** Wake word model downloads are now handled in background threads, preventing the device (LEDs/MQTT) from freezing during configuration updates.
 - Updated to support LED Events including GPIO based LED controls. Defaults to the ReSpeaker 2Mic Hat SPI leds, but you can use the Grove port GPIO12/13 by updating the config.json file.
@@ -36,6 +37,8 @@ Want to run the satellite on a Linux desktop using a simple tray client? See [th
 - A full suite of select and light entities to customize the effect, color, and brightness for each voice assistant state (Idle, Listening, Thinking, Responding, Error).
 
 - A number entity to configure the number of LEDs in the strip, allowing for use with custom hardware.
+
+- A number entity to configure the duration of the alarm in seconds. A setting of 0 leaves the alarm in (until stopped) mode.
 
 - All settings are persistent, retained by the MQTT broker and re-applied whenever the application restarts.
 
