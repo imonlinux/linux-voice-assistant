@@ -116,6 +116,9 @@ class VoiceSatelliteProtocol(APIServer):
         # External wake words announced by Home Assistant
         self._external_wake_words: Dict[str, VoiceAssistantExternalWakeWord] = {}
 
+        # Timer alarm auto-stop handle
+        self._timer_auto_stop_handle: Optional[asyncio.TimerHandle] = None
+
     # -------------------------------------------------------------------------
     # State machine helpers
     # -------------------------------------------------------------------------
@@ -224,6 +227,21 @@ class VoiceSatelliteProtocol(APIServer):
                 self._timer_finished = True
                 self.duck()
                 self._play_timer_finished()
+
+                # Schedule auto-stop if configured
+                duration = getattr(
+                    self.state.preferences, "alarm_duration_seconds", 0
+                )
+                if duration > 0:
+                    if self._timer_auto_stop_handle is not None:
+                        self._timer_auto_stop_handle.cancel()
+                    _LOGGER.debug(
+                        "Scheduling auto-stop for timer alarm after %s seconds",
+                        duration,
+                    )
+                    self._timer_auto_stop_handle = self.state.loop.call_later(
+                        duration, self._auto_stop_timer_alarm
+                    )
 
     # -------------------------------------------------------------------------
     # Main message handler (called by APIServer)
@@ -384,7 +402,9 @@ class VoiceSatelliteProtocol(APIServer):
                     continue
 
                 # Await the non-blocking download
-                model_info = await self._download_external_wake_word(external_wake_word)
+                model_info = await self._download_external_wake_word(
+                    external_wake_word
+                )
                 if not model_info:
                     continue
 
@@ -415,14 +435,58 @@ class VoiceSatelliteProtocol(APIServer):
         if self._is_streaming_audio:
             self.send_messages([VoiceAssistantAudio(data=audio_chunk)])
 
-    def wakeup(self, wake_word: Union[MicroWakeWord, OpenWakeWord]) -> None:
-        if self._state not in (SatelliteState.IDLE, SatelliteState.STARTING):
+    def _clear_timer_auto_stop(self) -> None:
+        """Cancel any pending auto-stop for the timer alarm."""
+        if self._timer_auto_stop_handle is not None:
+            try:
+                self._timer_auto_stop_handle.cancel()
+            except Exception:
+                _LOGGER.exception("Failed to cancel timer auto-stop handle")
+            finally:
+                self._timer_auto_stop_handle = None
+
+    def _stop_timer_alarm(self, reason: str) -> None:
+        """
+        Stop the repeating timer-finished alarm sound and clean up flags.
+
+        This is used for:
+        - Stop wake word / explicit stop()
+        - Any wake word while timer is ringing (existing behavior)
+        - Auto-stop after alarm_duration_seconds
+        """
+        if not self._timer_finished:
             return
 
-        if self._timer_finished:
-            self._timer_finished = False
+        _LOGGER.debug("Stopping timer finished sound (%s)", reason)
+        self._timer_finished = False
+        self._clear_timer_auto_stop()
+        try:
             self.state.tts_player.stop()
-            _LOGGER.debug("Stopping timer finished sound")
+        except Exception:
+            _LOGGER.exception("Error stopping timer finished TTS player")
+        # Ensure we unduck and remove the stop word from active set
+        self.unduck()
+        self.state.active_wake_words.discard(self.state.stop_word.id)
+
+    def _auto_stop_timer_alarm(self) -> None:
+        """Auto-stop callback fired after alarm_duration_seconds."""
+        if not self._timer_finished:
+            return
+        duration = getattr(self.state.preferences, "alarm_duration_seconds", 0)
+        _LOGGER.debug(
+            "Auto-stopping timer finished alarm after %s seconds", duration
+        )
+        self._stop_timer_alarm("auto_timeout")
+
+    def wakeup(self, wake_word: Union[MicroWakeWord, OpenWakeWord]) -> None:
+        if self._state not in (SatelliteState.IDLE, SatelliteState.STARTING):
+            # Existing behavior: ignore wakeup in other states.
+            return
+
+        # If a timer alarm is currently ringing, stop it instead of starting
+        # a new conversation run.
+        if self._timer_finished:
+            self._stop_timer_alarm("wakeup")
             return
 
         wake_word_phrase = getattr(wake_word, "wake_word", "wake word")
@@ -435,14 +499,25 @@ class VoiceSatelliteProtocol(APIServer):
         self.state.tts_player.play(self.state.wakeup_sound)
 
     def stop(self) -> None:
+        """
+        Called when the Stop wake word is detected (or equivalent).
+
+        For timer alarms:
+            - Stop the repeating alarm.
+        For TTS:
+            - Stop playback and treat as user-aborted response.
+        """
         self.state.active_wake_words.discard(self.state.stop_word.id)
-        self.state.tts_player.stop()
+
+        # If the timer alarm is ringing, stop that instead of a TTS run.
         if self._timer_finished:
-            self._timer_finished = False
-            _LOGGER.debug("Stopping timer finished sound")
-        else:
-            _LOGGER.debug("TTS response stopped manually")
-            self._tts_finished()
+            self._stop_timer_alarm("stop_wake_word")
+            return
+
+        # Otherwise this is stopping a TTS response.
+        self.state.tts_player.stop()
+        _LOGGER.debug("TTS response stopped manually")
+        self._tts_finished()
 
     def play_tts(self) -> None:
         if not self._tts_url:
@@ -487,7 +562,13 @@ class VoiceSatelliteProtocol(APIServer):
                 self._set_state(SatelliteState.THINKING)
 
     def _play_timer_finished(self) -> None:
+        """
+        Play the timer-finished sound in a loop until either:
+        - _timer_finished is cleared (Stop/wakeup/auto-timeout), or
+        - alarm_duration_seconds == 0 and user explicitly stops it.
+        """
         if not self._timer_finished:
+            # Alarm has been cleared; restore audio state.
             self.unduck()
             return
         self.state.tts_player.play(
@@ -507,7 +588,9 @@ class VoiceSatelliteProtocol(APIServer):
         """Wrapper to run the blocking download in a thread executor."""
         return await self.state.loop.run_in_executor(
             None,
-            functools.partial(self._download_external_wake_word_sync, external_wake_word),
+            functools.partial(
+                self._download_external_wake_word_sync, external_wake_word
+            ),
         )
 
     def _download_external_wake_word_sync(
@@ -558,7 +641,9 @@ class VoiceSatelliteProtocol(APIServer):
         if should_download_model:
             parsed_url = urlparse(external_wake_word.url)
             parsed_url = parsed_url._replace(
-                path=posixpath.join(posixpath.dirname(parsed_url.path), model_path.name)
+                path=posixpath.join(
+                    posixpath.dirname(parsed_url.path), model_path.name
+                )
             )
             model_url = urlunparse(parsed_url)
 
