@@ -48,7 +48,7 @@ class MediaPlayers:
     tts: MpvMediaPlayer
 
 # -----------------------------------------------------------------------------
-# Mic Mute Handler
+# Mic Mute / Preferences Handler
 # -----------------------------------------------------------------------------
 
 class MicMuteHandler(EventHandler):
@@ -73,18 +73,18 @@ class MicMuteHandler(EventHandler):
         is_muted = data.get("state", False)
         if self.state.mic_muted != is_muted:
             self.state.mic_muted = is_muted
-            
+
             # Synchronize the threading event for the audio loop
             if is_muted:
-                self.state.mic_muted_event.clear() # Pauses audio thread
+                self.state.mic_muted_event.clear()  # Pauses audio thread
             else:
-                self.state.mic_muted_event.set()   # Resumes audio thread
-                
+                self.state.mic_muted_event.set()    # Resumes audio thread
+
             _LOGGER.debug("Mic muted = %s", is_muted)
-            
+
             if self.mqtt_controller:
                 self.mqtt_controller.publish_mute_state(is_muted)
-            
+
             if is_muted:
                 self.event_bus.publish("mic_muted")
             else:
@@ -98,6 +98,45 @@ class MicMuteHandler(EventHandler):
             self.state.preferences.num_leds = num_leds
             self.state.save_preferences()
 
+    @subscribe
+    def set_alarm_duration(self, data: dict):
+        """
+        Event handler to save alarm_duration_seconds to preferences.
+
+        Expected payload from MQTT controller:
+            { "alarm_duration_seconds": <int> }
+
+        Semantics:
+            0  -> infinite alarm (only stop via Stop wake word / wake word logic)
+            >0 -> auto-stop alarm after N seconds (plus Stop wake word support)
+        """
+        duration = data.get("alarm_duration_seconds")
+        if duration is None:
+            return
+
+        try:
+            duration = int(duration)
+        except (TypeError, ValueError):
+            _LOGGER.warning(
+                "Invalid alarm_duration_seconds value received: %r", duration
+            )
+            return
+
+        if duration < 0:
+            _LOGGER.warning(
+                "Negative alarm_duration_seconds (%d) is not allowed; ignoring",
+                duration,
+            )
+            return
+
+        current = getattr(self.state.preferences, "alarm_duration_seconds", 0)
+        if current != duration:
+            _LOGGER.debug(
+                "Updating alarm_duration_seconds: %s -> %s", current, duration
+            )
+            self.state.preferences.alarm_duration_seconds = duration
+            self.state.save_preferences()
+
 # -----------------------------------------------------------------------------
 # Main Application
 # -----------------------------------------------------------------------------
@@ -105,13 +144,13 @@ class MicMuteHandler(EventHandler):
 async def main() -> None:
     # --- 1. Load Basics ---
     config, loop, event_bus = _init_basics()
-    
+
     # --- 2. Load Preferences ---
     preferences = _load_preferences(config)
 
     # --- 3. Find Microphone ---
     mic = _get_microphone(config)
-    
+
     # --- 4. Load Wake Words ---
     wake_word_data = _load_wake_words(config, preferences)
 
@@ -120,17 +159,17 @@ async def main() -> None:
 
     # --- 6. Create Server State ---
     state = _create_server_state(
-        config, loop, event_bus, preferences, 
+        config, loop, event_bus, preferences,
         wake_word_data, media_players
     )
 
     # --- 7. Initialize Controllers ---
     _init_controllers(loop, event_bus, state, config, preferences)
-    
+
     # --- 8. Start Audio Engine ---
     audio_engine = AudioEngine(state, mic, config.audio.input_block_size)
     audio_engine.start()
-    
+
     # --- 9. Run Server ---
     try:
         await _run_server(state, config)
@@ -138,7 +177,7 @@ async def main() -> None:
         # --- 10. Cleanup ---
         _LOGGER.debug("Shutting down...")
         audio_engine.stop()
-        
+
         if hasattr(state, "mqtt_controller") and state.mqtt_controller:
             _LOGGER.debug("Stopping MQTT controller...")
             state.mqtt_controller.stop()
@@ -166,7 +205,10 @@ def _init_basics() -> Tuple[Config, asyncio.AbstractEventLoop, EventBus]:
             for idx, mic in enumerate(sc.all_microphones(include_loopback=False)):
                 print(f"[{idx}]", mic.name)
         except Exception as e:
-            _LOGGER.error("Error listing input devices (ensure audio backend is working): %s", e)
+            _LOGGER.error(
+                "Error listing input devices (ensure audio backend is working): %s",
+                e,
+            )
         sys.exit(0)
 
     if args.list_output_devices:
@@ -182,7 +224,7 @@ def _init_basics() -> Tuple[Config, asyncio.AbstractEventLoop, EventBus]:
 
     config_path = args.config
     if not config_path.is_absolute():
-         config_path = _REPO_DIR / config_path
+        config_path = _REPO_DIR / config_path
     config = load_config_from_json(config_path)
 
     if args.debug:
@@ -197,7 +239,7 @@ def _init_basics() -> Tuple[Config, asyncio.AbstractEventLoop, EventBus]:
 
     loop = asyncio.get_running_loop()
     event_bus = EventBus()
-    
+
     return config, loop, event_bus
 
 def _load_preferences(config: Config) -> Preferences:
@@ -209,8 +251,14 @@ def _load_preferences(config: Config) -> Preferences:
             preferences = Preferences(**preferences_dict)
     else:
         preferences = Preferences()
-    
-    preferences.num_leds = getattr(preferences, 'num_leds', config.led.num_leds)
+
+    # Backwards-compatible defaults / migrations
+    preferences.num_leds = getattr(preferences, "num_leds", config.led.num_leds)
+    # New: default alarm_duration_seconds, 0 = infinite until Stop/wake word
+    preferences.alarm_duration_seconds = getattr(
+        preferences, "alarm_duration_seconds", 0
+    )
+
     return preferences
 
 def _get_microphone(config: Config):
@@ -224,11 +272,11 @@ def _get_microphone(config: Config):
             mic = sc.get_microphone(config.audio.input_device, include_loopback=False)
     else:
         mic = sc.default_microphone()
-    
+
     if mic is None:
         _LOGGER.critical("No microphone found.")
         sys.exit(1)
-        
+
     _LOGGER.info("Using audio input device: %s", mic.name)
     return mic
 
@@ -236,7 +284,7 @@ def _load_wake_words(config: Config, preferences: Preferences) -> WakeWordData:
     """Loads all available and active wake word models."""
     if not config.wake_word.directories:
         config.wake_word.directories = ["wakewords", "wakewords/openWakeWord"]
-        
+
     download_dir = _REPO_DIR / config.wake_word.download_dir
     download_dir.mkdir(parents=True, exist_ok=True)
 
@@ -254,7 +302,7 @@ def _load_wake_words(config: Config, preferences: Preferences) -> WakeWordData:
             with open(config_path, "r", encoding="utf-8") as f:
                 model_config = json.load(f)
                 model_type = WakeWordType(model_config["type"])
-                
+
                 wake_word_path = (
                     config_path.parent / model_config["model"]
                     if model_type == WakeWordType.OPEN_WAKE_WORD
@@ -271,13 +319,13 @@ def _load_wake_words(config: Config, preferences: Preferences) -> WakeWordData:
 
     active: Set[str] = set()
     models: Dict[str, Union[MicroWakeWord, OpenWakeWord]] = {}
-    
+
     if preferences.active_wake_words:
         for ww_id in preferences.active_wake_words:
             if ww_id in available:
                 models[ww_id] = available[ww_id].load()
                 active.add(ww_id)
-    
+
     if not models:
         ww_id = config.wake_word.model
         if ww_id in available:
@@ -294,17 +342,21 @@ def _load_wake_words(config: Config, preferences: Preferences) -> WakeWordData:
 
     return WakeWordData(available, models, active, stop_model)
 
-def _init_media_players(loop: asyncio.AbstractEventLoop, config: Config, preferences: Preferences) -> MediaPlayers:
+def _init_media_players(
+    loop: asyncio.AbstractEventLoop,
+    config: Config,
+    preferences: Preferences,
+) -> MediaPlayers:
     """Initializes the music and TTS media players."""
     music_player = MpvMediaPlayer(
         loop=loop,
         device=config.audio.output_device,
-        initial_volume=preferences.volume_level
+        initial_volume=preferences.volume_level,
     )
     tts_player = MpvMediaPlayer(
         loop=loop,
         device=config.audio.output_device,
-        initial_volume=preferences.volume_level
+        initial_volume=preferences.volume_level,
     )
     return MediaPlayers(music=music_player, tts=tts_player)
 
@@ -375,15 +427,17 @@ def _init_controllers(
 async def _run_server(state: ServerState, config: Config):
     """Starts the ESPHome server and ZeroConf discovery."""
     server = await state.loop.create_server(
-        lambda: VoiceSatelliteProtocol(state), 
-        host=config.esphome.host, 
-        port=config.esphome.port
+        lambda: VoiceSatelliteProtocol(state),
+        host=config.esphome.host,
+        port=config.esphome.port,
     )
     discovery = HomeAssistantZeroconf(port=config.esphome.port, name=config.app.name)
     await discovery.register_server()
 
     async with server:
-        _LOGGER.info("Server started (host=%s, port=%s)", config.esphome.host, config.esphome.port)
+        _LOGGER.info(
+            "Server started (host=%s, port=%s)", config.esphome.host, config.esphome.port
+        )
         await server.serve_forever()
 
 
