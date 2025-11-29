@@ -51,7 +51,7 @@ class AvailableWakeWord:
 
         if self.type == WakeWordType.OPEN_WAKE_WORD:
             from pyopen_wakeword import OpenWakeWord
-            
+
             oww_model = OpenWakeWord.from_model(model_path=self.wake_word_path)
             setattr(oww_model, "wake_word", self.wake_word)
             return oww_model
@@ -64,6 +64,10 @@ class Preferences:
     active_wake_words: List[str] = field(default_factory=list)
     volume_level: float = 1.0
     num_leds: int = 3
+    # New: configurable alarm duration in seconds.
+    # 0 = infinite alarm (only Stop/wake word stops it)
+    # >0 = auto-stop alarm after this many seconds
+    alarm_duration_seconds: int = 0
 
 
 @dataclass
@@ -86,7 +90,7 @@ class ServerState:
     preferences_path: Path
     download_dir: Path
     preferences: Preferences
-    
+
     # --- Fields WITH default values ---
     satellite: "Optional[VoiceSatelliteProtocol]" = None
     wake_words_changed: bool = False
@@ -98,7 +102,7 @@ class ServerState:
     # set() = Mic is ON (Audio processing running)
     # clear() = Mic is OFF (Audio processing paused)
     mic_muted_event: threading.Event = field(default_factory=threading.Event)
-    
+
     def __post_init__(self):
         """Ensure the threading event matches the boolean state on init."""
         if not self.mic_muted:
@@ -112,5 +116,8 @@ class ServerState:
         self.preferences_path.parent.mkdir(parents=True, exist_ok=True)
         with open(self.preferences_path, "w", encoding="utf-8") as preferences_file:
             json.dump(
-                asdict(self.preferences), preferences_file, ensure_ascii=False, indent=4
+                asdict(self.preferences),
+                preferences_file,
+                ensure_ascii=False,
+                indent=4,
             )
