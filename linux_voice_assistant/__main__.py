@@ -15,6 +15,7 @@ from pymicro_wakeword import MicroWakeWord, MicroWakeWordFeatures
 from pyopen_wakeword import OpenWakeWord
 
 from .audio_engine import AudioEngine
+from .button_controller import ButtonController
 from .config import Config, load_config_from_json
 from .event_bus import EventBus, EventHandler, subscribe
 from .led_controller import LedController
@@ -40,6 +41,7 @@ class WakeWordData:
     models: Dict[str, Union[MicroWakeWord, OpenWakeWord]]
     active: Set[str]
     stop_model: MicroWakeWord
+
 
 @dataclass
 class MediaPlayers:
@@ -107,7 +109,7 @@ class MicMuteHandler(EventHandler):
             { "alarm_duration_seconds": <int> }
 
         Semantics:
-            0  -> infinite alarm (only stop via Stop wake word / wake word logic)
+            0  -> infinite alarm (only Stop/wake word stops it)
             >0 -> auto-stop alarm after N seconds (plus Stop wake word support)
         """
         duration = data.get("alarm_duration_seconds")
@@ -423,6 +425,22 @@ def _init_controllers(
         state=state,
         mqtt_controller=mqtt_controller,
     )
+
+    # Hardware button controller (e.g. ReSpeaker 2-Mic HAT)
+    try:
+        if getattr(config, "button", None) is not None and config.button.enabled:
+            button_controller = ButtonController(
+                loop=loop,
+                event_bus=event_bus,
+                state=state,
+                config=config.button,
+            )
+            # Keep a reference on state so it is not garbage-collected.
+            setattr(state, "button_controller", button_controller)
+        else:
+            _LOGGER.debug("ButtonController not enabled in config; skipping")
+    except Exception:
+        _LOGGER.exception("Failed to initialize ButtonController")
 
 async def _run_server(state: ServerState, config: Config):
     """Starts the ESPHome server and ZeroConf discovery."""

@@ -22,6 +22,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
 ]
 requires-python = ">=3.9.0"
 dependencies = [
@@ -39,8 +40,6 @@ dependencies = [
     "RPi.GPIO",
     "gpiozero",
     "spidev",
-    "PyQt5",
-    "PyQt6",
 ]
 
 [project.optional-dependencies]
@@ -50,6 +49,11 @@ dev = [
     "mypy",
     "pylint",
     "pytest",
+]
+
+# Optional GUI/tray dependencies. Only needed on desktop installs that use lva_tray_client.
+tray = [
+    "PyQt5>=5.15",
 ]
 
 [project.urls]

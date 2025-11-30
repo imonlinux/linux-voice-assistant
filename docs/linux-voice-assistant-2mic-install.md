@@ -498,6 +498,82 @@ systemctl --user status linux-voice-assistant --no-pager -l
 ```
 </details>
 
+<details>
+<summary><strong>Optional (GPIO Button)</strong></summary>
+
+Add support for the ReSpeaker 2-Mic HAT momentary button as a first-class control surface for the Linux Voice Assistant. The button now behaves like:
+
+***Short press***
+
+If TTS or music is playing → stop playback (equivalent to the Stop wake word)
+
+Otherwise → start a new conversation (equivalent to a wake word trigger)
+
+***Long press***
+
+Toggle microphone mute (wired through the existing set_mic_mute event, so MQTT state and LEDs stay in sync)
+
+The implementation uses a polling-based GPIO loop (RPi.GPIO) instead of kernel edge-detection to avoid “Failed to add edge detection” issues on some HAT/overlay setups. Button behavior is fully configurable via config.json.
+
+**Requires a compatible GPIO board** This has been tested on the ReSpeaker 2-Mic Pi Hat:
+
+**Edit the LVA config.json file:**
+
+```bash
+nano ~/linux-voice-assistant/linux_voice_assistant/config.json
+```
+
+**Enable the GPIO button support:**
+
+```bash
+"button": {
+  "enabled": true,
+  "pin": 17,
+  "long_press_seconds": 1.0
+  }
+```
+
+**Example (LVA config.json file with MQTT, Grove Port, and GPIO Button enabled** ***Note: The GPIO button can be changed from the default (17) on the 2-Mic hat.***
+
+```bash
+{
+  "app": {
+    "name": "Linux Voice Assistant"
+  },
+  "mqtt": {
+    "host": "192.168.1.2",
+    "port": 1883,
+    "username": "mqtt_username",
+    "password": "mqtt_password"
+  },
+  "led": {
+    "led_type": "dotstar",
+    "interface": "gpio",
+    "clock_pin": 13,
+    "data_pin": 12,
+    "num_leds": 10
+  },
+  "button": {
+  "enabled": true,
+  "pin": 17,
+  "long_press_seconds": 1.0
+  }
+}
+```
+
+**Enable & start:**
+
+```bash
+systemctl --user restart linux-voice-assistant.service
+```
+
+**Verify:**
+
+```bash
+systemctl --user status linux-voice-assistant --no-pager -l
+```
+</details>
+
 ## 6. Connect to Home Assistant
 
 ### If HA does not discover the new LVA:
