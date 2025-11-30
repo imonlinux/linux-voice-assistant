@@ -478,6 +478,16 @@ class VoiceSatelliteProtocol(APIServer):
         )
         self._stop_timer_alarm("auto_timeout")
 
+    def _start_conversation(self, wake_word_phrase: str) -> None:
+        """Shared helper to start a new conversation run."""
+        _LOGGER.debug("Starting conversation: %s", wake_word_phrase)
+        self.send_messages(
+            [VoiceAssistantRequest(start=True, wake_word_phrase=wake_word_phrase)]
+        )
+        self._set_state(SatelliteState.LISTENING)
+        self._is_streaming_audio = True
+        self.state.tts_player.play(self.state.wakeup_sound)
+
     def wakeup(self, wake_word: Union[MicroWakeWord, OpenWakeWord]) -> None:
         if self._state not in (SatelliteState.IDLE, SatelliteState.STARTING):
             # Existing behavior: ignore wakeup in other states.
@@ -491,12 +501,22 @@ class VoiceSatelliteProtocol(APIServer):
 
         wake_word_phrase = getattr(wake_word, "wake_word", "wake word")
         _LOGGER.debug("Detected wake word: %s", wake_word_phrase)
-        self.send_messages(
-            [VoiceAssistantRequest(start=True, wake_word_phrase=wake_word_phrase)]
-        )
-        self._set_state(SatelliteState.LISTENING)
-        self._is_streaming_audio = True
-        self.state.tts_player.play(self.state.wakeup_sound)
+        self._start_conversation(wake_word_phrase)
+
+    def manual_wakeup(self, phrase: str = "button") -> None:
+        """
+        Manual wakeup entrypoint (e.g. hardware button) that behaves like a
+        wake word, but without requiring a wake-word model instance.
+        """
+        if self._state not in (SatelliteState.IDLE, SatelliteState.STARTING):
+            return
+
+        if self._timer_finished:
+            self._stop_timer_alarm("button")
+            return
+
+        _LOGGER.debug("Manual wakeup triggered: %s", phrase)
+        self._start_conversation(phrase)
 
     def stop(self) -> None:
         """
