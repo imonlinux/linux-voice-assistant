@@ -9,7 +9,8 @@ This controller:
 
 Implementation note:
 - Uses a simple polling loop with RPi.GPIO instead of kernel edge detection.
-- This avoids "Failed to add edge detection" errors on some HATs/overlays.
+- On non-Raspberry Pi hosts (or where RPi.GPIO is unusable), the controller
+  cleanly disables itself and logs an info message.
 """
 
 from __future__ import annotations
@@ -24,10 +25,13 @@ from .models import ServerState
 
 _LOGGER = logging.getLogger(__name__)
 
-try:
-    import RPi.GPIO as GPIO
-except ImportError:  # pragma: no cover - non-RPi hosts
-    GPIO = None
+# Try to import RPi.GPIO, but gracefully handle *any* failure.
+# On non-RPi hosts, RPi.GPIO may be installed but will raise RuntimeError
+# at import time ("This module can only be run on a Raspberry Pi!").
+try:  # pragma: no cover - behavior depends on host platform
+    import RPi.GPIO as GPIO  # type: ignore[import]
+except Exception:  # ImportError, RuntimeError, etc.
+    GPIO = None  # type: ignore[assignment]
 
 
 @dataclass
@@ -48,6 +52,8 @@ class ButtonController:
       - Interprets level transitions as press/release.
       - Schedules actions on the asyncio loop via loop.call_soon_threadsafe().
       - Uses the EventBus to toggle mic mute.
+
+    On non-RPi hosts (or when RPi.GPIO isn't usable), it is effectively a no-op.
     """
 
     def __init__(
@@ -84,13 +90,18 @@ class ButtonController:
         self._press_time: float | None = None
         self._last_level: int | None = None
 
+        # If disabled in config, do nothing.
         if not self._cfg.enabled:
-            _LOGGER.info("ButtonController disabled in config; not initializing GPIO")
+            _LOGGER.info(
+                "ButtonController disabled in config; not initializing GPIO"
+            )
             return
 
+        # If RPi.GPIO is unavailable or not usable on this host, also do nothing.
         if GPIO is None:
-            _LOGGER.warning(
-                "RPi.GPIO not available; hardware button support disabled"
+            _LOGGER.info(
+                "RPi.GPIO not available or not usable on this host; "
+                "hardware button support disabled"
             )
             return
 
@@ -107,7 +118,11 @@ class ButtonController:
                 self._cfg.poll_interval_seconds,
             )
         except Exception:
-            _LOGGER.exception("Failed to configure GPIO pin %s for button", self._cfg.pin)
+            _LOGGER.exception(
+                "Failed to configure GPIO pin %s for button; "
+                "hardware button support disabled",
+                self._cfg.pin,
+            )
             return
 
         # Start polling thread
@@ -128,7 +143,7 @@ class ButtonController:
 
         while not getattr(self.state, "shutdown", False):
             try:
-                level = GPIO.input(self._cfg.pin)
+                level = GPIO.input(self._cfg.pin)  # type: ignore[call-arg]
             except Exception:
                 _LOGGER.exception("Error reading GPIO pin %s", self._cfg.pin)
                 break
@@ -220,4 +235,3 @@ class ButtonController:
             "set_mic_mute",
             {"state": new_state},
         )
-
