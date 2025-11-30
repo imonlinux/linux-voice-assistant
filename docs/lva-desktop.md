@@ -54,6 +54,10 @@ git clone https://github.com/imonlinux/linux-voice-assistant.git
 cd linux-voice-assistant/
 chmod +x script/tray
 script/setup
+
+source .venv/bin/activate
+pip install -e .[tray]
+deactivate
 ```
 
 ### 5. Modify config.json File:
