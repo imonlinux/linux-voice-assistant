@@ -38,11 +38,12 @@
     "led_type": "dotstar",
 
     // "interface" can be "spi" (hardware SPI) or "gpio" (bit-banging)
-    "interface": "spi",
+    "interface": "gpio",
 
     // --- GPIO Settings ---
     // These are ONLY used if interface is "gpio"
-    // For Grove on Pi: clock=13, data=12
+    // For DotStar on Grove port: clock=13, data=12
+    // For NeoPixel on Grove port: data=12 (clock not used and is ignored)
     "clock_pin": 13,
     "data_pin": 12,
 
