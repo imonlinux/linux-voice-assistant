@@ -16,6 +16,7 @@ Want to run the satellite on a Linux desktop using a simple tray client? See [th
 - This fork is from https://github.com/OHF-Voice/linux-voice-assistant Release v1.0.0 which introduces the ability to use both MicroWakeWord and OpenWakeWord detections models.
 - Refactor: Sync with Upstream architectural changes, includes the 7 commits since the release of v1.0.0.
 - **Core Refactor (Nov 2025):** Major architectural cleanup moving audio logic to a dedicated engine.
+- **Added ReSpeaker 2-Mic Button Support:** The GPIO button (17) can be enabled via the config.json file. See [the tutorial](docs/linux-voice-assistant-2mic-install.md).
 - **Changed Alarm to include a Duration Setting:** Added a MQTT control to make the alarm duration adjustable.
 - **Performance Optimization:** Optimized audio threading for lower CPU usage when muted and improved responsiveness (reduced latency) when unmuted.
 - **Non-Blocking Operations:** Wake word model downloads are now handled in background threads, preventing the device (LEDs/MQTT) from freezing during configuration updates.
