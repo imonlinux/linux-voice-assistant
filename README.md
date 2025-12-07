@@ -10,6 +10,8 @@ Supports announcments, start/continue conversation, and timers.
 
 See [the tutorial](docs/linux-voice-assistant-2mic-install.md) to build a satellite using a [Raspberry Pi Zero 2 W](https://www.raspberrypi.com/products/raspberry-pi-zero-2-w/) and a [ReSpeaker 2Mic HAT](https://wiki.keyestudio.com/Ks0314_keyestudio_ReSpeaker_2-Mic_Pi_HAT_V1.0).
 
+The LVA now supports the ReSpeaker XVF3800 4 Mic array via the USB interface. See [this tutorial](docs/linux-voice-assistant-xvf3800.md).
+
 Want to run the satellite on a Linux desktop using a simple tray client? See [this tutorial](docs/lva-desktop.md).
 
 ### What's working:
