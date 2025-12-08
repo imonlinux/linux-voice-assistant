@@ -13,7 +13,8 @@ except Exception:
     board = None  # type: ignore[assignment]
     _LOGGER.warning(
         "Adafruit 'board' module not available or unsupported on this platform; "
-        "hardware LEDs will be disabled."
+        "DotStar/NeoPixel GPIO/SPI LED backends will be disabled. "
+        "XVF3800 USB LED backend is unaffected."
     )
 
 from .config import LedConfig
@@ -45,6 +46,12 @@ class LedController(EventHandler):
         self._is_ready = False
         self.leds = None
 
+        # Backend mode:
+        #   "pixels"  -> DotStar / NeoPixel via Adafruit drivers
+        #   "xvf3800" -> XVF3800 USB LED ring backend
+        self._backend_mode: str = "pixels"
+        self._xvf3800_backend = None
+
         # Configured LED behavior
         self.configs = {
             "idle":       {"effect": "off",           "color": _PURPLE, "brightness": 0.5},
@@ -56,29 +63,60 @@ class LedController(EventHandler):
 
         # Determine whether hardware LEDs should be used at all
         config_enabled = getattr(config, "enabled", True)
-        self._enabled = bool(config_enabled) and (board is not None)
+
+        # For XVF3800 we do NOT require the Adafruit 'board' module.
+        if config.led_type == "xvf3800" and config.interface == "usb":
+            self._enabled = bool(config_enabled)
+        else:
+            self._enabled = bool(config_enabled) and (board is not None)
 
         if not config_enabled:
             _LOGGER.info(
                 "LEDs disabled in config (led.enabled = false); "
                 "LedController will run in no-op mode."
             )
-        elif board is None:
+        elif not self._enabled:
             _LOGGER.warning(
-                "LED hardware libraries not available on this platform; "
-                "LedController will run in no-op mode."
+                "LED hardware libraries not available on this platform for led_type=%s; "
+                "LedController will run in no-op mode.",
+                config.led_type,
             )
 
         # Always subscribe to events so MQTT + state logic remains intact,
         # even when LEDs are effectively disabled.
         self._subscribe_all_methods()
 
-        # If LEDs are not enabled or board is unavailable, skip hardware init
+        # If LEDs are not enabled at all, skip hardware init
         if not self._enabled:
             return
 
         # -------------------------------------------------------------------
-        # Hardware initialization (Pi / supported boards only)
+        # XVF3800 USB LED backend
+        # -------------------------------------------------------------------
+        if config.led_type == "xvf3800" and config.interface == "usb":
+            try:
+                from .xvf3800_led_backend import XVF3800LedBackend  # type: ignore[import]
+
+                self._xvf3800_backend = XVF3800LedBackend()
+                self._backend_mode = "xvf3800"
+                self._is_ready = True
+                _LOGGER.info(
+                    "LED Controller initialized for XVF3800 USB LED ring (num_leds=%d).",
+                    self.num_leds,
+                )
+                self.run_action("startup_sequence")
+            except Exception:
+                # Any hardware-related failure leaves us in no-op mode
+                self._is_ready = False
+                self._enabled = False
+                self._xvf3800_backend = None
+                _LOGGER.exception(
+                    "Failed to initialize XVF3800 LED backend. LEDs will be disabled."
+                )
+            return
+
+        # -------------------------------------------------------------------
+        # Hardware initialization (DotStar / NeoPixel via Adafruit drivers)
         # -------------------------------------------------------------------
         try:
             if config.led_type == "neopixel":
@@ -128,6 +166,7 @@ class LedController(EventHandler):
                         board.SCLK, board.MOSI, self.num_leds, auto_write=False
                     )
 
+            self._backend_mode = "pixels"
             self._is_ready = True
             _LOGGER.info(
                 "LED Controller initialized for %d %s LEDs.",
@@ -171,21 +210,99 @@ class LedController(EventHandler):
             self.event_bus.publish("publish_state_to_mqtt", config)
 
     # -----------------------------------------------------------------------
+    # XVF3800-specific helpers
+    # -----------------------------------------------------------------------
+
+    async def _xvf3800_apply_effect(
+        self,
+        effect_name: str,
+        color: Tuple[int, int, int],
+        brightness: float,
+    ) -> None:
+        """Map generic effect/color/brightness to XVF3800 legacy LED controls."""
+        if not (self._enabled and self._is_ready and self._xvf3800_backend):
+            return
+
+        # Clamp brightness 0..1 and map to 0..255
+        brightness = max(0.0, min(1.0, float(brightness)))
+        brightness_255 = int(brightness * 255)
+
+        # Effect mapping to XVF3800 legacy modes
+        effect_map = {
+            "off": 0,           # LED_EFFECT = off
+            "solid": 3,         # single color
+            "slow_pulse": 1,    # breath
+            "medium_pulse": 1,  # breath
+            "fast_pulse": 1,    # breath
+            "slow_blink": 1,    # approximate with breath
+            "medium_blink": 1,  # approximate with breath
+            "fast_blink": 1,    # approximate with breath
+            "spin": 2,          # rainbow as a stand-in for "spin"
+        }
+
+        speed_map = {
+            "off": 0,
+            "solid": 0,
+            "slow_pulse": 0,
+            "medium_pulse": 1,
+            "fast_pulse": 2,
+            "slow_blink": 0,
+            "medium_blink": 1,
+            "fast_blink": 2,
+            "spin": 1,
+        }
+
+        effect_id = effect_map.get(effect_name, 3)
+        speed_id = speed_map.get(effect_name, 1)
+
+        r, g, b = color
+        try:
+            # Apply brightness, color, speed, and effect via USB control transfers.
+            self._xvf3800_backend.set_brightness(brightness_255)
+            if effect_name != "off":
+                self._xvf3800_backend.set_color(r, g, b)
+            self._xvf3800_backend.set_speed(speed_id)
+            self._xvf3800_backend.set_effect(effect_id)
+        except Exception:
+            _LOGGER.exception(
+                "Error sending LED effect '%s' to XVF3800 backend", effect_name
+            )
+
+        # Keep coroutine alive until cancelled so that a new effect
+        # can cancel the previous one consistently.
+        try:
+            while True:
+                await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            return
+
+    # -----------------------------------------------------------------------
     # LED effect coroutines
     # -----------------------------------------------------------------------
 
     async def startup_sequence(self, color=None, brightness=None):
+        # Use a simple green blink on startup for all backends.
         await self.blink(_GREEN, 1.0)
 
     async def off(self, color, brightness):
         if not (self._enabled and self._is_ready):
             return
+
+        if self._backend_mode == "xvf3800":
+            await self._xvf3800_apply_effect("off", _OFF, 0.0)
+            return
+
         self.leds.fill(_OFF)
         self.leds.show()
 
     async def solid(self, color: Tuple[int, int, int], brightness: float):
         if not (self._enabled and self._is_ready):
             return
+
+        if self._backend_mode == "xvf3800":
+            await self._xvf3800_apply_effect("solid", color, brightness)
+            return
+
         r, g, b = color
         self.leds.fill(
             (int(r * brightness), int(g * brightness), int(b * brightness))
@@ -196,10 +313,19 @@ class LedController(EventHandler):
         await self.medium_blink(color, brightness)
 
     async def _base_pulse(
-        self, color: Tuple[int, int, int], brightness: float, speed: float
+        self,
+        effect_name: str,
+        color: Tuple[int, int, int],
+        brightness: float,
+        speed: float,
     ):
         if not (self._enabled and self._is_ready):
             return
+
+        if self._backend_mode == "xvf3800":
+            await self._xvf3800_apply_effect(effect_name, color, brightness)
+            return
+
         try:
             r, g, b = color
             while True:
@@ -218,24 +344,33 @@ class LedController(EventHandler):
                     self.leds.show()
                     await asyncio.sleep(speed)
         except asyncio.CancelledError:
-            if self._enabled and self._is_ready:
+            if self._enabled and self._is_ready and self.leds is not None:
                 self.leds.fill(_OFF)
                 self.leds.show()
 
     async def slow_pulse(self, color, brightness):
-        await self._base_pulse(color, brightness, 0.05)
+        await self._base_pulse("slow_pulse", color, brightness, 0.05)
 
     async def medium_pulse(self, color, brightness):
-        await self._base_pulse(color, brightness, 0.02)
+        await self._base_pulse("medium_pulse", color, brightness, 0.02)
 
     async def fast_pulse(self, color, brightness):
-        await self._base_pulse(color, brightness, 0.008)
+        await self._base_pulse("fast_pulse", color, brightness, 0.008)
 
     async def _base_blink(
-        self, color: Tuple[int, int, int], brightness: float, speed: float
+        self,
+        effect_name: str,
+        color: Tuple[int, int, int],
+        brightness: float,
+        speed: float,
     ):
         if not (self._enabled and self._is_ready):
             return
+
+        if self._backend_mode == "xvf3800":
+            await self._xvf3800_apply_effect(effect_name, color, brightness)
+            return
+
         try:
             r, g, b = color
             bright_color = (
@@ -251,24 +386,29 @@ class LedController(EventHandler):
                 self.leds.show()
                 await asyncio.sleep(speed)
         except asyncio.CancelledError:
-            if self._enabled and self._is_ready:
+            if self._enabled and self._is_ready and self.leds is not None:
                 self.leds.fill(_OFF)
                 self.leds.show()
 
     async def slow_blink(self, color, brightness):
-        await self._base_blink(color, brightness, 1.0)
+        await self._base_blink("slow_blink", color, brightness, 1.0)
 
     async def medium_blink(self, color, brightness):
-        await self._base_blink(color, brightness, 0.5)
+        await self._base_blink("medium_blink", color, brightness, 0.5)
 
     async def fast_blink(self, color, brightness):
-        await self._base_blink(color, brightness, 0.1)
+        await self._base_blink("fast_blink", color, brightness, 0.1)
 
     async def spin(
         self, color: Tuple[int, int, int], brightness: float, speed: float = 0.1
     ):
         if not (self._enabled and self._is_ready):
             return
+
+        if self._backend_mode == "xvf3800":
+            await self._xvf3800_apply_effect("spin", color, brightness)
+            return
+
         try:
             i = 0
             bright_color = (
@@ -283,7 +423,7 @@ class LedController(EventHandler):
                 i += 1
                 await asyncio.sleep(speed)
         except asyncio.CancelledError:
-            if self._enabled and self._is_ready:
+            if self._enabled and self._is_ready and self.leds is not None:
                 self.leds.fill(_OFF)
                 self.leds.show()
 
@@ -313,6 +453,7 @@ class LedController(EventHandler):
 
     @subscribe
     def mic_muted(self, data: dict):
+        # When muted, show a solid dim red on all backends.
         self.run_action("solid", _DIM_RED, 1.0)
 
     @subscribe
