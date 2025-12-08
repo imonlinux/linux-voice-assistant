@@ -25,6 +25,7 @@ from .mpv_player import MpvMediaPlayer
 from .satellite import VoiceSatelliteProtocol
 from .util import get_mac_address, format_mac
 from .zeroconf import HomeAssistantZeroconf
+from .xvf3800_button_controller import XVF3800ButtonController  # NEW
 
 _LOGGER = logging.getLogger(__name__)
 _MODULE_DIR = Path(__file__).parent
@@ -426,21 +427,33 @@ def _init_controllers(
         mqtt_controller=mqtt_controller,
     )
 
-    # Hardware button controller (e.g. ReSpeaker 2-Mic HAT)
+    # Hardware / XVF3800 mute button controller
     try:
-        if getattr(config, "button", None) is not None and config.button.enabled:
-            button_controller = ButtonController(
-                loop=loop,
-                event_bus=event_bus,
-                state=state,
-                config=config.button,
-            )
-            # Keep a reference on state so it is not garbage-collected.
-            setattr(state, "button_controller", button_controller)
+        button_cfg = getattr(config, "button", None)
+        if button_cfg is not None and button_cfg.enabled:
+            mode = getattr(button_cfg, "mode", "gpio").lower()
+            if mode == "xvf3800":
+                _LOGGER.info("Initializing XVF3800ButtonController (mode=xvf3800)")
+                xvf_btn = XVF3800ButtonController(
+                    loop=loop,
+                    event_bus=event_bus,
+                    state=state,
+                    button_config=button_cfg,
+                )
+                setattr(state, "xvf3800_button_controller", xvf_btn)
+            else:
+                _LOGGER.info("Initializing GPIO ButtonController (mode=gpio)")
+                button_controller = ButtonController(
+                    loop=loop,
+                    event_bus=event_bus,
+                    state=state,
+                    config=button_cfg,
+                )
+                setattr(state, "button_controller", button_controller)
         else:
-            _LOGGER.debug("ButtonController not enabled in config; skipping")
+            _LOGGER.debug("Button controller not enabled in config; skipping")
     except Exception:
-        _LOGGER.exception("Failed to initialize ButtonController")
+        _LOGGER.exception("Failed to initialize button controller(s)")
 
 async def _run_server(state: ServerState, config: Config):
     """Starts the ESPHome server and ZeroConf discovery."""
