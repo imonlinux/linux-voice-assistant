@@ -1,62 +1,133 @@
 {
   "app": {
-    "name": "Linux Voice Assistant",
-    "debug": true,
-    "wakeup_sound": "sounds/wake_word_triggered.flac",
-    "timer_finished_sound": "sounds/timer_finished.flac",
-    "preferences_file": "preferences.json"
+    // Human-readable name; also used to derive the MQTT device_id
+    // Example: "Bedroom Voice Assistant" -> device_id = "bedroom_voice_assistant"
+    "name": "Linux Voice Assistant"
   },
-  "audio": {
-    // This is the "manual bypass" for audio.
-    // Set to "null" to use auto-detection (recommended).
-    // Set to specific device names to force them.
-    "input_device": "seeed-2mic-voicecard",
-    "output_device": "alsa/plughw:CARD=seeed2micvoicec",
-    "input_block_size": 1024
-  },
-  "wake_word": {
-    // A list of directories to scan for wake word models
-    "directories": [
-      "wakewords",
-      "wakewords/openWakeWord"
-    ],
-    // The default wake word to use if none is set in preferences
-    "model": "okay_nabu",
-    "stop_model": "stop",
-    "refractory_seconds": 2.0,
-    // Paths are relative to the project root
-    "oww_melspectrogram_model": "wakewords/openWakeWord/melspectrogram.tflite",
-    "oww_embedding_model": "wakewords/openWakeWord/embedding_model.tflite"
-  },
-  "esphome": {
-    // Network settings for the satellite server
-    "host": "0.0.0.0",
-    "port": 6053
-  },
-  "led": {
-    // "led_type" can be "dotstar" (APA102) or "neopixel" (WS2812B)
-    "led_type": "dotstar",
 
-    // "interface" can be "spi" (hardware SPI) or "gpio" (bit-banging)
-    "interface": "gpio",
-
-    // --- GPIO Settings ---
-    // These are ONLY used if interface is "gpio"
-    // For DotStar on Grove port: clock=13, data=12
-    // For NeoPixel on Grove port: data=12 (clock not used and is ignored)
-    "clock_pin": 13,
-    "data_pin": 12,
-
-    // Default number of LEDs. This is overridden by
-    // "num_leds" in preferences.json after first run.
-    "num_leds": 3
-  },
   "mqtt": {
-    // "host" is the only required field to enable MQTT.
-    // If "host" is null or this section is omitted, MQTT is disabled.
+    // Standard MQTT settings (optional if you don't use MQTT/HA discovery)
     "host": "192.168.1.2",
     "port": 1883,
     "username": "mqtt_username",
     "password": "mqtt_password"
+  },
+
+  // ---------------------------------------------------------------------------
+  // LED CONFIGURATION
+  // ---------------------------------------------------------------------------
+  //
+  // The LVA has a single logical LED backend that reflects the internal
+  // voice states (idle/listening/thinking/responding/error) and mic mute.
+  //
+  // "led_type" selects WHICH hardware is used:
+  //   - "dotstar"  = external APA102/DotStar strip
+  //   - "neopixel" = external WS281x/NeoPixel strip
+  //   - "xvf3800"  = use the XVF3800 built-in LED ring via USB control
+  //
+  // "interface" is only meaningful for dotstar/neopixel:
+  //   - "spi"  = hardware SPI (e.g. for APA102 strips)
+  //   - "gpio" = bit-banged output on GPIO pins
+  //
+  // For "xvf3800", LEDs are always controlled over USB; "interface",
+  // "clock_pin", "data_pin", and "num_leds" are ignored by the driver.
+  //
+  "led": {
+    // -------------------------------------------------------------------------
+    // Example 1: XVF3800 built-in LED ring
+    // -------------------------------------------------------------------------
+    // Use the XVF3800 ring as the LVA's state indicator (recommended when
+    // the device is present). The driver talks to the XVF3800 over USB
+    // using the XMOS control protocol (LED_EFFECT, LED_COLOR, etc.).
+    //
+    "led_type": "xvf3800",
+
+    // For xvf3800, the interface is always USB internally.
+    // This field is kept for schema compatibility but is ignored.
+    "interface": "gpio",
+
+    // Ignored when led_type == "xvf3800"
+    "clock_pin": 13,
+    "data_pin": 12,
+
+    // Ignored when led_type == "xvf3800" (ring length is fixed in hardware).
+    // The MQTT "Number of LEDs" entity will not affect the XVF3800 ring.
+    "num_leds": 10
+
+    // -------------------------------------------------------------------------
+    // Example 2: (commented out) DotStar on Grove port
+    // -------------------------------------------------------------------------
+    /*
+    "led_type": "dotstar",
+    "interface": "gpio",
+
+    // For ReSpeaker 2-Mic HAT Grove port:
+    //   Yellow wire -> GPIO12 (data)
+    //   White  wire -> GPIO13 (clock)
+    "clock_pin": 13,
+    "data_pin": 12,
+
+    // Default number of LEDs for a DotStar strip.
+    // This is overridden by preferences.json after first run.
+    "num_leds": 16
+    */
+
+    // -------------------------------------------------------------------------
+    // Example 3: (commented out) NeoPixel on Grove port
+    // -------------------------------------------------------------------------
+    /*
+    "led_type": "neopixel",
+    "interface": "gpio",
+
+    // For NeoPixel, only data_pin is used.
+    // Grove yellow -> GPIO12 (data)
+    "clock_pin": 13,   // Ignored for NeoPixel
+    "data_pin": 12,
+
+    "num_leds": 16
+    */
+  },
+  "button": {
+  // "mode" can be:
+  //   - "gpio"      : ReSpeaker 2-Mic HAT or generic Pi GPIO button
+  //   - "xvf3800"   : Onboard mute button of the ReSpeaker XVF3800
+  "mode": "gpio",
+
+  // GPIO button only (ignored for xvf3800):
+  "enabled": true,
+  "pin": 17,
+  "long_press_seconds": 1.0,
+
+  // XVF3800 mode has no extra options (for now).
+  // It always acts as a "mute toggle" only.
+  },
+
+  // ---------------------------------------------------------------------------
+  // AUDIO CONFIGURATION
+  // ---------------------------------------------------------------------------
+  //
+  // The XVF3800 presents itself as a standard USB audio device:
+  //   - Input:  "reSpeaker XVF3800 4-Mic Array Analog Stereo"
+  //   - Output: "reSpeaker XVF3800 4-Mic Array Analog Stereo"
+  //
+  // With PipeWire or PulseAudio, these names show up in:
+  //   script/run --list-input-devices
+  //   script/run --list-output-devices
+  //
+  "audio": {
+    // Input device name (or leave omitted/empty to use the system default).
+    "input_device": "reSpeaker XVF3800 4-Mic Array Analog Stereo",
+
+    // Default block size for the wake-word + streaming pipeline.
+    "input_block_size": 1024,
+
+    // Output device used for TTS and media playback.
+    // For XVF3800 you can:
+    //   - Use its own speaker output, or
+    //   - Use HDMI/other sinks instead.
+    "output_device": "pipewire/alsa_output.usb-Seeed_Studio_reSpeaker_XVF3800_4-Mic_Array_101991441253700076-00.analog-stereo"
   }
+
+  // You can also include other sections (zeroconf, additional settings, etc.)
+  // as needed by the rest of the LVA configuration model.
 }
