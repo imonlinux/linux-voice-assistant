@@ -44,7 +44,8 @@ class LedConfig:
     interface: str = "spi"
     clock_pin: int = 13
     data_pin: int = 12
-    num_leds: int = 3  # Note: overridden by 'preferences.json' if it exists
+    # Note: overridden by 'preferences.json' if it exists
+    num_leds: int = 3
 
 
 @dataclass
@@ -59,12 +60,27 @@ class MqttConfig:
 
 @dataclass
 class ButtonConfig:
-    """Settings for a hardware momentary button (e.g. ReSpeaker 2-Mic HAT)."""
+    """
+    Settings for a hardware momentary button.
+
+    mode:
+      - "gpio"   -> legacy GPIO button (e.g. ReSpeaker 2-Mic HAT)
+      - "xvf3800"-> USB-based mute integration for the ReSpeaker XVF3800
+
+    For mode="gpio":
+      - 'pin' and 'long_press_seconds' are used (short vs long press).
+    For mode="xvf3800":
+      - The XVF3800ButtonController uses the built-in mute button purely
+        as a mute toggle; 'pin' and 'long_press_seconds' are ignored.
+    """
     enabled: bool = False
-    # BCM GPIO pin number for the button input.
+    mode: str = "gpio"  # "gpio" or "xvf3800"
+    # BCM GPIO pin number for the button input (gpio mode only).
     pin: int = 17
-    # Press duration (in seconds) to be considered a "long press".
+    # Press duration (in seconds) to be considered a "long press" (gpio mode).
     long_press_seconds: float = 1.0
+    # Poll interval used by both GPIO and XVF3800 controllers.
+    poll_interval_seconds: float = 0.01
 
 
 @dataclass
