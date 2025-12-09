@@ -39,7 +39,16 @@ class ESPHomeConfig:
 
 @dataclass
 class LedConfig:
-    """Settings for the LED strip."""
+    """Settings for the LED strip.
+
+    Fields:
+      enabled   -> master on/off for hardware LEDs. If False, LedController
+                   still subscribes to events and publishes MQTT state, but
+                   never touches hardware.
+      led_type  -> "dotstar", "neopixel", or "xvf3800"
+      interface -> "spi", "gpio", "usb", or "i2c" (future)
+    """
+    enabled: bool = True
     led_type: str = "dotstar"
     interface: str = "spi"
     clock_pin: int = 13
