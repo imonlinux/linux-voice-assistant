@@ -353,6 +353,7 @@ class MqttController(EventHandler):
 
             light_state = {
                 "state": "ON" if data.get("effect") != "off" else "OFF",
+                "color_mode": "rgb",
                 "brightness": int(data.get("brightness", 0.5) * 255),
                 "color": {
                     "r": data.get("color")[0],
