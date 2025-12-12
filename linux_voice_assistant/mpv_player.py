@@ -102,8 +102,11 @@ class MpvMediaPlayer:
         self.set_volume(int(initial_volume * 100))
 
         self.is_playing: bool = False
+
+        # One callback per "logical playback session" (music or announce)
         self._done_callback: Optional[Callable[[], None]] = None
         self._done_callback_lock = Lock()
+
         self._pre_duck_volume: Optional[int] = None
 
         # When mpv becomes idle, we treat it as end-of-playback.
@@ -123,11 +126,11 @@ class MpvMediaPlayer:
         :param url: A single URL (str/bytes) or a sequence of URLs.
         :param done_callback: Called once when playback finishes or is stopped.
         """
-        # Ensure player is in a clean state
-        self.stop()
-
-        with self._done_callback_lock:
-            self._done_callback = done_callback
+        # IMPORTANT:
+        # When starting a new playback session (e.g., Music Assistant "next track"),
+        # we must NOT fire the previous session's done_callback (it would set HA to IDLE
+        # even though a new track is starting).
+        self.stop(run_done_callback=False)
 
         playlist: List[str] = []
         if isinstance(url, (list, tuple)):
@@ -138,20 +141,35 @@ class MpvMediaPlayer:
             playlist = [url]
         else:
             _LOGGER.error("play() expected str, bytes, or sequence, got %r", type(url))
-            self._run_done_callback()
+            if done_callback:
+                self._call_done_callback(done_callback)
             return
 
         if not playlist:
-            self._run_done_callback()
+            if done_callback:
+                self._call_done_callback(done_callback)
             return
 
-        # Load the full playlist into mpv
-        self.player.playlist_clear()
-        for item in playlist:
-            self.player.playlist_append(item)
+        with self._done_callback_lock:
+            self._done_callback = done_callback
 
-        self.is_playing = True
-        self.player.playlist_pos = 0  # Start playing from the first item
+        # Load the full playlist into mpv
+        try:
+            self.player.playlist_clear()
+            for item in playlist:
+                self.player.playlist_append(item)
+            self.player.playlist_pos = 0  # Start playing from the first item
+            self.is_playing = True
+        except Exception:
+            _LOGGER.exception("Failed to start playback")
+            self.is_playing = False
+            # pop callback and run it, since we failed to start
+            cb = None
+            with self._done_callback_lock:
+                cb = self._done_callback
+                self._done_callback = None
+            if cb:
+                self._call_done_callback(cb)
 
     def pause(self) -> None:
         """Pauses playback."""
@@ -167,17 +185,33 @@ class MpvMediaPlayer:
         except Exception:
             _LOGGER.exception("resume() failed")
 
-    def stop(self) -> None:
-        """Stops playback and clears the playlist."""
-        if self.is_playing:
-            self.is_playing = False
-            try:
-                self.player.playlist_clear()
-                self.player.command("stop")
-            except Exception:
+    def stop(self, run_done_callback: bool = True) -> None:
+        """Stops playback and clears the playlist.
+
+        :param run_done_callback: If False, clears any prior done_callback without running it.
+                                  This is critical when replacing one track with another.
+        """
+        # Always clear the stored callback so an "old session" callback can't fire later.
+        cb: Optional[Callable[[], None]] = None
+        with self._done_callback_lock:
+            if run_done_callback:
+                cb = self._done_callback
+            self._done_callback = None
+
+        was_playing = self.is_playing
+        self.is_playing = False
+
+        # Best-effort stop. Even if mpv throws, we still want callback behavior.
+        try:
+            self.player.playlist_clear()
+            self.player.command("stop")
+        except Exception:
+            # If this was an external stop request, log it; otherwise keep quiet.
+            if was_playing:
                 _LOGGER.exception("stop() failed")
-            finally:
-                self._run_done_callback()
+
+        if cb:
+            self._call_done_callback(cb)
 
     def set_volume(self, volume: int) -> None:
         """Sets the player volume from 0 to 100."""
@@ -216,25 +250,23 @@ class MpvMediaPlayer:
         if active and self.is_playing:
             _LOGGER.debug("mpv became idle; treating as end-of-playback")
             self.is_playing = False
-            self._run_done_callback()
 
-    def _run_done_callback(self) -> None:
-        """Safely runs the done_callback on the main asyncio loop (if any)."""
-        with self._done_callback_lock:
-            cb = self._done_callback
-            self._done_callback = None
+            cb = None
+            with self._done_callback_lock:
+                cb = self._done_callback
+                self._done_callback = None
 
-        if not cb:
-            return
+            if cb:
+                self._call_done_callback(cb)
 
-        # If we have an asyncio loop, schedule callback there.
+    def _call_done_callback(self, cb: Callable[[], None]) -> None:
+        """Runs a done_callback on the main asyncio loop (if any)."""
         if self.loop is not None:
             try:
                 self.loop.call_soon_threadsafe(cb)
             except Exception:
                 _LOGGER.exception("Error scheduling done_callback on loop")
         else:
-            # Fallback: call directly (used in contexts where no loop is passed).
             try:
                 cb()
             except Exception:
