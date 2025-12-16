@@ -1,0 +1,21 @@
+[Unit]
+Description=Load PipeWire echo-cancel module for LVA
+After=pipewire-pulse.service
+Wants=pipewire-pulse.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+
+# Use a shell so we can do a little logic:
+# 1) Try to unload any existing echo-cancel module (ignore errors)
+# 2) Load the WebRTC echo cancel module with our tuning options
+ExecStart=/usr/bin/bash -lc '\
+  pactl unload-module module-echo-cancel || true; \
+  pactl load-module module-echo-cancel \
+    aec_method=webrtc \
+    aec_args="analog_gain_control=0 digital_gain_control=1 voice_detection=1" \
+'
+
+[Install]
+WantedBy=default.target
