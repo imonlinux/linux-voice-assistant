@@ -24,7 +24,7 @@ This guide reproduces a working setup of the **linux-voice-assistant** project w
 sudo apt update
 sudo apt upgrade
 sudo apt install build-essential git \
-      libmpv-dev mpv python3-dev 
+      libmpv-dev mpv python3-dev python3-venv
 sudo reboot
 ```
 
