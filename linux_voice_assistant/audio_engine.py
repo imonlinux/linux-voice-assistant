@@ -5,7 +5,7 @@ import logging
 import threading
 import time
 import warnings
-from typing import Dict, List, Optional, Union
+from typing import List, Optional, Union
 
 import numpy as np
 import soundcard as sc
@@ -56,9 +56,7 @@ class AudioEngine:
         micro_inputs: List[np.ndarray] = []
         oww_inputs: List[np.ndarray] = []
         has_oww = False
-
-        # Track last activation time per wake word (by id or phrase)
-        last_active_by_id: Dict[str, float] = {}
+        last_active: Optional[float] = None
 
         try:
             while True:
@@ -77,7 +75,7 @@ class AudioEngine:
                         oww_features.reset()
 
                     # Allow immediate activation (don't enforce refractory here)
-                    last_active_by_id.clear()
+                    last_active = None
 
                     # Flush hardware buffer
                     try:
@@ -175,24 +173,16 @@ class AudioEngine:
                                     wake_phrase = getattr(
                                         wake_word, "wake_word", "wake word"
                                     )
-                                    wake_id_attr = getattr(wake_word, "id", None)
-                                    # Use id if available, otherwise phrase string as key
-                                    id_key = wake_id_attr or wake_phrase
-
+                                    wake_id = getattr(wake_word, "id", None)
                                     _LOGGER.debug(
                                         "Wake word ACTIVATED: %s (id=%s)",
                                         wake_phrase,
-                                        wake_id_attr,
+                                        wake_id,
                                     )
-
                                     now = time.monotonic()
-                                    last_active = last_active_by_id.get(id_key)
-
-                                    # If refractory_seconds <= 0, disable gating
-                                    refractory = max(self.state.refractory_seconds, 0.0)
-
                                     if (last_active is None) or (
-                                        (now - last_active) > refractory
+                                        (now - last_active)
+                                        > self.state.refractory_seconds
                                     ):
                                         _LOGGER.debug(
                                             "Wake word ACCEPTED (phrase=%s); "
@@ -201,19 +191,19 @@ class AudioEngine:
                                             0.0
                                             if last_active is None
                                             else now - last_active,
-                                            refractory,
+                                            self.state.refractory_seconds,
                                         )
-                                        last_active_by_id[id_key] = now
                                         self.state.loop.call_soon_threadsafe(
                                             self.state.satellite.wakeup, wake_word
                                         )
+                                        last_active = now
                                     else:
                                         _LOGGER.debug(
                                             "Wake word REJECTED by refractory period "
                                             "(phrase=%s, Δt=%.2f < %.2f)",
                                             wake_phrase,
                                             now - last_active,
-                                            refractory,
+                                            self.state.refractory_seconds,
                                         )
 
                             # Stop word detection
