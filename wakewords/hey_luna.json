@@ -1,6 +1,6 @@
 {
     "type": "micro",
-    "wake_word": "hey_luna",
+    "wake_word": "Hey Luna",
     "author": "adamlonsdale",
     "website": "https://github.com/adamlonsdale",
     "model": "hey_luna.tflite",
