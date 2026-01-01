@@ -100,6 +100,8 @@ class LedController(EventHandler):
                 self._xvf3800_backend = XVF3800LedBackend()
                 self._backend_mode = "xvf3800"
                 self._is_ready = True
+                # XVF3800 ring has a fixed LED count (typically 12)
+                self.num_leds = int(getattr(self._xvf3800_backend, "ring_led_count", 12))
                 _LOGGER.info(
                     "LED Controller initialized for XVF3800 USB LED ring (num_leds=%d).",
                     self.num_leds,
@@ -280,37 +282,108 @@ class LedController(EventHandler):
     # LED effect coroutines
     # -----------------------------------------------------------------------
 
+
+    # -----------------------------------------------------------------------
+    # XVF3800 per-LED helpers (newer firmware)
+    # -----------------------------------------------------------------------
+
+    def _xvf3800_has_per_led(self) -> bool:
+        return bool(getattr(self._xvf3800_backend, "supports_per_led", False))
+
+    def _xvf3800_ring_count(self) -> int:
+        return int(getattr(self._xvf3800_backend, "ring_led_count", 12))
+
+    def _xvf3800_rgb_clamp(self, color):
+        r, g, b = color
+        return (
+            max(0, min(255, int(r))),
+            max(0, min(255, int(g))),
+            max(0, min(255, int(b))),
+        )
+
+    def _xvf3800_brightness_255(self, brightness: float) -> int:
+        b = max(0.0, min(1.0, float(brightness)))
+        return int(b * 255)
+
+    def _xvf3800_apply_ring_solid(self, color, brightness: float) -> None:
+        """Per-LED solid ring.
+
+        NOTE: Some XVF3800 firmwares do not apply LED_BRIGHTNESS to LED_RING_COLOR output.
+        To keep behavior consistent, we scale the RGB values by brightness and write the ring
+        colors directly.
+        """
+        if not self._xvf3800_backend:
+            return
+        r, g, b = self._xvf3800_rgb_clamp(color)
+        brightness = max(0.0, min(1.0, float(brightness)))
+
+        # Ensure firmware effects don't override per-LED output.
+        try:
+            self._xvf3800_backend.set_effect(0)
+        except Exception:
+            pass
+
+        rs = int(r * brightness)
+        gs = int(g * brightness)
+        bs = int(b * brightness)
+        self._xvf3800_backend.set_ring_solid(rs, gs, bs)
+
+    def _xvf3800_apply_ring_clear(self) -> None:
+        if not self._xvf3800_backend:
+            return
+        try:
+            self._xvf3800_backend.set_effect(0)
+        except Exception:
+            pass
+        self._xvf3800_backend.clear_ring()
+
     async def startup_sequence(self, color=None, brightness=None):
         # Use a simple green blink on startup for all backends.
         await self.blink(_GREEN, 1.0)
+
 
     async def off(self, color, brightness):
         if not (self._enabled and self._is_ready):
             return
 
         if self._backend_mode == "xvf3800":
+            # Prefer per-LED ring control when supported by firmware.
+            if self._xvf3800_has_per_led():
+                try:
+                    self._xvf3800_apply_ring_clear()
+                except Exception:
+                    _LOGGER.exception("Error sending per-LED OFF to XVF3800")
+                return
+
             await self._xvf3800_apply_effect("off", _OFF, 0.0)
             return
 
         self.leds.fill(_OFF)
         self.leds.show()
 
+
     async def solid(self, color: Tuple[int, int, int], brightness: float):
         if not (self._enabled and self._is_ready):
             return
 
         if self._backend_mode == "xvf3800":
+            if self._xvf3800_has_per_led():
+                try:
+                    self._xvf3800_apply_ring_solid(color, brightness)
+                except Exception:
+                    _LOGGER.exception("Error sending per-LED SOLID to XVF3800")
+                return
+
             await self._xvf3800_apply_effect("solid", color, brightness)
             return
 
         r, g, b = color
-        self.leds.fill(
-            (int(r * brightness), int(g * brightness), int(b * brightness))
-        )
+        self.leds.fill((int(r * brightness), int(g * brightness), int(b * brightness)))
         self.leds.show()
 
     async def blink(self, color, brightness=1.0):
         await self.medium_blink(color, brightness)
+
 
     async def _base_pulse(
         self,
@@ -323,6 +396,26 @@ class LedController(EventHandler):
             return
 
         if self._backend_mode == "xvf3800":
+            if self._xvf3800_has_per_led():
+                try:
+                    r, g, b = self._xvf3800_rgb_clamp(color)
+                    # Pulse by scaling the per-LED RGB values (some firmwares don't apply LED_BRIGHTNESS to LED_RING_COLOR).
+                    self._xvf3800_backend.set_effect(0)
+                    brightness = max(0.0, min(1.0, float(brightness)))
+                    while True:
+                        for i in range(0, 101, 10):
+                            s = (i / 100.0) * brightness
+                            self._xvf3800_backend.set_ring_solid(int(r * s), int(g * s), int(b * s))
+                            await asyncio.sleep(speed)
+                        for i in range(100, -1, -10):
+                            s = (i / 100.0) * brightness
+                            self._xvf3800_backend.set_ring_solid(int(r * s), int(g * s), int(b * s))
+                            await asyncio.sleep(speed)
+                    return
+                except Exception:
+                    _LOGGER.exception("Error sending per-LED PULSE to XVF3800")
+                    return
+
             await self._xvf3800_apply_effect(effect_name, color, brightness)
             return
 
@@ -331,16 +424,12 @@ class LedController(EventHandler):
             while True:
                 for i in range(0, 101, 10):
                     mod = i / 100.0 * brightness
-                    self.leds.fill(
-                        (int(r * mod), int(g * mod), int(b * mod))
-                    )
+                    self.leds.fill((int(r * mod), int(g * mod), int(b * mod)))
                     self.leds.show()
                     await asyncio.sleep(speed)
                 for i in range(100, -1, -10):
                     mod = i / 100.0 * brightness
-                    self.leds.fill(
-                        (int(r * mod), int(g * mod), int(b * mod))
-                    )
+                    self.leds.fill((int(r * mod), int(g * mod), int(b * mod)))
                     self.leds.show()
                     await asyncio.sleep(speed)
         except asyncio.CancelledError:
@@ -357,6 +446,7 @@ class LedController(EventHandler):
     async def fast_pulse(self, color, brightness):
         await self._base_pulse("fast_pulse", color, brightness, 0.008)
 
+
     async def _base_blink(
         self,
         effect_name: str,
@@ -368,16 +458,34 @@ class LedController(EventHandler):
             return
 
         if self._backend_mode == "xvf3800":
+            if self._xvf3800_has_per_led():
+                try:
+                    r, g, b = self._xvf3800_rgb_clamp(color)
+                    self._xvf3800_backend.set_effect(0)
+                    brightness = max(0.0, min(1.0, float(brightness)))
+                    while True:
+                        # On
+                        self._xvf3800_backend.set_ring_solid(int(r * brightness), int(g * brightness), int(b * brightness))
+                        await asyncio.sleep(speed)
+                        # Off
+                        self._xvf3800_backend.clear_ring()
+                        await asyncio.sleep(speed)
+                except asyncio.CancelledError:
+                    try:
+                        self._xvf3800_apply_ring_clear()
+                    except Exception:
+                        pass
+                    return
+                except Exception:
+                    _LOGGER.exception("Error sending per-LED BLINK to XVF3800")
+                    return
+
             await self._xvf3800_apply_effect(effect_name, color, brightness)
             return
 
         try:
             r, g, b = color
-            bright_color = (
-                int(r * brightness),
-                int(g * brightness),
-                int(b * brightness),
-            )
+            bright_color = (int(r * brightness), int(g * brightness), int(b * brightness))
             while True:
                 self.leds.fill(bright_color)
                 self.leds.show()
@@ -399,6 +507,7 @@ class LedController(EventHandler):
     async def fast_blink(self, color, brightness):
         await self._base_blink("fast_blink", color, brightness, 0.1)
 
+
     async def spin(
         self, color: Tuple[int, int, int], brightness: float, speed: float = 0.1
     ):
@@ -406,6 +515,30 @@ class LedController(EventHandler):
             return
 
         if self._backend_mode == "xvf3800":
+            if self._xvf3800_has_per_led():
+                try:
+                    r, g, b = self._xvf3800_rgb_clamp(color)
+                    ring_n = self._xvf3800_ring_count()
+                    self._xvf3800_backend.set_effect(0)
+                    self._xvf3800_backend.set_brightness(self._xvf3800_brightness_255(brightness))
+
+                    i = 0
+                    while True:
+                        colors = [(0, 0, 0)] * ring_n
+                        colors[i % ring_n] = (r, g, b)
+                        self._xvf3800_backend.set_ring_rgb(colors)
+                        i += 1
+                        await asyncio.sleep(speed)
+                except asyncio.CancelledError:
+                    try:
+                        self._xvf3800_apply_ring_clear()
+                    except Exception:
+                        pass
+                    return
+                except Exception:
+                    _LOGGER.exception("Error sending per-LED SPIN to XVF3800")
+                    return
+
             await self._xvf3800_apply_effect("spin", color, brightness)
             return
 
@@ -426,10 +559,6 @@ class LedController(EventHandler):
             if self._enabled and self._is_ready and self.leds is not None:
                 self.leds.fill(_OFF)
                 self.leds.show()
-
-    # -----------------------------------------------------------------------
-    # State Subscriptions
-    # -----------------------------------------------------------------------
 
     @subscribe
     def voice_idle(self, data: dict):
