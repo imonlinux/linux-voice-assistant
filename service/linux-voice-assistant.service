@@ -1,5 +1,7 @@
 [Unit]
 Description=Linux Voice Assistant
+Wants=pipewire.service wireplumber.service pipewire-pulse.service
+After=pipewire.service wireplumber.service pipewire-pulse.service
 
 [Service]
 Type=simple
