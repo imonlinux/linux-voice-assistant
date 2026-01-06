@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import struct
+import time
 from typing import List, Optional, Sequence, Tuple
 
 import usb.core  # type: ignore[import]
@@ -32,6 +33,14 @@ PARAMETERS = {
     # APPLICATION_SERVICER_RESID (core info)
     # ---------------------------------------------------------------------
     "VERSION": (48, 0, 3, "ro", "uint8"),
+
+    # Firmware / device control
+    "REBOOT":             (48, 7, 1, "wo", "uint8"),
+    "SAVE_CONFIGURATION": (48, 9, 1, "wo", "uint8"),
+
+    # Audio manager output routing (category, source) per channel
+    "AUDIO_MGR_OP_L":     (35, 15, 2, "rw", "uint8"),
+    "AUDIO_MGR_OP_R":     (35, 19, 2, "rw", "uint8"),
 
     # ---------------------------------------------------------------------
     # GPO_SERVICER_RESID (LED controls)
@@ -57,6 +66,14 @@ class _ReSpeaker:
 
     def __init__(self, dev: "usb.core.Device") -> None:  # type: ignore[name-defined]
         self.dev = dev
+
+    def close(self) -> None:
+        """Release any underlying libusb resources (best-effort)."""
+        try:
+            usb.util.dispose_resources(self.dev)
+        except Exception:
+            pass
+
 
     # ------------------------------------------------------------------
     # Encoding / decoding helpers
@@ -174,6 +191,69 @@ def _find_device(vid: int = _ReSpeaker.VID, pid: int = _ReSpeaker.PID) -> Option
         return None
     return _ReSpeaker(dev)
 
+
+
+class XVF3800USBDevice:
+    """Small helper for issuing non-LED XVF3800 control commands via PyUSB.
+
+    This is intentionally minimal and does *not* depend on xvf_host.py.
+    """
+
+    def __init__(self, vid: int = _ReSpeaker.VID, pid: int = _ReSpeaker.PID):
+        self._rsp = _find_device(vid=vid, pid=pid)
+
+    def close(self) -> None:
+        try:
+            self._rsp.close()
+        except Exception:
+            pass
+
+    # --- Device control -----------------------------------------------------
+
+    def reboot(self) -> None:
+        """Reboot the XVF3800 firmware (resets parameters to defaults)."""
+        self._rsp.write("REBOOT", [1])
+
+    def save_configuration(self) -> None:
+        """Persist current runtime settings to flash."""
+        self._rsp.write("SAVE_CONFIGURATION", [1])
+
+    # --- Audio routing ------------------------------------------------------
+
+    def set_audio_mgr_op_l(self, category: int, source: int) -> None:
+        """Set the L output channel source selection (category, source)."""
+        self._rsp.write("AUDIO_MGR_OP_L", [int(category) & 0xFF, int(source) & 0xFF])
+
+    def set_audio_mgr_op_r(self, category: int, source: int) -> None:
+        """Set the R output channel source selection (category, source)."""
+        self._rsp.write("AUDIO_MGR_OP_R", [int(category) & 0xFF, int(source) & 0xFF])
+
+    # --- Wait helpers -------------------------------------------------------
+
+    @staticmethod
+    def wait_for_reenumeration(
+        vid: int = _ReSpeaker.VID,
+        pid: int = _ReSpeaker.PID,
+        timeout_s: float = 12.0,
+        settle_s: float = 1.0,
+    ) -> None:
+        """Wait for the XVF3800 to disappear and then reappear on USB."""
+        start = time.time()
+        # Wait for it to disappear (best effort)
+        while time.time() - start < timeout_s:
+            if usb.core.find(idVendor=vid, idProduct=pid) is None:
+                break
+            time.sleep(0.1)
+
+        # Wait for it to reappear
+        while time.time() - start < timeout_s:
+            if usb.core.find(idVendor=vid, idProduct=pid) is not None:
+                break
+            time.sleep(0.1)
+
+        # Give kernel/userspace audio stack a moment to settle
+        if settle_s > 0:
+            time.sleep(settle_s)
 
 class XVF3800LedBackend:
     """High-level LED backend for the XVF3800."""
