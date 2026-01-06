@@ -1,11 +1,13 @@
 """Configuration models for the application."""
 
+from __future__ import annotations
+
 import json
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import List, Optional
 
-import logging
 _LOGGER = logging.getLogger(__name__)
 
 # -----------------------------------------------------------------------------
@@ -13,11 +15,36 @@ _LOGGER = logging.getLogger(__name__)
 # -----------------------------------------------------------------------------
 
 @dataclass
+class AppConfig:
+    """General application settings."""
+    name: str
+    wakeup_sound: str = "sounds/wake_word_triggered.flac"
+    timer_finished_sound: str = "sounds/timer_finished.flac"
+    preferences_file: str = "preferences.json"
+    debug: bool = False
+
+
+@dataclass
 class AudioConfig:
     """Settings for audio input and output."""
     input_device: Optional[str] = None
     input_block_size: int = 1024
     output_device: Optional[str] = None
+
+    # If True, LVA will attempt to set the OS sink volume to match the persisted
+    # volume in preferences.json on startup (PipeWire/PulseAudio/ALSA best-effort).
+    # Default is False to avoid surprising changes on systems where users manage
+    # volume externally.
+    volume_sync: bool = False
+
+    # Maximum sink volume to map to LVA's 100% volume.
+    #
+    # Example: if max_volume_percent=150 then when LVA's media player reports
+    # 100% (preferences.volume_level == 1.0), the underlying sink will be set
+    # to 150% (or 1.5 for backends that use scalar volume).
+    #
+    # This is useful for devices that need >100% gain on PipeWire/Pulse/ALSA.
+    max_volume_percent: int = 100
 
 
 @dataclass
@@ -39,20 +66,22 @@ class ESPHomeConfig:
 
 @dataclass
 class LedConfig:
-    """Settings for the LED strip.
-
-    Fields:
-      enabled   -> master on/off for hardware LEDs. If False, LedController
-                   still subscribes to events and publishes MQTT state, but
-                   never touches hardware.
-      led_type  -> "dotstar", "neopixel", or "xvf3800"
-      interface -> "spi", "gpio", "usb", or "i2c" (future)
-    """
+    """Settings for LEDs."""
     enabled: bool = True
+
+    # Supported values include:
+    # - "dotstar" / "neopixel" for Pi-attached LED strips
+    # - "xvf3800" for the ReSpeaker XVF3800 USB LED ring backend
     led_type: str = "dotstar"
+
+    # For dotstar/neopixel: "spi" or "gpio"
+    # For xvf3800: "usb"
     interface: str = "spi"
+
+    # GPIO pin numbers used when interface="gpio"
     clock_pin: int = 13
     data_pin: int = 12
+
     # Note: overridden by 'preferences.json' if it exists
     num_leds: int = 3
 
@@ -69,37 +98,24 @@ class MqttConfig:
 
 @dataclass
 class ButtonConfig:
-    """
-    Settings for a hardware momentary button.
+    """Settings for a hardware momentary button."""
 
-    mode:
-      - "gpio"   -> legacy GPIO button (e.g. ReSpeaker 2-Mic HAT)
-      - "xvf3800"-> USB-based mute integration for the ReSpeaker XVF3800
-
-    For mode="gpio":
-      - 'pin' and 'long_press_seconds' are used (short vs long press).
-    For mode="xvf3800":
-      - The XVF3800ButtonController uses the built-in mute button purely
-        as a mute toggle; 'pin' and 'long_press_seconds' are ignored.
-    """
+    # Overall enable/disable (default: off)
     enabled: bool = False
-    mode: str = "gpio"  # "gpio" or "xvf3800"
+
+    # mode:
+    #  - "gpio"   -> legacy GPIO button (e.g. ReSpeaker 2-Mic HAT)
+    #  - "xvf3800"-> USB-based mute integration for the ReSpeaker XVF3800
+    mode: str = "gpio"
+
     # BCM GPIO pin number for the button input (gpio mode only).
     pin: int = 17
+
     # Press duration (in seconds) to be considered a "long press" (gpio mode).
     long_press_seconds: float = 1.0
+
     # Poll interval used by both GPIO and XVF3800 controllers.
     poll_interval_seconds: float = 0.01
-
-
-@dataclass
-class AppConfig:
-    """General application settings."""
-    name: str
-    wakeup_sound: str = "sounds/wake_word_triggered.flac"
-    timer_finished_sound: str = "sounds/timer_finished.flac"
-    preferences_file: str = "preferences.json"
-    debug: bool = False
 
 
 @dataclass
@@ -120,22 +136,18 @@ class Config:
 def load_config_from_json(config_path: Path) -> Config:
     """Loads configuration from a JSON file and populates dataclasses."""
 
-    # --- Step 1: Load raw JSON data ---
     try:
         with open(config_path, "r", encoding="utf-8") as f:
             raw_data = json.load(f)
     except FileNotFoundError:
-        _LOGGER.critical(f"Configuration file not found at: {config_path}")
+        _LOGGER.critical("Configuration file not found at: %s", config_path)
         raise
     except json.JSONDecodeError as e:
-        _LOGGER.critical(f"Error parsing configuration file: {e}")
+        _LOGGER.critical("Error parsing configuration file: %s", e)
         raise
 
-    # --- Step 2: Create config objects from raw data ---
     if "app" not in raw_data:
-        raise ValueError(
-            "Configuration file must contain an 'app' section with a 'name'."
-        )
+        raise ValueError("Configuration file must contain an 'app' section with a 'name'.")
 
     app_config = AppConfig(**raw_data.get("app", {}))
     audio_config = AudioConfig(**raw_data.get("audio", {}))
@@ -145,11 +157,18 @@ def load_config_from_json(config_path: Path) -> Config:
     mqtt_config = MqttConfig(**raw_data.get("mqtt", {}))
     button_config = ButtonConfig(**raw_data.get("button", {}))
 
-    # --- Step 3: Set MQTT 'enabled' flag ---
+    # Back-compat: allow top-level "volume_sync" (preferred location is audio.volume_sync)
+    if "volume_sync" in raw_data and "volume_sync" not in raw_data.get("audio", {}):
+        try:
+            audio_config.volume_sync = bool(raw_data.get("volume_sync"))
+        except Exception:
+            # If it's something strange, just leave default.
+            pass
+
+    # Set MQTT 'enabled' flag
     if mqtt_config.host:
         mqtt_config.enabled = True
 
-    # --- Step 4: Return the main Config object ---
     return Config(
         app=app_config,
         audio=audio_config,
