@@ -1,161 +1,151 @@
-"""Configuration models for the application."""
+from abc import abstractmethod
+from collections.abc import Iterable
+from typing import TYPE_CHECKING, Callable, List, Optional, Union
 
-import json
-from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Dict, List, Optional
+# pylint: disable=no-name-in-module
+from aioesphomeapi.api_pb2 import (  # type: ignore[attr-defined]
+    ListEntitiesMediaPlayerResponse,
+    ListEntitiesRequest,
+    MediaPlayerCommandRequest,
+    MediaPlayerStateResponse,
+    SubscribeHomeAssistantStatesRequest,
+)
+from aioesphomeapi.model import MediaPlayerCommand, MediaPlayerState
+from google.protobuf import message
 
-import logging
-_LOGGER = logging.getLogger(__name__)
+from .api_server import APIServer
+from .mpv_player import MpvMediaPlayer
+from .util import call_all
+
+if TYPE_CHECKING:
+    from .models import ServerState
+
+
+class ESPHomeEntity:
+    def __init__(self, server: APIServer, state: "ServerState") -> None:
+        self.server = server
+        self.state = state
+
+    @abstractmethod
+    def handle_message(self, msg: message.Message) -> Iterable[message.Message]:
+        pass
+
 
 # -----------------------------------------------------------------------------
-# Configuration Dataclasses
-# -----------------------------------------------------------------------------
-
-@dataclass
-class AudioConfig:
-    """Settings for audio input and output."""
-    input_device: Optional[str] = None
-    input_block_size: int = 1024
-    output_device: Optional[str] = None
 
 
-@dataclass
-class WakeWordConfig:
-    """Settings for wake word detection."""
-    directories: List[str] = field(default_factory=list)
-    model: str = "okay_nabu"
-    stop_model: str = "stop"
-    refractory_seconds: float = 2.0
-    download_dir: str = "local"
+class MediaPlayerEntity(ESPHomeEntity):
+    def __init__(
+        self,
+        server: APIServer,
+        state: "ServerState",
+        key: int,
+        name: str,
+        object_id: str,
+        music_player: MpvMediaPlayer,
+        announce_player: MpvMediaPlayer,
+    ) -> None:
+        super().__init__(server, state)
 
+        self.key = key
+        self.name = name
+        self.object_id = object_id
+        self.state_enum = MediaPlayerState.IDLE
+        self.volume = state.preferences.volume_level  # Initialize with saved volume
+        self.muted = False
+        self.music_player = music_player
+        self.announce_player = announce_player
 
-@dataclass
-class ESPHomeConfig:
-    """Settings for the ESPHome API server."""
-    host: str = "0.0.0.0"
-    port: int = 6053
+    def play(
+        self,
+        url: Union[str, List[str]],
+        announcement: bool = False,
+        done_callback: Optional[Callable[[], None]] = None,
+    ) -> Iterable[message.Message]:
+        if announcement:
+            if self.music_player.is_playing:
+                # Announce, resume music
+                self.music_player.pause()
+                self.announce_player.play(
+                    url,
+                    done_callback=lambda: call_all(
+                        self.music_player.resume, done_callback
+                    ),
+                )
+            else:
+                # Announce, idle
+                self.announce_player.play(
+                    url,
+                    done_callback=lambda: call_all(
+                        self.server.send_messages(
+                            [self._update_state(MediaPlayerState.IDLE)]
+                        ),
+                        done_callback,
+                    ),
+                )
+        else:
+            # Music
+            self.music_player.play(
+                url,
+                done_callback=lambda: call_all(
+                    self.server.send_messages(
+                        [self._update_state(MediaPlayerState.IDLE)]
+                    ),
+                    done_callback,
+                ),
+            )
 
+        yield self._update_state(MediaPlayerState.PLAYING)
 
-@dataclass
-class LedConfig:
-    """Settings for the LED strip.
+    def handle_message(self, msg: message.Message) -> Iterable[message.Message]:
+        if isinstance(msg, MediaPlayerCommandRequest) and (msg.key == self.key):
+            if msg.has_media_url:
+                announcement = msg.has_announcement and msg.announcement
+                yield from self.play(msg.media_url, announcement=announcement)
+            elif msg.has_command:
+                if msg.command == MediaPlayerCommand.PAUSE:
+                    self.music_player.pause()
+                    yield self._update_state(MediaPlayerState.PAUSED)
+                elif msg.command == MediaPlayerCommand.PLAY:
+                    self.music_player.resume()
+                    yield self._update_state(MediaPlayerState.PLAYING)
 
-    Fields:
-      enabled   -> master on/off for hardware LEDs. If False, LedController
-                   still subscribes to events and publishes MQTT state, but
-                   never touches hardware.
-      led_type  -> "dotstar", "neopixel", or "xvf3800"
-      interface -> "spi", "gpio", "usb", or "i2c" (future)
-    """
-    enabled: bool = True
-    led_type: str = "dotstar"
-    interface: str = "spi"
-    clock_pin: int = 13
-    data_pin: int = 12
-    # Note: overridden by 'preferences.json' if it exists
-    num_leds: int = 3
+            if msg.has_volume:
+                # HA sends volume as 0.0-1.0. We treat this as the *master*
+                # output volume and sync it to the OS audio backend.
+                self.volume = msg.volume
 
+                # Keep mpv at 100% for normal playback; ducking uses mpv volume.
+                self.music_player.set_volume(100)
+                self.announce_player.set_volume(100)
 
-@dataclass
-class MqttConfig:
-    """Settings for the MQTT client."""
-    enabled: bool = False
-    host: Optional[str] = None
-    port: int = 1883
-    username: Optional[str] = None
-    password: Optional[str] = None
+                # Apply master volume to the system sink (PipeWire/Pulse/ALSA).
+                self.music_player.set_master_volume(self.volume)
 
+                # Save the new volume level to preferences
+                self.state.preferences.volume_level = self.volume
+                self.state.save_preferences()
 
-@dataclass
-class ButtonConfig:
-    """
-    Settings for a hardware momentary button.
+                yield self._update_state(self.state_enum)
 
-    mode:
-      - "gpio"   -> legacy GPIO button (e.g. ReSpeaker 2-Mic HAT)
-      - "xvf3800"-> USB-based mute integration for the ReSpeaker XVF3800
+        elif isinstance(msg, ListEntitiesRequest):
+            yield ListEntitiesMediaPlayerResponse(
+                object_id=self.object_id,
+                key=self.key,
+                name=self.name,
+                supports_pause=True,
+            )
+        elif isinstance(msg, SubscribeHomeAssistantStatesRequest):
+            yield self._get_state_message()
 
-    For mode="gpio":
-      - 'pin' and 'long_press_seconds' are used (short vs long press).
-    For mode="xvf3800":
-      - The XVF3800ButtonController uses the built-in mute button purely
-        as a mute toggle; 'pin' and 'long_press_seconds' are ignored.
-    """
-    enabled: bool = False
-    mode: str = "gpio"  # "gpio" or "xvf3800"
-    # BCM GPIO pin number for the button input (gpio mode only).
-    pin: int = 17
-    # Press duration (in seconds) to be considered a "long press" (gpio mode).
-    long_press_seconds: float = 1.0
-    # Poll interval used by both GPIO and XVF3800 controllers.
-    poll_interval_seconds: float = 0.01
+    def _update_state(self, new_state: MediaPlayerState) -> MediaPlayerStateResponse:
+        self.state_enum = new_state
+        return self._get_state_message()
 
-
-@dataclass
-class AppConfig:
-    """General application settings."""
-    name: str
-    wakeup_sound: str = "sounds/wake_word_triggered.flac"
-    timer_finished_sound: str = "sounds/timer_finished.flac"
-    preferences_file: str = "preferences.json"
-    debug: bool = False
-
-
-@dataclass
-class Config:
-    """Main configuration object."""
-    app: AppConfig
-    audio: AudioConfig = field(default_factory=AudioConfig)
-    wake_word: WakeWordConfig = field(default_factory=WakeWordConfig)
-    esphome: ESPHomeConfig = field(default_factory=ESPHomeConfig)
-    led: LedConfig = field(default_factory=LedConfig)
-    mqtt: MqttConfig = field(default_factory=MqttConfig)
-    button: ButtonConfig = field(default_factory=ButtonConfig)
-
-# -----------------------------------------------------------------------------
-# Helper Function
-# -----------------------------------------------------------------------------
-
-def load_config_from_json(config_path: Path) -> Config:
-    """Loads configuration from a JSON file and populates dataclasses."""
-
-    # --- Step 1: Load raw JSON data ---
-    try:
-        with open(config_path, "r", encoding="utf-8") as f:
-            raw_data = json.load(f)
-    except FileNotFoundError:
-        _LOGGER.critical(f"Configuration file not found at: {config_path}")
-        raise
-    except json.JSONDecodeError as e:
-        _LOGGER.critical(f"Error parsing configuration file: {e}")
-        raise
-
-    # --- Step 2: Create config objects from raw data ---
-    if "app" not in raw_data:
-        raise ValueError(
-            "Configuration file must contain an 'app' section with a 'name'."
+    def _get_state_message(self) -> MediaPlayerStateResponse:
+        return MediaPlayerStateResponse(
+            key=self.key,
+            state=self.state_enum,
+            volume=self.volume,
+            muted=self.muted,
         )
-
-    app_config = AppConfig(**raw_data.get("app", {}))
-    audio_config = AudioConfig(**raw_data.get("audio", {}))
-    wake_word_config = WakeWordConfig(**raw_data.get("wake_word", {}))
-    esphome_config = ESPHomeConfig(**raw_data.get("esphome", {}))
-    led_config = LedConfig(**raw_data.get("led", {}))
-    mqtt_config = MqttConfig(**raw_data.get("mqtt", {}))
-    button_config = ButtonConfig(**raw_data.get("button", {}))
-
-    # --- Step 3: Set MQTT 'enabled' flag ---
-    if mqtt_config.host:
-        mqtt_config.enabled = True
-
-    # --- Step 4: Return the main Config object ---
-    return Config(
-        app=app_config,
-        audio=audio_config,
-        wake_word=wake_word_config,
-        esphome=esphome_config,
-        led=led_config,
-        mqtt=mqtt_config,
-        button=button_config,
-    )
