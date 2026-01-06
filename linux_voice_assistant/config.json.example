@@ -14,7 +14,7 @@
   },
 
   // ---------------------------------------------------------------------------
-  // Optional: Audio I/O
+  // Optional: Audio I/O + Output Volume Sync
   // ---------------------------------------------------------------------------
   "audio": {
     // Optional:
@@ -29,7 +29,29 @@
     // Optional:
     // - null/omit => mpv chooses default output
     // - string => mpv audio-device (e.g. "pulse/alsa_output....")
-    "output_device": null
+    "output_device": null,
+
+    // Optional (NEW): Sync the host OS output device volume at startup to match
+    // the volume stored in preferences.json (LVA MediaPlayer volume).
+    //
+    // When enabled, LVA will attempt (in order): wpctl -> pactl -> amixer.
+    // This helps when PipeWire/Pulse/ALSA boots with a low default volume.
+    //
+    // Default: false
+    "volume_sync": false,
+
+    // Optional (NEW): Maximum output volume percent for the underlying sink.
+    //
+    // Many PipeWire/PulseAudio sinks support >100% (e.g. 150%) "amplified" volume.
+    // This sets the ceiling used when mapping LVA volume (0.0–1.0) to the sink.
+    //
+    // Example:
+    //   - max_volume_percent: 150
+    //   - LVA volume 1.0 => sink set to 150%
+    //   - LVA volume 0.5 => sink set to 75%
+    //
+    // Default: 100
+    "max_volume_percent": 100
   },
 
   // ---------------------------------------------------------------------------
