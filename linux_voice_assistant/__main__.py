@@ -169,17 +169,21 @@ async def main() -> None:
     # --- 5b. Sync OS sink volume to persisted volume ---
     # mpv's per-player volume is kept at 100% and ducking is handled within mpv.
     # The user-visible "volume" in HA maps to the OS output volume (PipeWire/Pulse/ALSA).
-    try:
-        loop.create_task(
-            ensure_output_volume(
-                volume=preferences.volume_level,
-                output_device=config.audio.output_device,
-                attempts=20,
-                delay_seconds=0.5,
+    if getattr(config.audio, "volume_sync", False):
+        try:
+            loop.create_task(
+                ensure_output_volume(
+                    volume=preferences.volume_level,
+                    output_device=config.audio.output_device,
+                    max_volume_percent=getattr(config.audio, "max_volume_percent", 100),
+                    attempts=20,
+                    delay_seconds=0.5,
+                )
             )
-        )
-    except Exception:
-        _LOGGER.exception("Failed to schedule output volume sync")
+        except Exception:
+            _LOGGER.exception("Failed to schedule output volume sync")
+    else:
+        _LOGGER.debug("Output volume sync disabled (audio.volume_sync=false)")
 
     # --- 6. Create Server State ---
     state = _create_server_state(
