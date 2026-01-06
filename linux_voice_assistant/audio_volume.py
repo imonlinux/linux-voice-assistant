@@ -88,41 +88,77 @@ def _run_cmd(cmd: list[str], timeout_s: float = 2.0) -> tuple[bool, str]:
 def set_output_volume(
     volume_0_1: float,
     output_device: Optional[str] = None,
+    max_volume_percent: int = 100,
     logger: logging.Logger = _LOGGER,
 ) -> bool:
     """Set OS output volume to match LVA volume (0.0–1.0).
 
-Returns True if any backend succeeded.
-"""
+    `max_volume_percent` lets you map LVA's 100% to something above 100% on the
+    OS sink (e.g. 150 for 1.5x), which can be useful on devices that need
+    boosted output.
+
+    Returns True if any backend succeeded.
+    """
     vol = _clamp01(volume_0_1)
+    try:
+        max_pct = int(max_volume_percent)
+    except Exception:
+        max_pct = 100
+    # Avoid weird values; allow >100 for boosted sinks.
+    max_pct = max(0, min(200, max_pct))
+    sink_scalar = vol * (max_pct / 100.0)
 
     # --- 1) PipeWire: wpctl -------------------------------------------------
     if shutil.which("wpctl"):
         # wpctl accepts @DEFAULT_AUDIO_SINK@ and a linear factor (e.g. 0.40)
-        ok, out = _run_cmd(["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", f"{vol:.3f}"])
+        ok, out = _run_cmd(
+            [
+                "wpctl",
+                "set-volume",
+                "@DEFAULT_AUDIO_SINK@",
+                f"{sink_scalar:.3f}",
+            ]
+        )
         if ok:
-            logger.debug("Set PipeWire sink volume via wpctl: %.3f", vol)
+            logger.debug(
+                "Set PipeWire sink volume via wpctl: scalar=%.3f (vol=%.3f max_pct=%d)",
+                sink_scalar,
+                vol,
+                max_pct,
+            )
             return True
         logger.debug("wpctl set-volume failed: %s", out)
 
     # --- 2) PulseAudio: pactl ----------------------------------------------
     if shutil.which("pactl"):
         sink = _pactl_sink_from_output_device(output_device)
-        pct = int(round(vol * 100.0))
+        pct = int(round(sink_scalar * 100.0))
         ok, out = _run_cmd(["pactl", "set-sink-volume", sink, f"{pct}%"])
         if ok:
-            logger.debug("Set Pulse sink volume via pactl: sink=%s pct=%d", sink, pct)
+            logger.debug(
+                "Set Pulse sink volume via pactl: sink=%s pct=%d (vol=%.3f max_pct=%d)",
+                sink,
+                pct,
+                vol,
+                max_pct,
+            )
             return True
         logger.debug("pactl set-sink-volume failed: %s", out)
 
     # --- 3) ALSA: amixer ----------------------------------------------------
     if shutil.which("amixer"):
-        pct = int(round(vol * 100.0))
+        pct = int(round(sink_scalar * 100.0))
         # Common mixer controls across SBC images.
         for control in ("Master", "PCM", "Speaker", "Headphone"):
             ok, out = _run_cmd(["amixer", "-q", "sset", control, f"{pct}%"])
             if ok:
-                logger.debug("Set ALSA volume via amixer: control=%s pct=%d", control, pct)
+                logger.debug(
+                    "Set ALSA volume via amixer: control=%s pct=%d (vol=%.3f max_pct=%d)",
+                    control,
+                    pct,
+                    vol,
+                    max_pct,
+                )
                 return True
             logger.debug("amixer sset %s failed: %s", control, out)
 
@@ -132,16 +168,23 @@ Returns True if any backend succeeded.
 async def ensure_output_volume(
     volume: float,
     output_device: Optional[str] = None,
+    max_volume_percent: int = 100,
     attempts: int = 10,
     delay_seconds: float = 0.5,
     logger: logging.Logger = _LOGGER,
 ) -> bool:
     """Retry output volume sync during startup.
 
-Useful at boot when PipeWire/Pulse/ALSA might not be fully ready yet.
-"""
+    Useful at boot when PipeWire/Pulse/ALSA might not be fully ready yet.
+    """
     for i in range(1, max(1, attempts) + 1):
-        ok = await asyncio.to_thread(set_output_volume, volume, output_device, logger)
+        ok = await asyncio.to_thread(
+            set_output_volume,
+            volume,
+            output_device,
+            max_volume_percent,
+            logger,
+        )
         if ok:
             return True
         if i < attempts:
