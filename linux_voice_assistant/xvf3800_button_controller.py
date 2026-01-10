@@ -82,6 +82,8 @@ class XVF3800USBClient:
     # Index of the mic mute/red LED pin in the GPO_READ_VALUES response
     # (X0D30, second element).
     GPO_MUTE_INDEX = 1
+    # Index of the WS2812 LED power enable pin in the response (X0D33).
+    GPO_WS2812_POWER_INDEX = 3
 
     def __init__(self) -> None:
         dev = usb.core.find(idVendor=self.VENDOR_ID, idProduct=self.PRODUCT_ID)
@@ -159,6 +161,26 @@ class XVF3800USBClient:
             )
         return values
 
+    def set_gpo_pin(self, pin: int, value: bool) -> bool:
+        """Set a single GPO pin high/low.
+
+        Args:
+          pin: GPO pin number (e.g., 30 for X0D30, 33 for X0D33)
+          value: True -> high, False -> low
+
+        Returns:
+          True on success, False on error.
+        """
+        payload = bytes([pin, 1 if value else 0])
+        try:
+            self._ctrl_write(self.GPO_RESID, self.GPO_WRITE_CMDID, payload)
+            return True
+        except usb.core.USBError as err:
+            _LOGGER.error("USBError writing XVF3800 GPO pin %s value: %s", pin, err)
+        except Exception:
+            _LOGGER.exception("Unexpected error writing XVF3800 GPO pin %s value", pin)
+        return False
+
     def get_mute_gpo(self) -> Optional[bool]:
         """Return the current mic-mute output state from X0D30.
 
@@ -183,31 +205,14 @@ class XVF3800USBClient:
         return None
 
     def set_mute_gpo(self, muted: bool) -> bool:
-        """Set the mic-mute output (X0D30) high/low.
-
-        Args:
-          muted: True to mute mics + turn red LED on, False to unmute.
-
-        Returns:
-          True on success, False on error.
-        """
-        # Payload: [pin_index, value] as uint8 each
-        payload = bytes([30, 1 if muted else 0])
-        try:
-            self._ctrl_write(self.GPO_RESID, self.GPO_WRITE_CMDID, payload)
-            return True
-        except usb.core.USBError as err:
-            _LOGGER.error("USBError writing XVF3800 GPO mute value: %s", err)
-        except Exception:
-            _LOGGER.exception("Unexpected error writing XVF3800 GPO mute value")
-        return False
+        """Set the mic-mute output (X0D30) high/low."""
+        return self.set_gpo_pin(30, muted)
 
     def close(self) -> None:
         """Dispose of USB resources."""
         try:
             usb.util.dispose_resources(self._dev)
         except Exception:
-            # Not fatal; just log at debug level.
             _LOGGER.debug("Error disposing XVF3800 USB resources", exc_info=True)
 
 
@@ -224,23 +229,7 @@ class XVF3800ButtonRuntimeConfig:
 
 
 class XVF3800ButtonController(EventHandler):
-    """Monitor & synchronize the XVF3800's mute state with LVA.
-
-    Responsibilities:
-
-      - Poll X0D30 (GPO_READ_VALUES) on a background thread.
-      - When the hardware mute state changes (e.g. user presses the
-        XVF3800's mute button), publish "set_mic_mute" with the new
-        state so MicMuteHandler can update ServerState, MQTT, LEDs, etc.
-      - Listen for "mic_muted" and "mic_unmuted" events and mirror those
-        changes back to the XVF3800 by setting X0D30 via GPO_WRITE_VALUE.
-
-    IMPORTANT:
-      - This controller does *not* implement short/long press semantics.
-        The XVF3800's onboard button is treated as a dedicated mute
-        toggle; wake/stop behavior still comes from wake words or a
-        separate GPIO button.
-    """
+    """Monitor & synchronize the XVF3800's mute state with LVA."""
 
     def __init__(
         self,
@@ -253,7 +242,6 @@ class XVF3800ButtonController(EventHandler):
         self.loop = loop
         self.state = state
 
-        # Poll interval comes from the button config if present.
         poll_interval = 0.05
         if hasattr(button_config, "poll_interval_seconds"):
             try:
@@ -272,18 +260,13 @@ class XVF3800ButtonController(EventHandler):
         self._thread: Optional[threading.Thread] = None
         self._shutdown_flag = threading.Event()
 
-        # Last known hardware mute state (bool) or None if unknown.
         self._last_hw_muted: Optional[bool] = None
 
-        # Target mute state from LVA (set via mic_muted/mic_unmuted events).
         self._target_mute_state_lock = threading.Lock()
         self._target_mute_state: Optional[bool] = None
 
-        # USB client is created lazily in the polling thread so that any
-        # USB errors don't break __init__.
         self._usb_client: Optional[XVF3800USBClient] = None
 
-        # Start polling thread immediately.
         self._thread = threading.Thread(
             target=self._poll_loop,
             name="XVF3800ButtonControllerThread",
@@ -295,7 +278,6 @@ class XVF3800ButtonController(EventHandler):
             self._cfg.poll_interval_seconds,
         )
 
-        # Subscribe to events *after* initialization is complete.
         self._subscribe_all_methods()
 
     # ------------------------------------------------------------------
@@ -304,12 +286,10 @@ class XVF3800ButtonController(EventHandler):
 
     @subscribe
     def mic_muted(self, data: dict) -> None:
-        """Mirror LVA mute -> XVF3800 hardware."""
         self._set_target_mute_state(True)
 
     @subscribe
     def mic_unmuted(self, data: dict) -> None:
-        """Mirror LVA mute -> XVF3800 hardware."""
         self._set_target_mute_state(False)
 
     # ------------------------------------------------------------------
@@ -317,7 +297,6 @@ class XVF3800ButtonController(EventHandler):
     # ------------------------------------------------------------------
 
     def stop(self) -> None:
-        """Signal the polling thread to stop and wait for it."""
         self._shutdown_flag.set()
         if self._thread is not None:
             self._thread.join(timeout=2.0)
@@ -330,19 +309,16 @@ class XVF3800ButtonController(EventHandler):
     # ------------------------------------------------------------------
 
     def _set_target_mute_state(self, muted: bool) -> None:
-        """Request that the polling thread set the XVF3800 mute state."""
         with self._target_mute_state_lock:
             self._target_mute_state = muted
 
     def _take_target_mute_state(self) -> Optional[bool]:
-        """Atomically fetch and clear the pending target mute state."""
         with self._target_mute_state_lock:
             value = self._target_mute_state
             self._target_mute_state = None
             return value
 
     def _ensure_usb_client(self) -> Optional[XVF3800USBClient]:
-        """Lazy-initialize the USB client on the polling thread."""
         if self._usb_client is not None:
             return self._usb_client
 
@@ -362,7 +338,6 @@ class XVF3800ButtonController(EventHandler):
     # ------------------------------------------------------------------
 
     def _poll_loop(self) -> None:
-        """Background loop to synchronize mute state with XVF3800."""
         _LOGGER.debug("XVF3800ButtonController polling thread started")
 
         while not self._shutdown_flag.is_set() and not getattr(
@@ -370,7 +345,6 @@ class XVF3800ButtonController(EventHandler):
         ):
             client = self._ensure_usb_client()
             if client is None:
-                # If we failed to init USB, wait a bit and retry
                 time.sleep(2.0)
                 continue
 
@@ -385,23 +359,42 @@ class XVF3800ButtonController(EventHandler):
                             "Set XVF3800 hardware mute state -> %s", target
                         )
 
-            # 2) Read current hardware GPO mute state
-            hw_muted = client.get_mute_gpo()
+            # 2) Read current hardware GPO values (mute + WS2812 power)
+            try:
+                values = client.read_gpo_values()
+                hw_muted = None
+                if len(values) > client.GPO_MUTE_INDEX:
+                    hw_muted = bool(values[client.GPO_MUTE_INDEX])
+
+                # If the firmware/button toggles WS2812 power off, re-enable it so
+                # the ring can still display LVA state (mute, idle effects, etc.)
+                if len(values) > client.GPO_WS2812_POWER_INDEX:
+                    ws2812_power = bool(values[client.GPO_WS2812_POWER_INDEX])
+                    if not ws2812_power:
+                        if client.set_gpo_pin(33, True):
+                            _LOGGER.debug("Re-enabled XVF3800 WS2812 LED power (X0D33)")
+                else:
+                    ws2812_power = None
+
+            except usb.core.USBError as err:
+                _LOGGER.error("USBError reading XVF3800 GPO values: %s", err)
+                hw_muted = None
+            except Exception:
+                _LOGGER.exception("Unexpected error reading XVF3800 GPO values")
+                hw_muted = None
+
             if hw_muted is not None:
                 if self._last_hw_muted is None:
-                    # First observation; treat hardware as source of truth
                     self._last_hw_muted = hw_muted
                     _LOGGER.info(
                         "Initial XVF3800 hardware mute state: %s", hw_muted
                     )
-                    # Align LVA state with hardware on first read
                     self.loop.call_soon_threadsafe(
                         self.state.event_bus.publish,
                         "set_mic_mute",
-                        {"state": hw_muted},
+                        {"state": hw_muted, "source": "xvf3800_hw"},
                     )
                 elif hw_muted != self._last_hw_muted:
-                    # Hardware mute changed (button pressed)
                     _LOGGER.info(
                         "Detected XVF3800 mute state change from %s to %s; "
                         "publishing set_mic_mute event",
@@ -412,10 +405,9 @@ class XVF3800ButtonController(EventHandler):
                     self.loop.call_soon_threadsafe(
                         self.state.event_bus.publish,
                         "set_mic_mute",
-                        {"state": hw_muted},
+                        {"state": hw_muted, "source": "xvf3800_hw"},
                     )
 
             time.sleep(self._cfg.poll_interval_seconds)
 
         _LOGGER.debug("XVF3800ButtonController polling thread exiting")
-
