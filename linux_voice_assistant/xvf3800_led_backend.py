@@ -54,6 +54,10 @@ PARAMETERS = {
 
     # Newer firmware: per-LED ring control (12 WS2812 LEDs)
     "LED_RING_COLOR": (20, 19, 12, "rw", "uint32"),
+    
+    # GPO control for button monitoring and LED power
+    "GPO_READ_VALUES": (20, 0, 5, "ro", "uint8"),   # [X0D11, X0D30, X0D31, X0D33, X0D39]
+    "GPO_WRITE_VALUE": (20, 1, 2, "wo", "uint8"),   # [pin_index, value]
 }
 
 
@@ -67,13 +71,25 @@ class _ReSpeaker:
     def __init__(self, dev: "usb.core.Device") -> None:  # type: ignore[name-defined]
         self.dev = dev
 
+    # CRITICAL FIX: Add context manager support
+    def __enter__(self):
+        """Context manager entry."""
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit."""
+        self.close()
+        return False
+
     def close(self) -> None:
         """Release any underlying libusb resources (best-effort)."""
-        try:
-            usb.util.dispose_resources(self.dev)
-        except Exception:
-            pass
-
+        if hasattr(self, 'dev') and self.dev is not None:
+            try:
+                usb.util.dispose_resources(self.dev)
+            except Exception as e:
+                _LOGGER.debug("Error disposing USB resources: %s", e)
+            finally:
+                self.dev = None
 
     # ------------------------------------------------------------------
     # Encoding / decoding helpers
@@ -181,16 +197,12 @@ class _ReSpeaker:
 
             raise RuntimeError(f"XVF3800 control read failed (status={status}, name={name})")
 
-    def close(self) -> None:
-        usb.util.dispose_resources(self.dev)
-
 
 def _find_device(vid: int = _ReSpeaker.VID, pid: int = _ReSpeaker.PID) -> Optional[_ReSpeaker]:
     dev = usb.core.find(idVendor=vid, idProduct=pid)
     if not dev:
         return None
     return _ReSpeaker(dev)
-
 
 
 class XVF3800USBDevice:
@@ -201,12 +213,17 @@ class XVF3800USBDevice:
 
     def __init__(self, vid: int = _ReSpeaker.VID, pid: int = _ReSpeaker.PID):
         self._rsp = _find_device(vid=vid, pid=pid)
+        if self._rsp is None:
+            raise RuntimeError(
+                f"XVF3800 USB device not found (vid=0x{vid:04x}, pid=0x{pid:04x})"
+            )
 
     def close(self) -> None:
-        try:
-            self._rsp.close()
-        except Exception:
-            pass
+        if self._rsp is not None:
+            try:
+                self._rsp.close()
+            except Exception:
+                pass
 
     # --- Device control -----------------------------------------------------
 
@@ -255,10 +272,14 @@ class XVF3800USBDevice:
         if settle_s > 0:
             time.sleep(settle_s)
 
+
 class XVF3800LedBackend:
     """High-level LED backend for the XVF3800."""
 
     ring_led_count: int = 12
+    
+    # GPO indices (from XVF3800 documentation)
+    GPO_WS2812_POWER_INDEX = 3  # X0D33 in GPO_READ_VALUES response
 
     def __init__(self, vid: int = _ReSpeaker.VID, pid: int = _ReSpeaker.PID) -> None:
         wrapper = _find_device(vid, pid)
@@ -269,6 +290,18 @@ class XVF3800LedBackend:
 
         self._dev = wrapper
         self.supports_per_led: bool = False
+        
+        # CRITICAL FIX: Ensure WS2812 LED power is enabled BEFORE any LED operations
+        # This prevents intermittent LED failures caused by X0D33 being low at startup
+        try:
+            _LOGGER.debug("Ensuring XVF3800 WS2812 LED power (X0D33) is enabled")
+            self._dev.write("GPO_WRITE_VALUE", [33, 1])  # X0D33 = high
+            time.sleep(0.05)  # Give firmware time to settle
+            _LOGGER.info("XVF3800 WS2812 LED power enabled")
+        except Exception as e:
+            _LOGGER.warning(
+                "Could not enable WS2812 LED power, LEDs may not work reliably: %s", e
+            )
 
         # Best-effort feature detection: if we can read LED_RING_COLOR, we assume
         # per-LED control is supported by the current firmware.
@@ -297,11 +330,42 @@ class XVF3800LedBackend:
             )
 
     # ---------------------------------------------------------------------
+    # Helper: Ensure LED power before critical operations
+    # ---------------------------------------------------------------------
+    
+    def _ensure_led_power(self) -> bool:
+        """Ensure WS2812 LED power is enabled before operations.
+        
+        This provides belt-and-suspenders protection against the LED power
+        being disabled by firmware or button interactions.
+        
+        Returns:
+            bool: True if power is confirmed on, False if check failed
+        """
+        try:
+            # Read GPO values
+            values = self._dev.read("GPO_READ_VALUES")
+            if len(values) > self.GPO_WS2812_POWER_INDEX:
+                ws2812_power = bool(values[self.GPO_WS2812_POWER_INDEX])
+                if not ws2812_power:
+                    _LOGGER.warning("WS2812 LED power was off, re-enabling")
+                    self._dev.write("GPO_WRITE_VALUE", [33, 1])
+                    time.sleep(0.01)  # Brief settle time
+                    return True
+                return True
+        except Exception as e:
+            _LOGGER.debug("Could not verify WS2812 LED power state: %s", e)
+            return False
+        return False
+
+    # ---------------------------------------------------------------------
     # Legacy/global controls
     # ---------------------------------------------------------------------
 
     def set_effect(self, effect_id: int) -> None:
         """Set LED effect mode (0=off, 1=breath, 2=rainbow, 3=single color, 4=doa)."""
+        # Ensure power before effect change
+        self._ensure_led_power()
         self._dev.write("LED_EFFECT", [int(effect_id) & 0xFF])
 
     def set_brightness(self, brightness_0_255: int) -> None:
@@ -333,6 +397,9 @@ class XVF3800LedBackend:
             raise ValueError(
                 f"LED_RING_COLOR expects {self.ring_led_count} values, got {len(color_values)}"
             )
+        
+        # Ensure power before writing ring colors
+        self._ensure_led_power()
         self._dev.write("LED_RING_COLOR", [int(v) & 0xFFFFFFFF for v in color_values])
 
     def set_ring_rgb(self, colors: Sequence[Tuple[int, int, int]]) -> None:
