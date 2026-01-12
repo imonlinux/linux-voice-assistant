@@ -28,7 +28,7 @@ No custom kernel drivers are required. Plug it in, setup the device in LVA’s `
 - To use the advanced LED effects, upgrade to the latest XVF3800 firmware (respeaker_xvf3800_usb_dfu_firmware_v2.0.7.bin as of this writing). 
 -- https://github.com/respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY/blob/master/xmos_firmwares/dfu_guide.md
 - Tested and works on a Raspberry Pi Zero 2W, but I don't recommend attempting to flash the firmware with this device.
-- Pipewire (or PluseAudio) installed and tested. I haven't tested the XVF3800 with ALSA.
+- PipeWire (or PulseAudio) installed and tested. I haven't tested the XVF3800 with ALSA.
 
 ---
 
@@ -40,7 +40,8 @@ sudo apt upgrade
 sudo apt install build-essential git \
     libmpv-dev mpv python3-dev python3-venv \
     pulseaudio-utils pipewire wireplumber \
-    pipewire-audio libspa-0.2-modules libusb-1.0-0
+    pipewire-audio libspa-0.2-modules libusb-1.0-0 \
+    dbus-user-session
 sudo reboot
 ```
 
@@ -59,7 +60,7 @@ cd linux-voice-assistant
 If you already have the repository, you can:
 
 ```bash
-cp ~/linux-voice-assistant/linux_voice_assistant/config.json ~/
+cp ~/linux-voice-assistant/linux_voice_assistant/config.json ~/config.json
 cd ~/linux-voice-assistant
 git pull
 cp ~/config.json ~/linux-voice-assistant/linux_voice_assistant/config.json
@@ -68,7 +69,9 @@ cp ~/config.json ~/linux-voice-assistant/linux_voice_assistant/config.json
 Implement the UDEV rule to prevent the XVF3800 from taking naps and to allow user access to the device
 
 ```bash
-cp ~/linux-voice-assistant/XVF3800/99-respeaker-xvf3800.rules /etc/udev/rules.d/
+sudo cp ~/linux-voice-assistant/XVF3800/99-respeaker-xvf3800.rules /etc/udev/rules.d/
+sudo udevadm control --reload-rules
+sudo udevadm trigger
 ```
 
 
@@ -121,10 +124,10 @@ Add or update the following sections (Recommended settings):
     "poll_interval_seconds": 0.15
   },
   "mqtt": {
-    "host": "192.168.0.100",
+    "host": "192.168.1.2",
     "port": 1883,
-    "username": "mqtt",
-    "password": "Ss1552157"
+    "username": "mqtt_server",
+    "password": "mqtt_password"
   },
   "audio": {
     "volume_sync": true,
