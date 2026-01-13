@@ -29,7 +29,7 @@ Want to run the satellite on a Linux desktop using a simple tray client? See [th
 - **Acoustic Echo Cancellation (AEC) using WebRTC.** See [the tutorial](docs/linux-voice-assistant-2mic-install.md) for instructions on implementation and tuning.
 
 ### Add Full MQTT Control for LEDs and Mute
-- This branch introduces a comprehensive MQTT integration to bypass limitations in the pinned aioesphomeapi library and provide full remote control over the voice satellite's features and appearance.
+- This fork introduces a comprehensive MQTT integration to bypass limitations in the pinned aioesphomeapi library and provide full remote control over the voice satellite's features and appearance.
 
 - It uses MQTT Discovery to automatically create and configure a device and its associated entities within Home Assistant. This allows for real-time control from the HA interface and enables powerful automations.
 
@@ -82,6 +82,7 @@ See `linux_voice_assistant/config.json.example` for more options.
 
 ## ToDo:
 
+* Implement the Sendspin client protocol
 * ~~Implement echo-cancellation filter in PipeWire/PulseAudio.~~ (Taken from upstream and successfully tested)
 * ~~Merge jianyu-li's PR from source project to add mute switch function in this branch~~
 * ~~Implement MQTT entities to support advanced controls of the LVA.~~
@@ -97,5 +98,7 @@ See `linux_voice_assistant/config.json.example` for more options.
 <!-- Links -->
 [homeassistant]: https://www.home-assistant.io/
 [esphome]: https://esphome.io/
+
 [wyoming]: https://github.com/rhasspy/wyoming-openwakeword/
 [future proof home]: https://github.com/FutureProofHomes/wyoming-enhancements/
+[aioesphomeapi]: https://github.com/esphome/aioesphomeapi
