@@ -1,5 +1,4 @@
-"""
-Media player using mpv in a subprocess.
+"""Media player using mpv in a subprocess.
 
 This wrapper focuses on:
 - Simple playback control (play / pause / resume / stop)
@@ -9,7 +8,17 @@ This wrapper focuses on:
 
 If a specific audio device is provided, it is passed directly to mpv as
 `audio-device`. Otherwise, mpv's own automatic backend/device selection is used.
+
+Note about volume:
+- mpv has its own per-player volume (0..100).
+- PipeWire/PulseAudio/ALSA also has a system output volume.
+
+LVA persists a single user volume (0.0..1.0) in preferences.json. To avoid
+"mystery caps" where the OS sink is stuck at e.g. 40% while LVA shows 100%,
+LVA treats the OS output volume as the "master" and keeps mpv at 100% for normal
+playback. Ducking still uses mpv's per-player volume.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -20,6 +29,8 @@ from typing import Callable, List, Optional, Sequence, Union
 
 # Note: python-mpv must be installed; imported at runtime.
 from mpv import MPV
+
+from .audio_volume import set_output_volume
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -33,13 +44,19 @@ class MpvMediaPlayer:
         device: Optional[str] = None,
         initial_volume: float = 1.0,
     ) -> None:
-        """
+        """Initialize the mpv player.
+
         :param loop: The asyncio loop used to schedule done_callback.
                      May be None in one-off utility contexts (e.g. listing devices).
-        :param device: Optional mpv audio device name (e.g. "pulse/alsa_output.pci-0000_00_1f.3.analog-stereo").
-        :param initial_volume: Initial volume as a float 0.0–1.0.
+        :param device: Optional mpv audio device name (e.g.
+                       "pipewire/alsa_output.pci-0000_00_1f.3.analog-stereo").
+        :param initial_volume: Initial volume as a float 0.0–1.0. This is now
+                               treated as the *master* OS output volume. mpv's
+                               internal volume is set to 100% for normal playback.
         """
         self.loop = loop
+        self.device = device
+        self.initial_volume = max(0.0, min(1.0, float(initial_volume)))
 
         self.player = MPV(
             video=False,
@@ -83,8 +100,7 @@ class MpvMediaPlayer:
             try:
                 dev_list = self.player.audio_device_list or []
                 dev_summary = [
-                    f"{dev.get('name')} ({dev.get('description')})"
-                    for dev in dev_list
+                    f"{dev.get('name')} ({dev.get('description')})" for dev in dev_list
                 ]
             except Exception:
                 dev_summary = ["<unavailable>"]
@@ -98,8 +114,8 @@ class MpvMediaPlayer:
         except Exception:
             _LOGGER.exception("Failed to query mpv audio properties")
 
-        # Volume is 0–100 in mpv, we accept 0.0–1.0 here.
-        self.set_volume(int(initial_volume * 100))
+        # Keep mpv at 100% for normal playback. Master volume is handled at the OS level.
+        self.set_volume(100)
 
         self.is_playing: bool = False
         self._done_callback: Optional[Callable[[], None]] = None
@@ -180,14 +196,22 @@ class MpvMediaPlayer:
                 self._run_done_callback()
 
     def set_volume(self, volume: int) -> None:
-        """Sets the player volume from 0 to 100."""
+        """Sets the player (mpv) volume from 0 to 100."""
         try:
             self.player.volume = max(0, min(100, volume))
         except Exception:
             _LOGGER.exception("set_volume() failed")
 
+    def set_master_volume(self, volume_level: float) -> bool:
+        """Sets the *OS output* volume (PipeWire/PulseAudio/ALSA).
+
+        :param volume_level: 0.0–1.0
+        :returns: True if any backend succeeded.
+        """
+        return set_output_volume(volume_level=volume_level, output_device=self.device)
+
     def duck(self, target_percent: int = 20) -> None:
-        """Lowers the volume for an announcement."""
+        """Lowers the mpv volume for an announcement."""
         if self._pre_duck_volume is not None:
             return
         try:
@@ -197,7 +221,7 @@ class MpvMediaPlayer:
             _LOGGER.exception("duck() failed")
 
     def unduck(self) -> None:
-        """Restores the volume after an announcement."""
+        """Restores the mpv volume after an announcement."""
         if self._pre_duck_volume is None:
             return
         try:

@@ -3,6 +3,8 @@ import argparse
 import asyncio
 import json
 import logging
+import os
+import time
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,9 +24,11 @@ from .led_controller import LedController
 from .mqtt_controller import MqttController
 from .models import AvailableWakeWord, Preferences, ServerState, WakeWordType
 from .mpv_player import MpvMediaPlayer
+from .audio_volume import ensure_output_volume
 from .satellite import VoiceSatelliteProtocol
 from .util import get_mac_address, format_mac
 from .zeroconf import HomeAssistantZeroconf
+from .xvf3800_button_controller import XVF3800ButtonController  # NEW
 
 _LOGGER = logging.getLogger(__name__)
 _MODULE_DIR = Path(__file__).parent
@@ -150,6 +154,9 @@ async def main() -> None:
     # --- 2. Load Preferences ---
     preferences = _load_preferences(config)
 
+    # --- 2b. XVF3800 Startup Workarounds (optional) ---
+    _xvf3800_startup_preflight(config)
+
     # --- 3. Find Microphone ---
     mic = _get_microphone(config)
 
@@ -158,6 +165,25 @@ async def main() -> None:
 
     # --- 5. Initialize Media Players ---
     media_players = _init_media_players(loop, config, preferences)
+
+    # --- 5b. Sync OS sink volume to persisted volume ---
+    # mpv's per-player volume is kept at 100% and ducking is handled within mpv.
+    # The user-visible "volume" in HA maps to the OS output volume (PipeWire/Pulse/ALSA).
+    if getattr(config.audio, "volume_sync", False):
+        try:
+            loop.create_task(
+                ensure_output_volume(
+                    volume=preferences.volume_level,
+                    output_device=config.audio.output_device,
+                    max_volume_percent=getattr(config.audio, "max_volume_percent", 100),
+                    attempts=20,
+                    delay_seconds=0.5,
+                )
+            )
+        except Exception:
+            _LOGGER.exception("Failed to schedule output volume sync")
+    else:
+        _LOGGER.debug("Output volume sync disabled (audio.volume_sync=false)")
 
     # --- 6. Create Server State ---
     state = _create_server_state(
@@ -263,15 +289,111 @@ def _load_preferences(config: Config) -> Preferences:
 
     return preferences
 
+
+def _xvf3800_startup_preflight(config: Config) -> None:
+    """
+    Best-effort XVF3800 USB preflight.
+
+    Some platforms (notably certain SBC USB controllers) can leave the XVF3800
+    capture endpoint "silent" until the device is rebooted.
+
+    If an XVF3800 is configured (LED/button/audio), we optionally:
+      1) issue an XVF3800 REBOOT
+      2) wait for USB re-enumeration
+      3) set AUDIO_MGR_OP_L and AUDIO_MGR_OP_R to (7, 3) to force both channels
+         to the ASR3 output (as discovered via xvf_host.py testing)
+
+    This uses PyUSB directly (no dependency on xvf_host.py).
+    """
+    try:
+        # Determine whether XVF3800 is in use at all
+        led_cfg = getattr(config, "led", None)
+        btn_cfg = getattr(config, "button", None)
+        aud_cfg = getattr(config, "audio", None)
+
+        uses_xvf = False
+        if led_cfg and getattr(led_cfg, "led_type", "").lower() == "xvf3800":
+            uses_xvf = True
+        if btn_cfg and getattr(btn_cfg, "enabled", False) and getattr(btn_cfg, "mode", "").lower() == "xvf3800":
+            uses_xvf = True
+        if aud_cfg and isinstance(getattr(aud_cfg, "input_device", None), str) and "xvf3800" in aud_cfg.input_device.lower():
+            uses_xvf = True
+
+        if not uses_xvf:
+            return
+
+        # Env toggles (default enabled)
+        do_reboot = os.environ.get("LVA_XVF3800_STARTUP_REBOOT", "1").strip().lower() not in ("0", "false", "no", "off")
+        do_route = os.environ.get("LVA_XVF3800_STARTUP_SET_ASR3", "1").strip().lower() not in ("0", "false", "no", "off")
+        do_save  = os.environ.get("LVA_XVF3800_STARTUP_SAVE_CONFIG", "0").strip().lower() in ("1", "true", "yes", "on")
+
+        if not (do_reboot or do_route):
+            return
+
+        from .xvf3800_led_backend import XVF3800USBDevice
+
+        _LOGGER.info("XVF3800 startup preflight: begin (reboot=%s, set_asr3=%s, save=%s)", do_reboot, do_route, do_save)
+
+        if do_reboot:
+            try:
+                dev = XVF3800USBDevice()
+                _LOGGER.info("XVF3800 startup preflight: issuing REBOOT to USB device")
+                dev.reboot()
+            finally:
+                try:
+                    dev.close()
+                except Exception:
+                    pass
+
+            # Wait for USB to cycle
+            XVF3800USBDevice.wait_for_reenumeration(timeout_s=12.0, settle_s=1.0)
+
+        if do_route:
+            dev2 = XVF3800USBDevice()
+            try:
+                _LOGGER.info("XVF3800 startup preflight: setting AUDIO_MGR_OP_L and AUDIO_MGR_OP_R to (7, 3)")
+                dev2.set_audio_mgr_op_l(7, 3)
+                dev2.set_audio_mgr_op_r(7, 3)
+                if do_save:
+                    _LOGGER.info("XVF3800 startup preflight: saving configuration to flash")
+                    dev2.save_configuration()
+            finally:
+                dev2.close()
+
+        _LOGGER.info("XVF3800 startup preflight: done")
+
+    except Exception as e:
+        _LOGGER.warning("XVF3800 startup preflight failed (continuing): %s", e)
+
+
+
 def _get_microphone(config: Config):
     """Finds and returns the microphone specified in the config."""
     mic = None
-    if config.audio.input_device is not None:
+    input_spec = getattr(config.audio, "input_device", None)
+
+    # If the user specified an index, honor it.
+    if input_spec is not None:
         try:
-            input_device_idx = int(config.audio.input_device)
+            input_device_idx = int(input_spec)
             mic = sc.all_microphones(include_loopback=False)[input_device_idx]
         except (ValueError, IndexError):
-            mic = sc.get_microphone(config.audio.input_device, include_loopback=False)
+            # If the user specified a name, retry a bit (helps after USB re-enumeration / slow PipeWire startup).
+            want_name = str(input_spec)
+            is_xvf = "xvf3800" in want_name.lower()
+            deadline = time.time() + (20.0 if is_xvf else 5.0)
+
+            last_err: Optional[Exception] = None
+            while time.time() < deadline:
+                try:
+                    mic = sc.get_microphone(want_name, include_loopback=False)
+                    break
+                except Exception as e:
+                    last_err = e
+                    time.sleep(0.5)
+
+            if mic is None and last_err is not None:
+                _LOGGER.warning("Failed to open configured mic %r after retries: %s", want_name, last_err)
     else:
         mic = sc.default_microphone()
 
@@ -426,21 +548,33 @@ def _init_controllers(
         mqtt_controller=mqtt_controller,
     )
 
-    # Hardware button controller (e.g. ReSpeaker 2-Mic HAT)
+    # Hardware / XVF3800 mute button controller
     try:
-        if getattr(config, "button", None) is not None and config.button.enabled:
-            button_controller = ButtonController(
-                loop=loop,
-                event_bus=event_bus,
-                state=state,
-                config=config.button,
-            )
-            # Keep a reference on state so it is not garbage-collected.
-            setattr(state, "button_controller", button_controller)
+        button_cfg = getattr(config, "button", None)
+        if button_cfg is not None and button_cfg.enabled:
+            mode = getattr(button_cfg, "mode", "gpio").lower()
+            if mode == "xvf3800":
+                _LOGGER.info("Initializing XVF3800ButtonController (mode=xvf3800)")
+                xvf_btn = XVF3800ButtonController(
+                    loop=loop,
+                    event_bus=event_bus,
+                    state=state,
+                    button_config=button_cfg,
+                )
+                setattr(state, "xvf3800_button_controller", xvf_btn)
+            else:
+                _LOGGER.info("Initializing GPIO ButtonController (mode=gpio)")
+                button_controller = ButtonController(
+                    loop=loop,
+                    event_bus=event_bus,
+                    state=state,
+                    config=button_cfg,
+                )
+                setattr(state, "button_controller", button_controller)
         else:
-            _LOGGER.debug("ButtonController not enabled in config; skipping")
+            _LOGGER.debug("Button controller not enabled in config; skipping")
     except Exception:
-        _LOGGER.exception("Failed to initialize ButtonController")
+        _LOGGER.exception("Failed to initialize button controller(s)")
 
 async def _run_server(state: ServerState, config: Config):
     """Starts the ESPHome server and ZeroConf discovery."""

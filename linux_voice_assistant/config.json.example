@@ -1,62 +1,144 @@
 {
+  // ---------------------------------------------------------------------------
+  // Required
+  // ---------------------------------------------------------------------------
   "app": {
-    "name": "Linux Voice Assistant",
-    "debug": true,
+    // Required
+    "name": "My Linux Voice Assistant",
+
+    // Optional
     "wakeup_sound": "sounds/wake_word_triggered.flac",
     "timer_finished_sound": "sounds/timer_finished.flac",
-    "preferences_file": "preferences.json"
+    "preferences_file": "preferences.json",
+    "debug": false
   },
+
+  // ---------------------------------------------------------------------------
+  // Optional: Audio I/O + Output Volume Sync
+  // ---------------------------------------------------------------------------
   "audio": {
-    // This is the "manual bypass" for audio.
-    // Set to "null" to use auto-detection (recommended).
-    // Set to specific device names to force them.
-    "input_device": "seeed-2mic-voicecard",
-    "output_device": "alsa/plughw:CARD=seeed2micvoicec",
-    "input_block_size": 1024
+    // Optional:
+    // - null/omit => default microphone
+    // - string name => exact device name (soundcard backend)
+    // - string number => index into soundcard device list (e.g. "0", "1", ...)
+    "input_device": null,
+
+    // Optional: audio capture block size
+    "input_block_size": 1024,
+
+    // Optional:
+    // - null/omit => mpv chooses default output
+    // - string => mpv audio-device (e.g. "pulse/alsa_output....")
+    "output_device": null,
+
+    // Optional (NEW): Sync the host OS output device volume at startup to match
+    // the volume stored in preferences.json (LVA MediaPlayer volume).
+    //
+    // When enabled, LVA will attempt (in order): wpctl -> pactl -> amixer.
+    // This helps when PipeWire/Pulse/ALSA boots with a low default volume.
+    //
+    // Default: false
+    "volume_sync": false,
+
+    // Optional (NEW): Maximum output volume percent for the underlying sink.
+    //
+    // Many PipeWire/PulseAudio sinks support >100% (e.g. 150%) "amplified" volume.
+    // This sets the ceiling used when mapping LVA volume (0.0–1.0) to the sink.
+    //
+    // Example:
+    //   - max_volume_percent: 150
+    //   - LVA volume 1.0 => sink set to 150%
+    //   - LVA volume 0.5 => sink set to 75%
+    //
+    // Default: 100
+    "max_volume_percent": 100
   },
+
+  // ---------------------------------------------------------------------------
+  // Optional: Wake word config
+  // ---------------------------------------------------------------------------
   "wake_word": {
-    // A list of directories to scan for wake word models
-    "directories": [
-      "wakewords",
-      "wakewords/openWakeWord"
-    ],
-    // The default wake word to use if none is set in preferences
+    // Optional: if omitted/empty, code falls back to defaults:
+    // ["wakewords", "wakewords/openWakeWord"]
+    "directories": [],
+
+    // Optional: default wake word model id
     "model": "okay_nabu",
+
+    // Optional: stop model id (micro wake word)
     "stop_model": "stop",
+
+    // Optional: debounce/refractory window after wake word triggers
     "refractory_seconds": 2.0,
-    // Paths are relative to the project root
-    "oww_melspectrogram_model": "wakewords/openWakeWord/melspectrogram.tflite",
-    "oww_embedding_model": "wakewords/openWakeWord/embedding_model.tflite"
+
+    // Optional: directory for downloaded models (relative to repo)
+    "download_dir": "local"
   },
+
+  // ---------------------------------------------------------------------------
+  // Optional: ESPHome protocol server settings (the LVA exposes an ESPHome API)
+  // ---------------------------------------------------------------------------
   "esphome": {
-    // Network settings for the satellite server
     "host": "0.0.0.0",
     "port": 6053
   },
+
+  // ---------------------------------------------------------------------------
+  // Optional: LEDs
+  // ---------------------------------------------------------------------------
   "led": {
-    // "led_type" can be "dotstar" (APA102) or "neopixel" (WS2812B)
+    // Optional: if false, LED controller runs in no-op mode
+    "enabled": true,
+
+    // "dotstar" | "neopixel" | "xvf3800"
     "led_type": "dotstar",
 
-    // "interface" can be "spi" (hardware SPI) or "gpio" (bit-banging)
-    "interface": "gpio",
+    // "spi" | "gpio" | "usb"
+    // - dotstar: "spi" or "gpio"
+    // - neopixel: "spi" or "gpio"
+    // - xvf3800: "usb" (current intended support)
+    "interface": "spi",
 
-    // --- GPIO Settings ---
-    // These are ONLY used if interface is "gpio"
-    // For DotStar on Grove port: clock=13, data=12
-    // For NeoPixel on Grove port: data=12 (clock not used and is ignored)
+    // GPIO pins (BCM-ish via adafruit "board.Dxx" mapping) — used when interface="gpio"
+    // For DotStar GPIO: both clock_pin + data_pin are used
+    // For NeoPixel GPIO: only data_pin is used (clock_pin ignored)
+    // For xvf3800: unused and ignored
     "clock_pin": 13,
     "data_pin": 12,
 
-    // Default number of LEDs. This is overridden by
-    // "num_leds" in preferences.json after first run.
+    // Default number of LEDs (may be overridden by preferences.json after first run)
     "num_leds": 3
   },
+
+  // ---------------------------------------------------------------------------
+  // Optional: MQTT (enabled automatically when host is set)
+  // ---------------------------------------------------------------------------
   "mqtt": {
-    // "host" is the only required field to enable MQTT.
-    // If "host" is null or this section is omitted, MQTT is disabled.
-    "host": "192.168.1.2",
+    // If set, mqtt.enabled becomes true automatically
+    "host": null,
+
     "port": 1883,
-    "username": "mqtt_username",
-    "password": "mqtt_password"
+    "username": null,
+    "password": null
+  },
+
+  // ---------------------------------------------------------------------------
+  // Optional: Button controller
+  // ---------------------------------------------------------------------------
+  "button": {
+    // Master enable
+    "enabled": false,
+
+    // "gpio" | "xvf3800"
+    // - gpio: short/long press logic (pin + long_press_seconds)
+    // - xvf3800: uses the XVF3800 built-in mute button as a pure mute toggle
+    "mode": "gpio",
+
+    // gpio mode only
+    "pin": 17,
+    "long_press_seconds": 1.0,
+
+    // Polling interval (used by both gpio + xvf3800 button controllers)
+    "poll_interval_seconds": 0.01
   }
 }

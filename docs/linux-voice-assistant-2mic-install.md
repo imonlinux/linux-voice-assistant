@@ -24,7 +24,7 @@ This guide reproduces a working setup of the **linux-voice-assistant** project w
 sudo apt update
 sudo apt upgrade
 sudo apt install build-essential git \
-      libmpv-dev mpv python3-dev 
+      libmpv-dev mpv python3-dev python3-venv
 sudo reboot
 ```
 
@@ -608,7 +608,7 @@ alexa_v0.1.tflite       -> Alexa
 hey_jarvis_v0.1.tflite  -> Hey Jarvis
 hey_mycroft_v0.1.tflite -> Hey Mycroft
 hey_rhasspy_v0.1.tflite -> Hey Rhasspy
-ok_nabu_v0.1.tflite     -> OK Nabo **(I had to say OK Nobu)**
+ok_nabu_v0.1.tflite     -> OK Nabu **(I had to say OK Nobu)**
 ```
 
 Additional community provided OWW models available from this repository:

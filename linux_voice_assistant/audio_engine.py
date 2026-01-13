@@ -27,6 +27,9 @@ class AudioEngine:
         self.mic = mic
         self.block_size = block_size
         self._thread: Optional[threading.Thread] = None
+        
+        # CRITICAL FIX: Add lock for thread-safe wake word reload
+        self._wake_words_lock = threading.Lock()
 
     def start(self):
         """Starts the audio processing thread."""
@@ -113,33 +116,35 @@ class AudioEngine:
                             time.sleep(0.01)
                             continue
 
-                        # Update active wake words if changed
-                        if (not wake_words) or (self.state.wake_words_changed):
-                            self.state.wake_words_changed = False
-                            wake_words = [
-                                ww
-                                for ww in self.state.wake_words.values()
-                                if ww.id in self.state.active_wake_words
-                            ]
-                            has_oww = any(
-                                isinstance(ww, OpenWakeWord) for ww in wake_words
-                            )
-
-                            if has_oww and (oww_features is None):
-                                _LOGGER.debug(
-                                    "Initializing OpenWakeWord features..."
+                        # CRITICAL FIX: Protect wake word reload with lock
+                        with self._wake_words_lock:
+                            # Update active wake words if changed
+                            if (not wake_words) or (self.state.wake_words_changed):
+                                self.state.wake_words_changed = False
+                                wake_words = [
+                                    ww
+                                    for ww in self.state.wake_words.values()
+                                    if ww.id in self.state.active_wake_words
+                                ]
+                                has_oww = any(
+                                    isinstance(ww, OpenWakeWord) for ww in wake_words
                                 )
-                                oww_features = OpenWakeWordFeatures.from_builtin()
 
-                            _LOGGER.debug(
-                                "Rebuilt wake_words list: %s (has_oww=%s, active_ids=%s)",
-                                [
-                                    getattr(ww, "wake_word", getattr(ww, "id", "?"))
-                                    for ww in wake_words
-                                ],
-                                has_oww,
-                                self.state.active_wake_words,
-                            )
+                                if has_oww and (oww_features is None):
+                                    _LOGGER.debug(
+                                        "Initializing OpenWakeWord features..."
+                                    )
+                                    oww_features = OpenWakeWordFeatures.from_builtin()
+
+                                _LOGGER.debug(
+                                    "Rebuilt wake_words list: %s (has_oww=%s, active_ids=%s)",
+                                    [
+                                        getattr(ww, "wake_word", getattr(ww, "id", "?"))
+                                        for ww in wake_words
+                                    ],
+                                    has_oww,
+                                    self.state.active_wake_words,
+                                )
 
                         try:
                             # Feature extraction

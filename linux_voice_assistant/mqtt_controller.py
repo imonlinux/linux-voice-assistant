@@ -70,6 +70,12 @@ class MqttController(EventHandler):
                 "light_state": f"{self._topic_prefix}/{state_name}_light/state",
             }
 
+        # During startup we accept retained */state topics from the broker to restore
+        # Home Assistant's last-known settings. After bootstrap, we ignore */state topics
+        # to avoid feedback loops (we only accept */set as commands).
+        self._bootstrap_state_sync = True
+        self._bootstrap_ends_at: Optional[float] = None
+
         self._client = mqtt.Client()
         self._client.on_connect = self._on_connect
         self._client.on_message = self._on_message
@@ -102,9 +108,25 @@ class MqttController(EventHandler):
             _LOGGER.info("Connected to MQTT broker")
             client.subscribe(f"{self._topic_prefix}/+/set")
             client.subscribe(f"{self._topic_prefix}/+/state")
+            # End bootstrap a moment after subscribe so retained state messages can arrive.
+            self._bootstrap_ends_at = self.loop.time() + 2.0
+            self.loop.call_later(2.0, self._end_bootstrap_state_sync)
             self._publish_discovery_configs()
         else:
             _LOGGER.error("Failed to connect to MQTT, return code %d", rc)
+
+    def _end_bootstrap_state_sync(self):
+        # Called on the asyncio loop thread.
+        self._bootstrap_state_sync = False
+        # We only needed */state subscriptions to ingest retained settings at startup.
+        # After bootstrap, unsubscribe to avoid feedback loops and log spam.
+        try:
+            self._client.unsubscribe(f"{self._topic_prefix}/+/state")
+        except Exception:
+            _LOGGER.debug("Failed to unsubscribe from */state topics", exc_info=True)
+        _LOGGER.debug(
+            "MQTT bootstrap state sync complete; unsubscribed from */state and will ignore any state topics"
+        )
 
     def _on_message(self, client, userdata, msg):
         try:
@@ -113,14 +135,23 @@ class MqttController(EventHandler):
             _LOGGER.debug(
                 "Received MQTT message on topic %s (from MQTT thread)", msg.topic
             )
+            retain = bool(getattr(msg, "retain", False))
             self.loop.call_soon_threadsafe(
-                self._handle_message_on_loop, topic, payload
+                self._handle_message_on_loop, topic, payload, retain
             )
         except Exception:
             _LOGGER.exception("Error in _on_message")
 
-    def _handle_message_on_loop(self, topic: str, payload: str):
+    def _handle_message_on_loop(self, topic: str, payload: str, retained: bool = False):
         _LOGGER.debug("Handling message for topic %s on main loop", topic)
+
+        # Prevent feedback loops: we only treat */set as commands.
+        # However during bootstrap we accept retained */state values to restore HA settings.
+        if topic.endswith("/state"):
+            if not (self._bootstrap_state_sync and retained):
+                _LOGGER.debug("Ignoring MQTT state topic: %s (retained=%s, bootstrap=%s)", topic, retained, self._bootstrap_state_sync)
+                return
+
 
         if topic == self.topics["mute"]["command"]:
             # Publish event for MicMuteHandler to process
@@ -183,12 +214,12 @@ class MqttController(EventHandler):
                 effect_id = payload.lower().replace(" ", "_")
                 self.event_bus.publish(
                     f"set_{state_name}_effect",
-                    {"effect": effect_id, "retained": True},
+                    {"effect": effect_id, "retained": retained},
                 )
             elif topic == state_topics["light_state"]:
                 try:
                     data = json.loads(payload)
-                    data["retained"] = True
+                    data["retained"] = retained
                     self.event_bus.publish(
                         f"set_{state_name}_color", data
                     )

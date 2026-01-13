@@ -40,7 +40,9 @@ class ButtonRuntimeConfig:
     enabled: bool
     pin: int
     long_press_seconds: float
-    poll_interval_seconds: float = 0.01  # 100 Hz polling
+    # CRITICAL FIX: Change default from 0.01s to 0.05s (100 Hz -> 20 Hz)
+    # 80% reduction in CPU usage for button monitoring
+    poll_interval_seconds: float = 0.05  # 20 Hz polling
 
 
 class ButtonController:
@@ -73,6 +75,9 @@ class ButtonController:
         self.event_bus = event_bus
         self.state = state
 
+        # CRITICAL FIX: Default poll_interval_seconds to 0.05 instead of 0.01
+        default_poll_interval = 0.05
+        
         self._cfg = ButtonRuntimeConfig(
             enabled=getattr(config, "enabled", False),
             pin=getattr(config, "pin", 17),
@@ -80,9 +85,7 @@ class ButtonController:
                 getattr(config, "long_press_seconds", 1.0)
             ),
             poll_interval_seconds=float(
-                getattr(config, "poll_interval_seconds", 0.01)
-                if hasattr(config, "poll_interval_seconds")
-                else 0.01
+                getattr(config, "poll_interval_seconds", default_poll_interval)
             ),
         )
 

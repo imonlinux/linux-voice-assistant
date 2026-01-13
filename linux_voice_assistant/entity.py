@@ -31,9 +31,6 @@ class ESPHomeEntity:
         pass
 
 
-# -----------------------------------------------------------------------------
-
-
 class MediaPlayerEntity(ESPHomeEntity):
     def __init__(
         self,
@@ -102,13 +99,20 @@ class MediaPlayerEntity(ESPHomeEntity):
             if msg.has_media_url:
                 announcement = msg.has_announcement and msg.announcement
                 yield from self.play(msg.media_url, announcement=announcement)
+
             elif msg.has_command:
                 if msg.command == MediaPlayerCommand.PAUSE:
                     self.music_player.pause()
                     yield self._update_state(MediaPlayerState.PAUSED)
+
                 elif msg.command == MediaPlayerCommand.PLAY:
                     self.music_player.resume()
                     yield self._update_state(MediaPlayerState.PLAYING)
+
+                elif msg.command == MediaPlayerCommand.STOP:
+                    self.music_player.stop()
+                    yield self._update_state(MediaPlayerState.IDLE)
+
             if msg.has_volume:
                 # This block is called when the volume slider changes in HA
                 self.volume = msg.volume  # HA sends volume as 0.0-1.0
@@ -119,8 +123,9 @@ class MediaPlayerEntity(ESPHomeEntity):
                 # Save the new volume level to preferences
                 self.state.preferences.volume_level = self.volume
                 self.state.save_preferences()
-                
+
                 yield self._update_state(self.state_enum)
+
         elif isinstance(msg, ListEntitiesRequest):
             yield ListEntitiesMediaPlayerResponse(
                 object_id=self.object_id,
@@ -128,6 +133,7 @@ class MediaPlayerEntity(ESPHomeEntity):
                 name=self.name,
                 supports_pause=True,
             )
+
         elif isinstance(msg, SubscribeHomeAssistantStatesRequest):
             yield self._get_state_message()
 
