@@ -1,5 +1,11 @@
 {
   "app": {
-    "name": "Linux Voice Assistant"
+    "name": "Kali Voice Assistant"
+  },
+  "mqtt": {
+    "host": "192.168.0.100",
+    "port": 1883,
+    "username": "mqtt",
+    "password": "Ss1552157"
   }
 }
