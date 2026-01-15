@@ -31,7 +31,7 @@
     // - string => mpv audio-device (e.g. "pulse/alsa_output....")
     "output_device": null,
 
-    // Optional (NEW): Sync the host OS output device volume at startup to match
+    // Optional: Sync the host OS output device volume at startup to match
     // the volume stored in preferences.json (LVA MediaPlayer volume).
     //
     // When enabled, LVA will attempt (in order): wpctl -> pactl -> amixer.
@@ -40,7 +40,7 @@
     // Default: false
     "volume_sync": false,
 
-    // Optional (NEW): Maximum output volume percent for the underlying sink.
+    // Optional: Maximum output volume percent for the underlying sink.
     //
     // Many PipeWire/PulseAudio sinks support >100% (e.g. 150%) "amplified" volume.
     // This sets the ceiling used when mapping LVA volume (0.0–1.0) to the sink.
@@ -120,6 +120,15 @@
     "port": 1883,
     "username": null,
     "password": null
+  },
+
+  // ---------------------------------------------------------------------------
+  // Optional: Tray Client Settings
+  // ---------------------------------------------------------------------------
+  "tray": {
+    // The systemd service name the tray icon controls (Start/Stop/Restart).
+    // Default: "linux-voice-assistant.service"
+    "systemd_service_name": "linux-voice-assistant.service"
   },
 
   // ---------------------------------------------------------------------------

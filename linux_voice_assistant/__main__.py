@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import signal
 import time
 import sys
 from dataclasses import dataclass
@@ -28,7 +29,7 @@ from .audio_volume import ensure_output_volume
 from .satellite import VoiceSatelliteProtocol
 from .util import get_mac_address, format_mac
 from .zeroconf import HomeAssistantZeroconf
-from .xvf3800_button_controller import XVF3800ButtonController  # NEW
+from .xvf3800_button_controller import XVF3800ButtonController
 
 _LOGGER = logging.getLogger(__name__)
 _MODULE_DIR = Path(__file__).parent
@@ -167,8 +168,6 @@ async def main() -> None:
     media_players = _init_media_players(loop, config, preferences)
 
     # --- 5b. Sync OS sink volume to persisted volume ---
-    # mpv's per-player volume is kept at 100% and ducking is handled within mpv.
-    # The user-visible "volume" in HA maps to the OS output volume (PipeWire/Pulse/ALSA).
     if getattr(config.audio, "volume_sync", False):
         try:
             loop.create_task(
@@ -198,17 +197,47 @@ async def main() -> None:
     audio_engine = AudioEngine(state, mic, config.audio.input_block_size)
     audio_engine.start()
 
-    # --- 9. Run Server ---
-    try:
-        await _run_server(state, config)
-    finally:
-        # --- 10. Cleanup ---
-        _LOGGER.debug("Shutting down...")
-        audio_engine.stop()
+    # --- 9. Signal Handling (Graceful Shutdown) ---
+    stop_event = asyncio.Event()
 
-        if hasattr(state, "mqtt_controller") and state.mqtt_controller:
-            _LOGGER.debug("Stopping MQTT controller...")
-            state.mqtt_controller.stop()
+    def handle_signal(sig):
+        _LOGGER.info("Received exit signal %s...", sig.name)
+        stop_event.set()
+
+    # Register handlers for SIGINT (Ctrl+C) and SIGTERM (Systemd stop)
+    loop.add_signal_handler(signal.SIGINT, lambda: handle_signal(signal.SIGINT))
+    loop.add_signal_handler(signal.SIGTERM, lambda: handle_signal(signal.SIGTERM))
+
+    # --- 10. Run Server ---
+    # We create the server task but don't await it directly, 
+    # so we can await stop_event instead.
+    server_task = asyncio.create_task(_run_server(state, config))
+
+    _LOGGER.info("LVA Started. Waiting for signals...")
+    
+    # Wait here until a signal is received
+    await stop_event.wait()
+    
+    # --- 11. Cleanup ---
+    _LOGGER.debug("Shutting down...")
+    
+    # Stop Audio
+    audio_engine.stop()
+
+    # Stop MQTT (Async await to ensure offline message is sent)
+    if hasattr(state, "mqtt_controller") and state.mqtt_controller:
+        _LOGGER.debug("Stopping MQTT controller...")
+        await state.mqtt_controller.stop()
+    
+    # Cancel server task (since it's running 'forever')
+    server_task.cancel()
+    try:
+        await server_task
+    except asyncio.CancelledError:
+        pass
+    
+    _LOGGER.info("Shutdown complete.")
+
 
 # -----------------------------------------------------------------------------
 # Helper Functions
@@ -282,7 +311,6 @@ def _load_preferences(config: Config) -> Preferences:
 
     # Backwards-compatible defaults / migrations
     preferences.num_leds = getattr(preferences, "num_leds", config.led.num_leds)
-    # New: default alarm_duration_seconds, 0 = infinite until Stop/wake word
     preferences.alarm_duration_seconds = getattr(
         preferences, "alarm_duration_seconds", 0
     )
@@ -293,17 +321,6 @@ def _load_preferences(config: Config) -> Preferences:
 def _xvf3800_startup_preflight(config: Config) -> None:
     """
     Best-effort XVF3800 USB preflight.
-
-    Some platforms (notably certain SBC USB controllers) can leave the XVF3800
-    capture endpoint "silent" until the device is rebooted.
-
-    If an XVF3800 is configured (LED/button/audio), we optionally:
-      1) issue an XVF3800 REBOOT
-      2) wait for USB re-enumeration
-      3) set AUDIO_MGR_OP_L and AUDIO_MGR_OP_R to (7, 3) to force both channels
-         to the ASR3 output (as discovered via xvf_host.py testing)
-
-    This uses PyUSB directly (no dependency on xvf_host.py).
     """
     try:
         # Determine whether XVF3800 is in use at all
@@ -378,7 +395,7 @@ def _get_microphone(config: Config):
             input_device_idx = int(input_spec)
             mic = sc.all_microphones(include_loopback=False)[input_device_idx]
         except (ValueError, IndexError):
-            # If the user specified a name, retry a bit (helps after USB re-enumeration / slow PipeWire startup).
+            # If the user specified a name, retry a bit (helps after USB re-enumeration).
             want_name = str(input_spec)
             is_xvf = "xvf3800" in want_name.lower()
             deadline = time.time() + (20.0 if is_xvf else 5.0)
@@ -594,4 +611,8 @@ async def _run_server(state: ServerState, config: Config):
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        # Should be handled by signal handlers, but just in case
+        pass
