@@ -67,12 +67,7 @@ We will set up a virtual environment and install the package with the optional `
 ```bash
 
 # Run the setup script (creates .venv and installs core deps)
-script/setup
-
-# Activate venv and install tray dependencies
-source .venv/bin/activate
-pip install -e .[tray]
-deactivate
+script/setup --tray
 
 ```
 
