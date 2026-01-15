@@ -10,7 +10,7 @@ import subprocess
 from typing import Dict, Tuple
 
 import paho.mqtt.client as mqtt
-from PyQt5.QtCore import QObject, pyqtSignal
+from PyQt5.QtCore import QObject, pyqtSignal, QTimer
 
 from ..config import Config
 from ..models import SatelliteState
@@ -21,7 +21,7 @@ _LOGGER = logging.getLogger(__name__)
 
 class TrayController(QObject):
     """
-    Manages the application state and MQTT connection.
+    Manages the application state via Systemd polling and MQTT.
     Emits signals when state changes so the UI can update safely.
     """
 
@@ -44,12 +44,11 @@ class TrayController(QObject):
         self._mqtt_password = config.mqtt.password
 
         # Internal State
-        self._available = False
+        self._service_active = False  # Controlled by systemd poll
         self._muted = False
         self._current_state = SatelliteState.IDLE.value
         
         # Color mapping (State -> (r, g, b))
-        # Default colors
         self._colors: Dict[str, Tuple[int, int, int]] = {
             SatelliteState.IDLE.value: (128, 0, 255),       # purple
             SatelliteState.LISTENING.value: (0, 0, 255),    # blue
@@ -57,6 +56,11 @@ class TrayController(QObject):
             SatelliteState.RESPONDING.value: (0, 255, 0),   # green
             SatelliteState.ERROR.value: (255, 165, 0),      # orange
         }
+
+        # Service Polling Timer
+        self._poll_timer = QTimer(self)
+        self._poll_timer.setInterval(2000)  # Poll every 2 seconds
+        self._poll_timer.timeout.connect(self._poll_service_status)
 
         # Initialize MQTT Client
         self._client = mqtt.Client()
@@ -68,7 +72,12 @@ class TrayController(QObject):
         self._client.on_disconnect = self._on_disconnect
 
     def start(self):
-        """Start the MQTT client."""
+        """Start the Controller (MQTT + Polling)."""
+        # 1. Start Systemd Polling
+        self._poll_service_status()  # Immediate check
+        self._poll_timer.start()
+
+        # 2. Start MQTT
         _LOGGER.debug("Connecting to MQTT %s:%s", self._mqtt_host, self._mqtt_port)
         try:
             self._client.connect(self._mqtt_host, self._mqtt_port, 60)
@@ -77,12 +86,37 @@ class TrayController(QObject):
             _LOGGER.exception("Failed to connect to MQTT broker")
 
     def stop(self):
-        """Stop the MQTT client."""
+        """Stop the Controller."""
+        self._poll_timer.stop()
         try:
             self._client.loop_stop()
             self._client.disconnect()
         except Exception:
             pass
+
+    # -------------------------------------------------------------------------
+    # Systemd Polling Logic
+    # -------------------------------------------------------------------------
+
+    def _poll_service_status(self):
+        """Check if the systemd service is active."""
+        service = self._config.tray.systemd_service_name
+        try:
+            # check_call returns 0 if active, raises CalledProcessError if inactive/failed
+            subprocess.check_call(
+                ["systemctl", "--user", "is-active", "--quiet", service]
+            )
+            is_active = True
+        except subprocess.CalledProcessError:
+            is_active = False
+        except FileNotFoundError:
+            # systemctl not found (non-systemd environment?)
+            is_active = False
+
+        if self._service_active != is_active:
+            _LOGGER.info("Service '%s' status changed: Active=%s", service, is_active)
+            self._service_active = is_active
+            self._emit_update()
 
     # -------------------------------------------------------------------------
     # Actions (Called by UI)
@@ -103,10 +137,23 @@ class TrayController(QObject):
 
     def control_service(self, action: str):
         """Run systemctl commands for the main service."""
-        service = "linux-voice-assistant.service"
-        cmd = ["systemctl", "--user", action, service]
+        service = self._config.tray.systemd_service_name
+        
+        cmd = ["systemctl", "--user", action]
+
+        # Use --no-block for stop/restart to prevent UI freeze
+        if action in ("stop", "restart"):
+            cmd.append("--no-block")
+        
+        cmd.append(service)
+        
         _LOGGER.info("Running: %s", " ".join(cmd))
         subprocess.run(cmd, check=False)
+        
+        # Poll fast to catch the state change immediately
+        QTimer.singleShot(100, self._poll_service_status)
+        QTimer.singleShot(500, self._poll_service_status)
+        QTimer.singleShot(2000, self._poll_service_status)
 
     def get_device_name(self) -> str:
         return self._device_name
@@ -121,7 +168,6 @@ class TrayController(QObject):
     def _on_connect(self, client, userdata, flags, rc):
         if rc == 0:
             _LOGGER.info("Connected to MQTT broker")
-            client.subscribe(f"{self._topic_prefix}/availability")
             client.subscribe(f"{self._topic_prefix}/mute/state")
             client.subscribe(f"{self._topic_prefix}/#")
         else:
@@ -129,27 +175,15 @@ class TrayController(QObject):
 
     def _on_disconnect(self, client, userdata, rc):
         _LOGGER.warning("MQTT Disconnected: %s", rc)
-        self._available = False
-        self._emit_update()
 
     def _on_message(self, client, userdata, msg):
         try:
             topic = msg.topic
             payload = msg.payload.decode()
-            retained = bool(msg.retain)  # Check retain flag
-            
-            # Log all incoming messages at DEBUG level for troubleshooting
-            _LOGGER.debug("MQTT RX: %s | Payload: %s | Retained: %s", topic, payload, retained)
-
-            if topic == f"{self._topic_prefix}/availability":
-                self._available = (payload.strip().lower() == "online")
-                _LOGGER.info("Availability changed: %s", self._available)
-                self._emit_update()
-                return
+            retained = bool(msg.retain)
 
             if topic == f"{self._topic_prefix}/mute/state":
                 self._muted = (payload.strip().upper() == "ON")
-                _LOGGER.info("Mute state changed: %s", self._muted)
                 self._emit_update()
                 return
 
@@ -164,7 +198,6 @@ class TrayController(QObject):
         try:
             data = json.loads(payload)
         except json.JSONDecodeError:
-            _LOGGER.warning("Failed to decode JSON from %s: %s", topic, payload)
             return
 
         # Extract state name: lva/<device>/<state>_light/state
@@ -172,7 +205,6 @@ class TrayController(QObject):
         if len(parts) < 4:
             return
         
-        # e.g., "idle_light" -> "idle"
         state_part = parts[-2]
         if not state_part.endswith("_light"):
             return
@@ -181,48 +213,39 @@ class TrayController(QObject):
         if state_name not in self._colors:
             return
 
-        # 1. ALWAYS update the color definition (so custom colors work immediately)
+        # 1. Update Color Config
         color_dict = data.get("color", {})
         r = int(color_dict.get("r", 0))
         g = int(color_dict.get("g", 0))
         b = int(color_dict.get("b", 0))
         
-        # Parse Brightness
         brightness = int(data.get("brightness", 255))
         scale = brightness / 255.0 if brightness > 0 else 0.0
         
-        # Scale color
         final_rgb = (
             max(0, min(255, int(r * scale))),
             max(0, min(255, int(g * scale))),
             max(0, min(255, int(b * scale)))
         )
-        
-        # Update color map
         self._colors[state_name] = final_rgb
 
-        # 2. ONLY update the current state if this is NOT a retained message
-        #    Retained messages are just history/config; fresh messages are events.
+        # 2. Update State (Only if not retained)
         if retained:
-            _LOGGER.debug("Updated color for %s from retained message; ignoring state transition", state_name)
-            # We still emit update in case the color of the *current* state changed
             self._emit_update()
             return
 
-        # Update Current State logic
         state_flag = data.get("state", "OFF").upper()
-        
-        _LOGGER.debug("Handling light update: state_name=%s, flag=%s", state_name, state_flag)
 
         if state_flag == "ON":
-            # If a state turns ON, it becomes the active state
             if self._current_state != state_name:
-                _LOGGER.info("State transition: %s -> %s", self._current_state, state_name)
                 self._current_state = state_name
         elif state_flag == "OFF":
-            # If the current active state turns OFF, fall back to IDLE
             if self._current_state == state_name:
-                 _LOGGER.info("Current state %s turned OFF, falling back to IDLE", state_name)
+                 self._current_state = SatelliteState.IDLE.value
+            
+            # FIX 2: If we get an update for IDLE (even if OFF), assume we are returning to Idle.
+            # This fixes cases where the previous state (e.g. Thinking) wasn't explicitly turned off.
+            elif state_name == SatelliteState.IDLE.value:
                  self._current_state = SatelliteState.IDLE.value
 
         self._emit_update()
@@ -230,9 +253,10 @@ class TrayController(QObject):
     def _emit_update(self):
         """Emit the current state to the UI (thread-safe)."""
         color = self._colors.get(self._current_state, (128, 128, 128))
-        # emit(available, state_name, (r,g,b), is_muted)
+        
+        # Use Service Active flag as the "Available" truth
         self.state_updated.emit(
-            self._available,
+            self._service_active,
             self._current_state,
             color,
             self._muted
