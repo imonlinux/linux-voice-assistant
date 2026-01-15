@@ -136,28 +136,35 @@ class TrayController(QObject):
         try:
             topic = msg.topic
             payload = msg.payload.decode()
+            retained = bool(msg.retain)  # Check retain flag
+            
+            # Log all incoming messages at DEBUG level for troubleshooting
+            _LOGGER.debug("MQTT RX: %s | Payload: %s | Retained: %s", topic, payload, retained)
 
             if topic == f"{self._topic_prefix}/availability":
                 self._available = (payload.strip().lower() == "online")
+                _LOGGER.info("Availability changed: %s", self._available)
                 self._emit_update()
                 return
 
             if topic == f"{self._topic_prefix}/mute/state":
                 self._muted = (payload.strip().upper() == "ON")
+                _LOGGER.info("Mute state changed: %s", self._muted)
                 self._emit_update()
                 return
 
             if topic.endswith("_light/state"):
-                self._handle_light_state(topic, payload)
+                self._handle_light_state(topic, payload, retained)
                 return
 
         except Exception:
             _LOGGER.exception("Error processing MQTT message")
 
-    def _handle_light_state(self, topic: str, payload: str):
+    def _handle_light_state(self, topic: str, payload: str, retained: bool):
         try:
             data = json.loads(payload)
         except json.JSONDecodeError:
+            _LOGGER.warning("Failed to decode JSON from %s: %s", topic, payload)
             return
 
         # Extract state name: lva/<device>/<state>_light/state
@@ -174,7 +181,7 @@ class TrayController(QObject):
         if state_name not in self._colors:
             return
 
-        # Parse Color
+        # 1. ALWAYS update the color definition (so custom colors work immediately)
         color_dict = data.get("color", {})
         r = int(color_dict.get("r", 0))
         g = int(color_dict.get("g", 0))
@@ -194,18 +201,29 @@ class TrayController(QObject):
         # Update color map
         self._colors[state_name] = final_rgb
 
+        # 2. ONLY update the current state if this is NOT a retained message
+        #    Retained messages are just history/config; fresh messages are events.
+        if retained:
+            _LOGGER.debug("Updated color for %s from retained message; ignoring state transition", state_name)
+            # We still emit update in case the color of the *current* state changed
+            self._emit_update()
+            return
+
         # Update Current State logic
-        # If this state is ON, it becomes the current state.
-        # If Idle updates, it stays current only if we were already idle.
         state_flag = data.get("state", "OFF").upper()
         
-        if state_name == SatelliteState.IDLE.value:
-            # Idle update doesn't force a switch unless we are already idle
-            if self._current_state == SatelliteState.IDLE.value:
-                self._current_state = SatelliteState.IDLE.value
-        else:
-            if state_flag == "ON":
+        _LOGGER.debug("Handling light update: state_name=%s, flag=%s", state_name, state_flag)
+
+        if state_flag == "ON":
+            # If a state turns ON, it becomes the active state
+            if self._current_state != state_name:
+                _LOGGER.info("State transition: %s -> %s", self._current_state, state_name)
                 self._current_state = state_name
+        elif state_flag == "OFF":
+            # If the current active state turns OFF, fall back to IDLE
+            if self._current_state == state_name:
+                 _LOGGER.info("Current state %s turned OFF, falling back to IDLE", state_name)
+                 self._current_state = SatelliteState.IDLE.value
 
         self._emit_update()
 
