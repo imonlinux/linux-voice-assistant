@@ -8,7 +8,6 @@ import paho.mqtt.client as mqtt
 from .config import MqttConfig
 from .event_bus import EventBus, EventHandler, subscribe
 from .models import Preferences
-from .util import slugify_device_id
 
 if TYPE_CHECKING:
     from .models import ServerState
@@ -36,11 +35,11 @@ class MqttController(EventHandler):
         self._password = config.password
 
         self._device_name = app_name
-        # Use shared utility function
-        self._device_id = slugify_device_id(app_name) 
+        self._device_id = app_name.lower().replace(" ", "_")
         self._topic_prefix = f"lva/{self._device_id}"
 
         self._is_muted = False  # Internal state
+        self._connected = False # Track connection state
 
         self.CONFIGURABLE_STATES: List[str] = [
             "idle",
@@ -58,7 +57,6 @@ class MqttController(EventHandler):
                 "command": f"{self._topic_prefix}/num_leds/set",
                 "state": f"{self._topic_prefix}/num_leds/state",
             },
-            # New: alarm duration
             "alarm_duration": {
                 "command": f"{self._topic_prefix}/alarm_duration/set",
                 "state": f"{self._topic_prefix}/alarm_duration/state",
@@ -72,23 +70,30 @@ class MqttController(EventHandler):
                 "light_state": f"{self._topic_prefix}/{state_name}_light/state",
             }
 
-        # During startup we accept retained */state topics from the broker to restore
-        # Home Assistant's last-known settings. After bootstrap, we ignore */state topics
-        # to avoid feedback loops (we only accept */set as commands).
         self._bootstrap_state_sync = True
         self._bootstrap_ends_at: Optional[float] = None
 
         self._client = mqtt.Client()
         self._client.on_connect = self._on_connect
         self._client.on_message = self._on_message
+        self._client.on_disconnect = self._on_disconnect
 
         # Subscribe to events *after* __init__ is complete
         self._subscribe_all_methods()
 
     def start(self):
         try:
+            # Set Last Will and Testament (LWT) as a fallback
+            self._client.will_set(
+                f"{self._topic_prefix}/availability", 
+                payload="offline", 
+                qos=1, 
+                retain=True
+            )
+
             if self._username:
                 self._client.username_pw_set(self._username, self._password)
+            
             _LOGGER.debug(
                 "Connecting to MQTT broker at %s:%s", self._host, self._port
             )
@@ -97,37 +102,67 @@ class MqttController(EventHandler):
         except Exception:
             _LOGGER.exception("Failed to connect to MQTT broker")
 
-    def stop(self):
-        self._client.publish(
-            f"{self._topic_prefix}/availability", "offline", retain=True
-        )
-        self._client.loop_stop()
-        self._client.disconnect()
+    def _publish_offline_blocking(self):
+        """Helper to publish offline status and BLOCK until sent."""
+        try:
+            info = self._client.publish(
+                f"{self._topic_prefix}/availability", 
+                "offline", 
+                qos=0, 
+                retain=True
+            )
+            info.wait_for_publish(timeout=2.0)
+        except Exception:
+            _LOGGER.warning("Failed to flush offline message to broker", exc_info=True)
+
+    async def stop(self):
+        """Stop the MQTT client and publish offline status."""
+        if not self._client:
+            return
+
+        _LOGGER.info("Stopping MQTT Controller...")
+        
+        # 1. Publish Offline Status (Blocking wait)
+        if self._connected:
+             _LOGGER.info("Publishing availability: offline")
+             await self.loop.run_in_executor(None, self._publish_offline_blocking)
+
+        # 2. Stop the loop and disconnect
+        await self.loop.run_in_executor(None, self._client.loop_stop)
+        await self.loop.run_in_executor(None, self._client.disconnect)
+        self._connected = False
         _LOGGER.debug("Disconnected from MQTT broker")
 
     def _on_connect(self, client, userdata, flags, rc):
         if rc == 0:
             _LOGGER.info("Connected to MQTT broker")
+            self._connected = True
             client.subscribe(f"{self._topic_prefix}/+/set")
             client.subscribe(f"{self._topic_prefix}/+/state")
-            # End bootstrap a moment after subscribe so retained state messages can arrive.
-            self._bootstrap_ends_at = self.loop.time() + 2.0
-            self.loop.call_later(2.0, self._end_bootstrap_state_sync)
+            
+            # FIX 1: Increased bootstrap time from 2.0s to 5.0s to ensure retained messages are captured
+            self._bootstrap_ends_at = self.loop.time() + 5.0
+            self.loop.call_later(5.0, self._end_bootstrap_state_sync)
+            
             self._publish_discovery_configs()
         else:
             _LOGGER.error("Failed to connect to MQTT, return code %d", rc)
 
+    def _on_disconnect(self, client, userdata, rc):
+        self._connected = False
+        if rc != 0:
+            _LOGGER.warning("Unexpected MQTT disconnection (rc=%s)", rc)
+        else:
+            _LOGGER.debug("MQTT client disconnected cleanly")
+
     def _end_bootstrap_state_sync(self):
-        # Called on the asyncio loop thread.
         self._bootstrap_state_sync = False
-        # We only needed */state subscriptions to ingest retained settings at startup.
-        # After bootstrap, unsubscribe to avoid feedback loops and log spam.
         try:
             self._client.unsubscribe(f"{self._topic_prefix}/+/state")
         except Exception:
             _LOGGER.debug("Failed to unsubscribe from */state topics", exc_info=True)
         _LOGGER.debug(
-            "MQTT bootstrap state sync complete; unsubscribed from */state and will ignore any state topics"
+            "MQTT bootstrap state sync complete; unsubscribed from */state"
         )
 
     def _on_message(self, client, userdata, msg):
@@ -135,7 +170,7 @@ class MqttController(EventHandler):
             topic = msg.topic
             payload = msg.payload.decode()
             _LOGGER.debug(
-                "Received MQTT message on topic %s (from MQTT thread)", msg.topic
+                "Received MQTT message on topic %s", msg.topic
             )
             retain = bool(getattr(msg, "retain", False))
             self.loop.call_soon_threadsafe(
@@ -147,16 +182,12 @@ class MqttController(EventHandler):
     def _handle_message_on_loop(self, topic: str, payload: str, retained: bool = False):
         _LOGGER.debug("Handling message for topic %s on main loop", topic)
 
-        # Prevent feedback loops: we only treat */set as commands.
-        # However during bootstrap we accept retained */state values to restore HA settings.
         if topic.endswith("/state"):
             if not (self._bootstrap_state_sync and retained):
-                _LOGGER.debug("Ignoring MQTT state topic: %s (retained=%s, bootstrap=%s)", topic, retained, self._bootstrap_state_sync)
+                _LOGGER.debug("Ignoring MQTT state topic: %s", topic)
                 return
 
-
         if topic == self.topics["mute"]["command"]:
-            # Publish event for MicMuteHandler to process
             self.event_bus.publish(
                 "set_mic_mute", {"state": payload.upper() == "ON"}
             )
@@ -164,7 +195,6 @@ class MqttController(EventHandler):
         elif topic == self.topics["num_leds"]["command"]:
             try:
                 num_leds = int(payload)
-                # Publish event for LedController and MicMuteHandler (to save)
                 self.event_bus.publish("set_num_leds", {"num_leds": num_leds})
                 self.publish_num_leds_state(num_leds)
             except ValueError:
@@ -175,7 +205,6 @@ class MqttController(EventHandler):
                 duration = int(payload)
                 if duration < 0:
                     raise ValueError
-                # Publish event for MicMuteHandler (to save preferences)
                 self.event_bus.publish(
                     "set_alarm_duration",
                     {"alarm_duration_seconds": duration},
@@ -236,15 +265,8 @@ class MqttController(EventHandler):
             "manufacturer": "LVA Project",
         }
         options = [
-            "Off",
-            "Solid",
-            "Slow Pulse",
-            "Medium Pulse",
-            "Fast Pulse",
-            "Slow Blink",
-            "Medium Blink",
-            "Fast Blink",
-            "Spin",
+            "Off", "Solid", "Slow Pulse", "Medium Pulse", "Fast Pulse", 
+            "Slow Blink", "Medium Blink", "Fast Blink", "Spin",
         ]
 
         mute_cfg = {
@@ -282,7 +304,6 @@ class MqttController(EventHandler):
             retain=True,
         )
 
-        # New: Alarm Duration number (seconds)
         alarm_duration_cfg = {
             "name": "Alarm Duration",
             "unique_id": f"{self._device_id}_alarm_duration",
@@ -306,7 +327,6 @@ class MqttController(EventHandler):
 
         for state_name in self.CONFIGURABLE_STATES:
             capital_name = state_name.title()
-
             select_cfg = {
                 "name": f"{capital_name} Effect",
                 "unique_id": f"{self._device_id}_{state_name}_effect",
@@ -346,7 +366,6 @@ class MqttController(EventHandler):
         _LOGGER.debug("Published all MQTT discovery configs")
         self._client.publish(availability_topic, "online", retain=True)
 
-        # Publish initial state from internal values
         self.publish_mute_state(self._is_muted)
         self.publish_num_leds_state(self.preferences.num_leds)
         self.publish_alarm_duration_state(
@@ -399,8 +418,6 @@ class MqttController(EventHandler):
                 json.dumps(light_state),
                 retain=True,
             )
-
-    # --- Listen for state changes from other components ---
 
     @subscribe
     def mic_muted(self, data: dict):
