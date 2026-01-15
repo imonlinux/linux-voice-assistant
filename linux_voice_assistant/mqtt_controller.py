@@ -8,6 +8,7 @@ import paho.mqtt.client as mqtt
 from .config import MqttConfig
 from .event_bus import EventBus, EventHandler, subscribe
 from .models import Preferences
+from .util import slugify_device_id
 
 if TYPE_CHECKING:
     from .models import ServerState
@@ -35,7 +36,8 @@ class MqttController(EventHandler):
         self._password = config.password
 
         self._device_name = app_name
-        self._device_id = app_name.lower().replace(" ", "_")
+        # Use shared utility function
+        self._device_id = slugify_device_id(app_name) 
         self._topic_prefix = f"lva/{self._device_id}"
 
         self._is_muted = False  # Internal state

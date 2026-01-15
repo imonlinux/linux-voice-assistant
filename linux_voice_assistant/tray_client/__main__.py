@@ -2,24 +2,15 @@
 """
 LVA Tray Client
 
-- Reads linux_voice_assistant/config.json to discover:
-  - app.name  -> used for device_id
-  - mqtt.host / port / username / password
-- Subscribes to the LVA's MQTT topics to:
-  - Track availability (online/offline)
-  - Track mute state
-  - Track per-state LED color (idle/listening/thinking/responding/error)
+- Reads linux_voice_assistant/config.json using the shared config loader.
+- Subscribes to the LVA's MQTT topics to track availability, mute, and LED states.
 - Shows a system tray icon whose color matches the current LVA state.
-- Provides a tray menu to start/stop/restart the LVA systemd --user service
-  and toggle microphone mute.
-
-Idle state now **also uses the MQTT color**, not a fixed purple.
+- Provides a tray menu to control the systemd service and toggle mute.
 """
 
 import argparse
 import json
 import logging
-import os
 import subprocess
 import sys
 from pathlib import Path
@@ -28,60 +19,11 @@ from typing import Dict, Optional
 import paho.mqtt.client as mqtt
 from PyQt5 import QtCore, QtGui, QtWidgets
 
+from ..config import Config, load_config_from_json
+from ..models import SatelliteState
+from ..util import slugify_device_id
+
 _LOGGER = logging.getLogger("lva_tray_client")
-
-# ---------------------------------------------------------------------------
-# Helper functions
-# ---------------------------------------------------------------------------
-
-
-def slugify_device_id(name: str) -> str:
-    """Convert display name to a consistent device_id."""
-    return name.strip().lower().replace(" ", "_")
-
-
-def load_config(config_path: Optional[Path]) -> dict:
-    """Load LVA config.json."""
-    if config_path is None:
-        # Since we're now at linux_voice_assistant/tray_client/__main__.py,
-        # go up two levels to linux_voice_assistant/, then find config.json
-        base = Path(__file__).resolve().parent.parent  # Up to linux_voice_assistant/
-        config_path = base / "config.json"
-
-    _LOGGER.info("Using config file: %s", config_path)
-    with config_path.open("r", encoding="utf-8") as f:
-        cfg = json.load(f)
-
-    app_cfg = cfg.get("app", {})
-    mqtt_cfg = cfg.get("mqtt", {})
-
-    name = app_cfg.get("name", "Linux Voice Assistant")
-    device_id = slugify_device_id(name)
-
-    host = mqtt_cfg.get("host", "127.0.0.1")
-    port = int(mqtt_cfg.get("port", 1883))
-    username = mqtt_cfg.get("username") or None
-    password = mqtt_cfg.get("password") or None
-
-    cfg["_resolved"] = {
-        "name": name,
-        "device_id": device_id,
-        "mqtt_enabled": True,
-        "host": host,
-        "port": port,
-        "username": username,
-        "password": password,
-    }
-
-    _LOGGER.info(
-        "Loaded config: name=%s device_id=%s mqtt_enabled=%s host=%s port=%s",
-        name,
-        device_id,
-        True,
-        host,
-        port,
-    )
-    return cfg
 
 # ---------------------------------------------------------------------------
 # Tray client
@@ -91,40 +33,40 @@ def load_config(config_path: Optional[Path]) -> dict:
 class LvaTrayClient(QtWidgets.QSystemTrayIcon):
     """System tray integration for the Linux Voice Assistant."""
 
-    STATES = ["idle", "listening", "thinking", "responding", "error"]
-
-    def __init__(self, app: QtWidgets.QApplication, cfg: dict):
+    def __init__(self, app: QtWidgets.QApplication, config: Config):
         # QSystemTrayIcon init
         super().__init__(parent=None)
         self._app = app
+        self._config = config
 
-        resolved = cfg["_resolved"]
-        self._device_name = resolved["name"]
-        self._device_id = resolved["device_id"]
-        self._mqtt_host = resolved["host"]
-        self._mqtt_port = resolved["port"]
-        self._mqtt_username = resolved["username"]
-        self._mqtt_password = resolved["password"]
+        self._device_name = config.app.name
+        self._device_id = slugify_device_id(self._device_name)
+        
+        # MQTT Config
+        self._mqtt_host = config.mqtt.host or "127.0.0.1"
+        self._mqtt_port = config.mqtt.port
+        self._mqtt_username = config.mqtt.username
+        self._mqtt_password = config.mqtt.password
 
         self._topic_prefix = f"lva/{self._device_id}"
 
         # Current state
         self._available: bool = False
         self._muted: bool = False
-        self._current_state: str = "idle"
+        self._current_state: str = SatelliteState.IDLE.value
 
-        # Default colors per state (fallbacks)
+        # Default colors per state
+        # Note: We filter out STARTING as it is transient/internal
         self._default_colors: Dict[str, QtGui.QColor] = {
-            "idle": QtGui.QColor(128, 0, 255),       # purple
-            "listening": QtGui.QColor(0, 0, 255),    # blue
-            "thinking": QtGui.QColor(255, 255, 0),   # yellow
-            "responding": QtGui.QColor(0, 255, 0),   # green
-            "error": QtGui.QColor(255, 165, 0),      # orange
+            SatelliteState.IDLE.value: QtGui.QColor(128, 0, 255),       # purple
+            SatelliteState.LISTENING.value: QtGui.QColor(0, 0, 255),    # blue
+            SatelliteState.THINKING.value: QtGui.QColor(255, 255, 0),   # yellow
+            SatelliteState.RESPONDING.value: QtGui.QColor(0, 255, 0),   # green
+            SatelliteState.ERROR.value: QtGui.QColor(255, 165, 0),      # orange
         }
-        # Last MQTT-derived color per state (idle included!)
-        self._last_color_by_state: Dict[str, QtGui.QColor] = dict(
-            self._default_colors
-        )
+        
+        # Last MQTT-derived color per state
+        self._last_color_by_state: Dict[str, QtGui.QColor] = dict(self._default_colors)
 
         # Build context menu
         self._build_menu()
@@ -249,7 +191,7 @@ class LvaTrayClient(QtWidgets.QSystemTrayIcon):
     def _on_connect(self, client, userdata, flags, rc):  # noqa: ARG002
         if rc == 0:
             _LOGGER.info("Connected to MQTT broker (tray)")
-            # Subscribe to availability + mute + all LVA topics (for LED states, num_leds, etc.)
+            # Subscribe to availability + mute + all LVA topics
             client.subscribe(f"{self._topic_prefix}/availability")
             client.subscribe(f"{self._topic_prefix}/mute/state")
             client.subscribe(f"{self._topic_prefix}/#")
@@ -265,10 +207,7 @@ class LvaTrayClient(QtWidgets.QSystemTrayIcon):
         try:
             topic = msg.topic
             payload = msg.payload.decode()
-            _LOGGER.debug(
-                "MQTT message: topic=%s payload=%s", topic, payload
-            )
-
+            
             # availability
             if topic == f"{self._topic_prefix}/availability":
                 self._handle_availability(payload)
@@ -277,10 +216,6 @@ class LvaTrayClient(QtWidgets.QSystemTrayIcon):
             # mute state
             if topic == f"{self._topic_prefix}/mute/state":
                 self._handle_mute_state(payload)
-                return
-
-            # effect state (we don't currently use it for color, but log it)
-            if topic.endswith("_effect/state"):
                 return
 
             # light state
@@ -297,33 +232,25 @@ class LvaTrayClient(QtWidgets.QSystemTrayIcon):
 
     def _handle_availability(self, payload: str):
         online = payload.strip().lower() == "online"
-        _LOGGER.debug("Availability update: %s", payload)
         self._available = online
         self._update_tray_icon()
 
     def _handle_mute_state(self, payload: str):
         new_muted = payload.strip().upper() == "ON"
-        _LOGGER.debug("Mute update: %s", new_muted)
         self._muted = new_muted
-        # Reflect in menu
         self._mute_action.setChecked(self._muted)
         self._update_tray_icon()
 
     def _handle_light_state(self, topic: str, payload: str):
         """
         Handle JSON from .../<state>_light/state
-        Example payload:
-          {"state": "ON", "brightness": 127,
-           "color": {"r": 0, "g": 0, "b": 255}}
         """
         try:
             data = json.loads(payload)
         except json.JSONDecodeError:
-            _LOGGER.warning("Invalid JSON on light state: %s", payload)
             return
 
-        # Extract state name from topic
-        # lva/<device>/<state>_light/state
+        # Extract state name from topic: lva/<device>/<state>_light/state
         parts = topic.split("/")
         if len(parts) < 4:
             return
@@ -331,12 +258,10 @@ class LvaTrayClient(QtWidgets.QSystemTrayIcon):
         if not state_part.endswith("_light"):
             return
         state_name = state_part[: -len("_light")]
-        if state_name not in self.STATES:
+        
+        # Verify this is a known state (ignore unknown or 'starting')
+        if state_name not in self._default_colors:
             return
-
-        _LOGGER.debug(
-            "Decoded light state: state_name=%s data=%s", state_name, data
-        )
 
         state_flag = data.get("state", "OFF").upper()
         color_dict = data.get("color", {}) or {}
@@ -347,7 +272,7 @@ class LvaTrayClient(QtWidgets.QSystemTrayIcon):
         g = int(color_dict.get("g", 0))
         b = int(color_dict.get("b", 0))
 
-        # Apply brightness scaling to the MQTT color
+        # Apply brightness scaling
         scale = brightness / 255.0 if brightness > 0 else 0.0
         r_scaled = max(0, min(255, int(r * scale)))
         g_scaled = max(0, min(255, int(g * scale)))
@@ -356,34 +281,15 @@ class LvaTrayClient(QtWidgets.QSystemTrayIcon):
         qcolor = QtGui.QColor(r_scaled, g_scaled, b_scaled)
         self._last_color_by_state[state_name] = qcolor
 
-        # State transitions:
-        # - For non-idle: treat "ON" as "this is the active state"
-        # - For idle: **always** treat updates as "idle is the current baseline"
-        if state_name == "idle":
-            _LOGGER.debug(
-                "Tray state_update (idle): data=%s (using MQTT color for idle)",
-                data,
-            )
-            self._current_state = "idle"
+        # State transitions
+        if state_name == SatelliteState.IDLE.value:
+            # Idle updates just change the idle color, they don't force state transition
+            # unless we are already in idle.
+            if self._current_state == SatelliteState.IDLE.value:
+                self._current_state = SatelliteState.IDLE.value
         else:
             if state_flag == "ON":
-                _LOGGER.debug(
-                    "Tray state_update: state_name=%s data=%s",
-                    state_name,
-                    data,
-                )
-                if self._current_state != state_name:
-                    _LOGGER.debug(
-                        "Tray state changing: %s -> %s",
-                        self._current_state,
-                        state_name,
-                    )
                 self._current_state = state_name
-            else:
-                # Ignore OFF for non-idle states
-                _LOGGER.debug(
-                    "Ignoring OFF for non-idle state %s", state_name
-                )
 
         self._update_tray_icon()
 
@@ -392,13 +298,8 @@ class LvaTrayClient(QtWidgets.QSystemTrayIcon):
     # ------------------------------------------------------------------
 
     def _set_icon_by_key(self, key: str):
-        """
-        Convenience wrapper to set icon for:
-          - 'offline'
-          - any state name in STATES
-        """
         if key == "offline":
-            color = QtGui.QColor(128, 128, 128)  # grey
+            color = QtGui.QColor(128, 128, 128)
             tooltip_state = "offline"
         else:
             color = self._last_color_by_state.get(
@@ -406,7 +307,7 @@ class LvaTrayClient(QtWidgets.QSystemTrayIcon):
             )
             tooltip_state = key
 
-        # If muted, tint red (but keep some info from base color)
+        # If muted, tint red
         if self._muted and key != "offline":
             base = color
             color = QtGui.QColor(
@@ -419,15 +320,10 @@ class LvaTrayClient(QtWidgets.QSystemTrayIcon):
         icon = self._make_circle_icon(color)
         self.setIcon(icon)
 
-        # Update tooltip
         tip = f"{self._device_name} – {tooltip_state}"
         self.setToolTip(tip)
         if self.contextMenu():
             self._status_action.setText(tip)
-
-        _LOGGER.debug(
-            "Setting tray icon: key=%s available=%s muted=%s", key, self._available, self._muted
-        )
 
     def _make_circle_icon(self, color: QtGui.QColor) -> QtGui.QIcon:
         size = 20
@@ -464,7 +360,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="LVA Tray Client")
     parser.add_argument(
         "--config",
-        type=str,
+        type=Path,
         help="Path to LVA config.json (defaults to linux_voice_assistant/config.json)",
     )
     parser.add_argument(
@@ -480,14 +376,26 @@ def main(argv=None):
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-    config_path = Path(args.config) if args.config else None
-    cfg = load_config(config_path)
+    # Resolve config path
+    if args.config:
+        config_path = args.config
+    else:
+        # Default: ../../config.json relative to this file
+        config_path = Path(__file__).resolve().parent.parent / "config.json"
+
+    _LOGGER.info("Loading config from %s", config_path)
+    
+    try:
+        config = load_config_from_json(config_path)
+    except Exception:
+        _LOGGER.critical("Failed to load config file.")
+        sys.exit(1)
 
     # Make Qt app
     app = QtWidgets.QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
 
-    tray = LvaTrayClient(app, cfg)
+    tray = LvaTrayClient(app, config)  # noqa: F841
 
     # Start event loop
     sys.exit(app.exec_())
