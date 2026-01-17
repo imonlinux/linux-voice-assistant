@@ -7,7 +7,8 @@ import paho.mqtt.client as mqtt
 
 from .config import MqttConfig
 from .event_bus import EventBus, EventHandler, subscribe
-from .models import Preferences
+from .models import Preferences, SatelliteState
+from .util import slugify_device_id
 
 if TYPE_CHECKING:
     from .models import ServerState
@@ -35,19 +36,20 @@ class MqttController(EventHandler):
         self._password = config.password
 
         self._device_name = app_name
-        self._device_id = app_name.lower().replace(" ", "_")
+        self._device_id = slugify_device_id(app_name)
         self._topic_prefix = f"lva/{self._device_id}"
 
         self._is_muted = False  # Internal state
-        self._connected = False # Track connection state
+        self._connected = False  # Track connection state
 
         self.CONFIGURABLE_STATES: List[str] = [
-            "idle",
-            "listening",
-            "thinking",
-            "responding",
-            "error",
+            SatelliteState.IDLE.value,
+            SatelliteState.LISTENING.value,
+            SatelliteState.THINKING.value,
+            SatelliteState.RESPONDING.value,
+            SatelliteState.ERROR.value,
         ]
+
         self.topics = {
             "mute": {
                 "command": f"{self._topic_prefix}/mute/set",
@@ -62,6 +64,7 @@ class MqttController(EventHandler):
                 "state": f"{self._topic_prefix}/alarm_duration/state",
             },
         }
+
         for state_name in self.CONFIGURABLE_STATES:
             self.topics[state_name] = {
                 "effect_command": f"{self._topic_prefix}/{state_name}_effect/set",
@@ -85,18 +88,16 @@ class MqttController(EventHandler):
         try:
             # Set Last Will and Testament (LWT) as a fallback
             self._client.will_set(
-                f"{self._topic_prefix}/availability", 
-                payload="offline", 
-                qos=1, 
-                retain=True
+                f"{self._topic_prefix}/availability",
+                payload="offline",
+                qos=1,
+                retain=True,
             )
 
             if self._username:
                 self._client.username_pw_set(self._username, self._password)
-            
-            _LOGGER.debug(
-                "Connecting to MQTT broker at %s:%s", self._host, self._port
-            )
+
+            _LOGGER.debug("Connecting to MQTT broker at %s:%s", self._host, self._port)
             self._client.connect(self._host, self._port, 60)
             self._client.loop_start()
         except Exception:
@@ -106,10 +107,10 @@ class MqttController(EventHandler):
         """Helper to publish offline status and BLOCK until sent."""
         try:
             info = self._client.publish(
-                f"{self._topic_prefix}/availability", 
-                "offline", 
-                qos=0, 
-                retain=True
+                f"{self._topic_prefix}/availability",
+                "offline",
+                qos=0,
+                retain=True,
             )
             info.wait_for_publish(timeout=2.0)
         except Exception:
@@ -121,11 +122,11 @@ class MqttController(EventHandler):
             return
 
         _LOGGER.info("Stopping MQTT Controller...")
-        
+
         # 1. Publish Offline Status (Blocking wait)
         if self._connected:
-             _LOGGER.info("Publishing availability: offline")
-             await self.loop.run_in_executor(None, self._publish_offline_blocking)
+            _LOGGER.info("Publishing availability: offline")
+            await self.loop.run_in_executor(None, self._publish_offline_blocking)
 
         # 2. Stop the loop and disconnect
         await self.loop.run_in_executor(None, self._client.loop_stop)
@@ -139,11 +140,11 @@ class MqttController(EventHandler):
             self._connected = True
             client.subscribe(f"{self._topic_prefix}/+/set")
             client.subscribe(f"{self._topic_prefix}/+/state")
-            
-            # FIX 1: Increased bootstrap time from 2.0s to 5.0s to ensure retained messages are captured
+
+            # Increased bootstrap time to ensure retained messages are captured
             self._bootstrap_ends_at = self.loop.time() + 5.0
             self.loop.call_later(5.0, self._end_bootstrap_state_sync)
-            
+
             self._publish_discovery_configs()
         else:
             _LOGGER.error("Failed to connect to MQTT, return code %d", rc)
@@ -161,21 +162,15 @@ class MqttController(EventHandler):
             self._client.unsubscribe(f"{self._topic_prefix}/+/state")
         except Exception:
             _LOGGER.debug("Failed to unsubscribe from */state topics", exc_info=True)
-        _LOGGER.debug(
-            "MQTT bootstrap state sync complete; unsubscribed from */state"
-        )
+        _LOGGER.debug("MQTT bootstrap state sync complete; unsubscribed from */state")
 
     def _on_message(self, client, userdata, msg):
         try:
             topic = msg.topic
             payload = msg.payload.decode()
-            _LOGGER.debug(
-                "Received MQTT message on topic %s", msg.topic
-            )
+            _LOGGER.debug("Received MQTT message on topic %s", msg.topic)
             retain = bool(getattr(msg, "retain", False))
-            self.loop.call_soon_threadsafe(
-                self._handle_message_on_loop, topic, payload, retain
-            )
+            self.loop.call_soon_threadsafe(self._handle_message_on_loop, topic, payload, retain)
         except Exception:
             _LOGGER.exception("Error in _on_message")
 
@@ -188,9 +183,7 @@ class MqttController(EventHandler):
                 return
 
         if topic == self.topics["mute"]["command"]:
-            self.event_bus.publish(
-                "set_mic_mute", {"state": payload.upper() == "ON"}
-            )
+            self.event_bus.publish("set_mic_mute", {"state": payload.upper() == "ON"})
 
         elif topic == self.topics["num_leds"]["command"]:
             try:
@@ -205,39 +198,28 @@ class MqttController(EventHandler):
                 duration = int(payload)
                 if duration < 0:
                     raise ValueError
-                self.event_bus.publish(
-                    "set_alarm_duration",
-                    {"alarm_duration_seconds": duration},
-                )
+                self.event_bus.publish("set_alarm_duration", {"alarm_duration_seconds": duration})
                 self.publish_alarm_duration_state(duration)
             except ValueError:
-                _LOGGER.warning(
-                    "Invalid alarm_duration payload received: %r", payload
-                )
+                _LOGGER.warning("Invalid alarm_duration payload received: %r", payload)
 
         for state_name in self.CONFIGURABLE_STATES:
             state_topics = self.topics[state_name]
             if topic == state_topics["effect_command"]:
                 effect_id = payload.lower().replace(" ", "_")
-                self.event_bus.publish(
-                    f"set_{state_name}_effect", {"effect": effect_id}
-                )
+                self.event_bus.publish(f"set_{state_name}_effect", {"effect": effect_id})
 
             elif topic == state_topics["light_command"]:
                 try:
                     data = json.loads(payload)
                     if "state" in data:
-                        if data["state"].upper() == "OFF":
-                            self.event_bus.publish(
-                                f"set_{state_name}_effect", {"effect": "off"}
-                            )
-                        else:  # ON command
+                        if str(data["state"]).upper() == "OFF":
+                            self.event_bus.publish(f"set_{state_name}_effect", {"effect": "off"})
+                        else:
                             self.event_bus.publish(f"turn_on_{state_name}")
 
                     if "color" in data or "brightness" in data:
-                        self.event_bus.publish(
-                            f"set_{state_name}_color", data
-                        )
+                        self.event_bus.publish(f"set_{state_name}_color", data)
                 except json.JSONDecodeError:
                     pass
 
@@ -247,13 +229,12 @@ class MqttController(EventHandler):
                     f"set_{state_name}_effect",
                     {"effect": effect_id, "retained": retained},
                 )
+
             elif topic == state_topics["light_state"]:
                 try:
                     data = json.loads(payload)
                     data["retained"] = retained
-                    self.event_bus.publish(
-                        f"set_{state_name}_color", data
-                    )
+                    self.event_bus.publish(f"set_{state_name}_color", data)
                 except json.JSONDecodeError:
                     pass
 
@@ -265,8 +246,15 @@ class MqttController(EventHandler):
             "manufacturer": "LVA Project",
         }
         options = [
-            "Off", "Solid", "Slow Pulse", "Medium Pulse", "Fast Pulse", 
-            "Slow Blink", "Medium Blink", "Fast Blink", "Spin",
+            "Off",
+            "Solid",
+            "Slow Pulse",
+            "Medium Pulse",
+            "Fast Pulse",
+            "Slow Blink",
+            "Medium Blink",
+            "Fast Blink",
+            "Spin",
         ]
 
         mute_cfg = {
@@ -327,6 +315,7 @@ class MqttController(EventHandler):
 
         for state_name in self.CONFIGURABLE_STATES:
             capital_name = state_name.title()
+
             select_cfg = {
                 "name": f"{capital_name} Effect",
                 "unique_id": f"{self._device_id}_{state_name}_effect",
@@ -368,9 +357,7 @@ class MqttController(EventHandler):
 
         self.publish_mute_state(self._is_muted)
         self.publish_num_leds_state(self.preferences.num_leds)
-        self.publish_alarm_duration_state(
-            getattr(self.preferences, "alarm_duration_seconds", 0)
-        )
+        self.publish_alarm_duration_state(getattr(self.preferences, "alarm_duration_seconds", 0))
 
     def publish_mute_state(self, is_muted: bool):
         self._is_muted = is_muted
@@ -381,16 +368,10 @@ class MqttController(EventHandler):
         )
 
     def publish_num_leds_state(self, num_leds: int):
-        self._client.publish(
-            self.topics["num_leds"]["state"], str(num_leds), retain=True
-        )
+        self._client.publish(self.topics["num_leds"]["state"], str(num_leds), retain=True)
 
     def publish_alarm_duration_state(self, duration_seconds: int):
-        self._client.publish(
-            self.topics["alarm_duration"]["state"],
-            str(int(duration_seconds)),
-            retain=True,
-        )
+        self._client.publish(self.topics["alarm_duration"]["state"], str(int(duration_seconds)), retain=True)
 
     @subscribe
     def publish_state_to_mqtt(self, data: dict):
@@ -399,9 +380,7 @@ class MqttController(EventHandler):
             state_topics = self.topics[state_name]
 
             effect_name = data.get("effect", "off").replace("_", " ").title()
-            self._client.publish(
-                state_topics["effect_state"], effect_name, retain=True
-            )
+            self._client.publish(state_topics["effect_state"], effect_name, retain=True)
 
             light_state = {
                 "state": "ON" if data.get("effect") != "off" else "OFF",
@@ -413,11 +392,7 @@ class MqttController(EventHandler):
                     "b": data.get("color")[2],
                 },
             }
-            self._client.publish(
-                state_topics["light_state"],
-                json.dumps(light_state),
-                retain=True,
-            )
+            self._client.publish(state_topics["light_state"], json.dumps(light_state), retain=True)
 
     @subscribe
     def mic_muted(self, data: dict):
