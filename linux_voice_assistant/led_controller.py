@@ -11,7 +11,11 @@ try:
     import board  # type: ignore[import]
 except Exception:
     board = None  # type: ignore[assignment]
-    # We log this later if hardware LEDs are actually requested.
+    _LOGGER.warning(
+        "Adafruit 'board' module not available or unsupported on this platform; "
+        "DotStar/NeoPixel GPIO/SPI LED backends will be disabled. "
+        "XVF3800 USB LED backend is unaffected."
+    )
 
 from .config import LedConfig
 from .event_bus import EventBus, EventHandler, subscribe
@@ -71,15 +75,15 @@ class LedController(EventHandler):
                 "LEDs disabled in config (led.enabled = false); "
                 "LedController will run in no-op mode."
             )
-        elif not self._enabled and config.led_type != "xvf3800":
-             # Only warn if not using XVF3800, as XVF3800 doesn't need 'board'
+        elif not self._enabled:
             _LOGGER.warning(
                 "LED hardware libraries not available on this platform for led_type=%s; "
                 "LedController will run in no-op mode.",
                 config.led_type,
             )
 
-        # Always subscribe to events so MQTT + state logic remains intact
+        # Always subscribe to events so MQTT + state logic remains intact,
+        # even when LEDs are effectively disabled.
         self._subscribe_all_methods()
 
         # If LEDs are not enabled at all, skip hardware init
@@ -104,6 +108,7 @@ class LedController(EventHandler):
                 )
                 self.run_action("startup_sequence")
             except Exception:
+                # Any hardware-related failure leaves us in no-op mode
                 self._is_ready = False
                 self._enabled = False
                 self._xvf3800_backend = None
@@ -172,19 +177,12 @@ class LedController(EventHandler):
             )
             self.run_action("startup_sequence")
 
-        except (ImportError, AttributeError, NotImplementedError) as e:
-            # Cleanly handle missing hardware support (e.g. PC/Laptop missing board pins)
-            self._is_ready = False
-            self.leds = None
-            _LOGGER.warning(
-                "LED hardware initialization failed (expected on non-Pi platforms): %s. LEDs disabled.", e
-            )
         except Exception:
-            # Unexpected failures get a full trace
+            # Any hardware-related failure leaves us in no-op mode
             self._is_ready = False
             self.leds = None
             _LOGGER.exception(
-                "Unexpected error initializing LED controller. LEDs will be disabled."
+                "Failed to initialize LED controller. LEDs will be disabled."
             )
 
     # -----------------------------------------------------------------------

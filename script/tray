@@ -1,17 +1,17 @@
-#!/usr/bin/env python3
-import sys
-import subprocess
-import venv
-from pathlib import Path
+#!/usr/bin/env bash
+set -euo pipefail
 
-_DIR = Path(__file__).parent
-_PROGRAM_DIR = _DIR.parent
-_VENV_DIR = _PROGRAM_DIR / ".venv"
+# Resolve repo root (one level up from this script)
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-if _VENV_DIR.exists():
-    context = venv.EnvBuilder().ensure_directories(_VENV_DIR)
-    python_exe = context.env_exe
-else:
-    python_exe = "python3"
+# Activate venv if present
+if [[ -d "$ROOT_DIR/.venv" ]]; then
+  # shellcheck disable=SC1090
+  source "$ROOT_DIR/.venv/bin/activate"
+fi
 
-subprocess.check_call([python_exe, "-m", "linux_voice_assistant.tray_client"] + sys.argv[1:])
+cd "$ROOT_DIR"
+
+# Run the tray client
+exec python lva_tray_client.py "$@"
+
