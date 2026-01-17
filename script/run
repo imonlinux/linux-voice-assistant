@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
-import argparse
 import subprocess
-import venv
+import sys
 from pathlib import Path
 
 _DIR = Path(__file__).parent
@@ -9,34 +8,21 @@ _PROGRAM_DIR = _DIR.parent
 _VENV_DIR = _PROGRAM_DIR / ".venv"
 
 
-def run(cmd: list[str]) -> None:
-    subprocess.check_call(cmd)
+def in_venv() -> bool:
+    return sys.prefix != getattr(sys, "base_prefix", sys.prefix)
 
 
-parser = argparse.ArgumentParser()
-parser.add_argument("--dev", action="store_true", help="Install dev requirements (extras: dev)")
-parser.add_argument("--tray", action="store_true", help="Install tray client requirements (extras: tray)")
-args = parser.parse_args()
+def venv_python(venv_dir: Path) -> Path:
+    return venv_dir / "bin" / "python"
 
-# Create virtual environment
-builder = venv.EnvBuilder(with_pip=True)
-context = builder.ensure_directories(_VENV_DIR)
-builder.create(_VENV_DIR)
 
-# Upgrade pip and setuptools
-pip = [context.env_exe, "-m", "pip"]
-run(pip + ["install", "--upgrade", "pip", "setuptools", "wheel"])
-
-# Additive extras
-extras: list[str] = []
-if args.dev:
-    extras.append("dev")
-if args.tray:
-    extras.append("tray")
-
-# Install project + optional extras
-if extras:
-    extras_str = ",".join(extras)
-    run(pip + ["install", "-e", f"{_PROGRAM_DIR}[{extras_str}]"])
+if in_venv():
+    python_exe = sys.executable
 else:
-    run(pip + ["install", "-e", str(_PROGRAM_DIR)])
+    candidate = venv_python(_VENV_DIR)
+    python_exe = str(candidate) if candidate.exists() else "python3"
+
+subprocess.check_call(
+    [python_exe, "-m", "linux_voice_assistant.tray_client", *sys.argv[1:]],
+    cwd=str(_PROGRAM_DIR),
+)
