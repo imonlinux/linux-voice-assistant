@@ -41,11 +41,6 @@ def format_mac(mac: str) -> str:
     return ":".join(mac[i : i + 2] for i in range(0, 12, 2))
 
 
-def slugify_device_id(name: str) -> str:
-    """Convert a display name to a consistent device_id."""
-    return name.strip().lower().replace(" ", "_")
-
-
 def call_all(*callables: Optional[Callable[[], None]]) -> None:
     for item in filter(None, callables):
         item()

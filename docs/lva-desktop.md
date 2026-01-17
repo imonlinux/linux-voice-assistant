@@ -1,214 +1,163 @@
 # Want to run LVA on a Linux Graphical Desktop?
 
-This guide covers installing the Linux Voice Assistant (LVA) on a desktop Linux distribution (Debian, Fedora, Arch) and setting up the System Tray Client.
+### 1. Install the dependancies:
 
-### 1. Install System Dependencies
+### Debian based distro:
 
-You will need Python headers, `mpv` (for audio playback), and `git`.
-
-**Debian / Ubuntu / Raspberry Pi OS:**
 ```bash
 sudo apt update
 sudo apt install \
-  libmpv-dev git python3-dev mpv python3-venv
-
+  libmpv-dev git python3-dev mpv
 ```
 
-**Fedora:**
+### Fedora based distro:
 
 ```bash
 sudo dnf install \
   mpv-devel python3-devel git mpv
-
 ```
 
-**Arch Linux:**
+### Arch based distro:
 
 ```bash
 sudo pacman -Syu \
-  python python-pip mpv
-
+  python-pip python-virtualenv mpv
 ```
 
-### 2. Configure Firewall
+### 2. Open Firewall for LVA:
 
-LVA uses port `6053` (TCP/UDP) for the ESPHome API. If you have a firewall enabled, you must allow this port so Home Assistant can connect.
-
-**UFW (Ubuntu/Debian):**
+### UFW:
 
 ```bash
 sudo ufw allow 6053/udp
 sudo ufw allow 6053/tcp
 sudo ufw reload
-
 ```
 
-**FirewallD (Fedora/CentOS):**
+### Firewall-CMD:
 
 ```bash
 sudo firewall-cmd --permanent --zone=public --add-port=6053/tcp
 sudo firewall-cmd --permanent --zone=public --add-port=6053/udp
 sudo firewall-cmd --reload
-
 ```
 
-### 3. Get the Code
+### 3. Get the code:
 
 ```bash
 git clone https://github.com/imonlinux/linux-voice-assistant.git
-cd linux-voice-assistant
-
 ```
 
-### 4. Install LVA
-
-We will set up a virtual environment and install the package with the optional `[tray]` dependencies (which installs PyQt5).
+### 4. Setup Linux Voice Assistant (LVA):
 
 ```bash
+cd linux-voice-assistant/
+chmod +x script/tray
+script/setup
 
-# Run the setup script (creates .venv and installs core deps)
-script/setup --tray
-
+source .venv/bin/activate
+pip install -e .[tray]
+deactivate
 ```
 
-### 5. Configure LVA
-
-Create your configuration file:
+### 5. Modify config.json File:
 
 ```bash
 nano linux_voice_assistant/config.json
-
 ```
 
-**Important:** For the Tray Client to show status colors (listening, thinking, etc.) and control the mute state, **MQTT is required**.
+Change the LVA name and add the details for MQTT (MQTT is required for the LVA Tray Client)
+***Update the MQTT details to match your system!***
 
-Update the example below with your specific MQTT broker details:
-
-```json
+```bash
 {
   "app": {
-    "name": "My Desktop Assistant"
+    "name": "Debian Voice Assistant"
   },
   "mqtt": {
-    "host": "192.168.1.X",
+    "host": "192.168.1.2",
     "port": 1883,
-    "username": "your_mqtt_user",
-    "password": "your_mqtt_password"
+    "username": "mqtt-user",
+    "password": "mqtt-password"
   }
 }
-
 ```
 
-### 6. Set up Systemd Services
-
-We will run LVA as a user-level service so it has access to your user audio session (PulseAudio/PipeWire).
-
-#### A. Main LVA Service
+### 6. Create LVA User Mode Systemd Unit file:
 
 ```bash
 mkdir -p ~/.config/systemd/user
-cp service/linux-voice-assistant.service ~/.config/systemd/user/
+
+cp service/linux-voice-assistant.service ~/.config/systemd/user/linux-voice-assistant.service
 
 ```
 
-Edit the service to match your installation path:
+### Edit the LVA Unit file for correct path:
 
 ```bash
 systemctl --user edit --force --full linux-voice-assistant.service
-
 ```
+### Enter the correct path for WorkingDirectory and ExecStart
 
-**Replace `/path/to/linux-voice-assistant` with your actual directory (e.g., `/home/yourname/linux-voice-assistant`):**
-
-```ini
+```bash
 [Unit]
 Description=Linux Voice Assistant
-After=network-online.target
-Wants=network-online.target
 
 [Service]
 Type=simple
-# UPDATE THIS PATH:
-WorkingDirectory=/path/to/linux-voice-assistant
+WorkingDirectory=/home/pi/linux-voice-assistant
 Environment=PYTHONUNBUFFERED=1
 
-# UPDATE THIS PATH:
-ExecStart=/path/to/linux-voice-assistant/script/run
+ExecStart=/home/pi/linux-voice-assistant/script/run
 
 Restart=always
 RestartSec=2
 
 [Install]
 WantedBy=default.target
-
 ```
 
-#### B. Tray Client Service
+### 7. Create the LVA Tray Client User Mode Systemd Unit file:
 
 ```bash
-cp service/linux-voice-assistant-tray.service ~/.config/systemd/user/
-
+cp service/linux-voice-assistant-tray.service ~/.config/systemd/user/linux-voice-assistant-tray.service
 ```
 
-Edit the tray service:
+### Edit the LVA Tray Unit file for correct path:
 
 ```bash
 systemctl --user edit --force --full linux-voice-assistant-tray.service
-
 ```
 
-**Again, update the paths:**
+### Enter the correct path for WorkingDirectory and ExecStart
 
-```ini
+```bash
 [Unit]
 Description=Linux Voice Assistant Tray Client
+# Make sure we have a graphical session
 After=graphical-session.target
 Wants=graphical-session.target
 
 [Service]
 Type=simple
-# UPDATE THIS PATH:
-WorkingDirectory=/path/to/linux-voice-assistant
-
-# UPDATE THIS PATH:
-ExecStart=/path/to/linux-voice-assistant/script/tray
-
+WorkingDirectory=/home/james/Workbench/linux-voice-assistant
+ExecStart=/home/james/Workbench/linux-voice-assistant/script/tray
 Restart=on-failure
 RestartSec=2
 
 [Install]
 WantedBy=default.target
-
 ```
 
-### 7. Start the Application
-
-You only need to enable and start the **Tray Client**. The Tray Client has a menu option to start/stop the main LVA background service for you.
+### Start only the LVA Tray Application
 
 ```bash
 systemctl --user daemon-reload
 systemctl --user enable --now linux-voice-assistant-tray.service
-
 ```
 
-### 8. Using the Tray Client
+This will add an icon to your taskbar. Click on the icon and select "Start LVA".
 
-1. **Icon:** You should see a small circle icon in your system tray.
-* **Grey:** Offline / LVA Service not running.
-* **Purple:** Idle (Connected).
-* **Blue:** Listening.
-* **Yellow:** Thinking (Processing).
-* **Green:** Responding (TTS).
-* **Orange:** Error.
-* **Red Tint:** Microphone Muted.
+Follow the instructions in HA to register the LVA.
 
-
-2. **Menu:** Left-click or Right-click the icon to:
-* **Start LVA:** Launches the main background service.
-* **Mute Microphone:** Toggles the software mute state.
-* **Restart/Stop LVA:** Controls the background service.
-
-
-3. **Home Assistant Integration:**
-* Once LVA connects to MQTT, it will discover several entities in Home Assistant.
-* You can change the LED/Icon colors for each state (Idle, Listening, etc.) directly from Home Assistant using the `Light` entities created by LVA (e.g., `light.my_desktop_assistant_idle_color`). The tray icon will update instantly to match these settings!
+Use the MQTT device that is created in HA to adjust the icon color for each of the LVA states.
