@@ -23,6 +23,6 @@ else:
     python_exe = str(candidate) if candidate.exists() else "python3"
 
 subprocess.check_call(
-    [python_exe, "-m", "linux_voice_assistant.tray_client", *sys.argv[1:]],
+    [python_exe, "-m", "linux_voice_assistant", *sys.argv[1:]],
     cwd=str(_PROGRAM_DIR),
 )
