@@ -57,6 +57,9 @@ tray = [
     "PyQt5>=5.15",
 ]
 
+[project.scripts]
+lva-tray = "linux_voice_assistant.tray_client.client:main"
+
 [project.urls]
 "Source Code" = "https://github.com/imonlinux/linux-voice-assistant"
 
