@@ -21,13 +21,33 @@ _LOGGER = logging.getLogger(__name__)
 warnings.filterwarnings("ignore", category=RuntimeWarning, module="pymicro_wakeword")
 
 
+def _clamp_0_1(name: str, value: float, default: float = 0.5) -> float:
+    """Clamp a float to [0.0, 1.0] with warnings; fallback to default on parse errors."""
+    try:
+        v = float(value)
+    except Exception:
+        _LOGGER.warning("%s is not a number (%r); using default %.2f", name, value, default)
+        return float(default)
+
+    if v < 0.0:
+        _LOGGER.warning("%s < 0.0; clamping to 0.0 (was %s)", name, v)
+        return 0.0
+    if v > 1.0:
+        _LOGGER.warning("%s > 1.0; clamping to 1.0 (was %s)", name, v)
+        return 1.0
+    return v
+
+
 class AudioEngine:
-    def __init__(self, state: ServerState, mic, block_size: int):
+    def __init__(self, state: ServerState, mic, block_size: int, oww_threshold: float = 0.5):
         self.state = state
         self.mic = mic
         self.block_size = block_size
         self._thread: Optional[threading.Thread] = None
-        
+
+        # Configurable OpenWakeWord activation threshold (default matches prior behavior)
+        self.oww_threshold = _clamp_0_1("wake_word.openwakeword_threshold", oww_threshold, default=0.5)
+
         # CRITICAL FIX: Add lock for thread-safe wake word reload
         self._wake_words_lock = threading.Lock()
 
@@ -50,7 +70,7 @@ class AudioEngine:
 
     def _process_audio(self):
         """Main audio processing loop."""
-        _LOGGER.debug("Audio engine started.")
+        _LOGGER.debug("Audio engine started. OpenWakeWord default threshold=%.2f", self.oww_threshold)
 
         micro_features = MicroWakeWordFeatures()
         oww_features: Optional[OpenWakeWordFeatures] = None
@@ -169,8 +189,9 @@ class AudioEngine:
                                     ):
                                         activated = True
                                 elif isinstance(wake_word, OpenWakeWord):
+                                    threshold = getattr(wake_word, "threshold", self.oww_threshold)
                                     if any(
-                                        p > 0.5
+                                        p > threshold
                                         for oi in oww_inputs
                                         for p in wake_word.process_streaming(oi)
                                     ):
@@ -185,9 +206,12 @@ class AudioEngine:
                                     id_key = wake_id_attr or wake_phrase
 
                                     _LOGGER.debug(
-                                        "Wake word ACTIVATED: %s (id=%s)",
+                                        "Wake word ACTIVATED: %s (id=%s, threshold=%.2f)",
                                         wake_phrase,
                                         wake_id_attr,
+                                        getattr(wake_word, "threshold", self.oww_threshold)
+                                        if isinstance(wake_word, OpenWakeWord)
+                                        else -1.0,
                                     )
 
                                     now = time.monotonic()
