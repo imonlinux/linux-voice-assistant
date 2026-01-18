@@ -149,7 +149,7 @@ class MicMuteHandler(EventHandler):
 
 async def main() -> None:
     # --- 1. Load Basics ---
-    config, loop, event_bus = _init_basics()
+    config, loop, event_bus, args = _init_basics()
 
     # --- 2. Load Preferences ---
     preferences = _load_preferences(config)
@@ -195,7 +195,12 @@ async def main() -> None:
     _init_controllers(loop, event_bus, state, config, preferences)
 
     # --- 8. Start Audio Engine ---
-    audio_engine = AudioEngine(state, mic, config.audio.input_block_size)
+    audio_engine = AudioEngine(
+        state,
+        mic,
+        config.audio.input_block_size,
+        oww_threshold=getattr(config.wake_word, "openwakeword_threshold", 0.5),
+    )
     audio_engine.start()
 
     # --- 9. Run Server ---
@@ -214,7 +219,7 @@ async def main() -> None:
 # Helper Functions
 # -----------------------------------------------------------------------------
 
-def _init_basics() -> Tuple[Config, asyncio.AbstractEventLoop, EventBus]:
+def _init_basics() -> Tuple[Config, asyncio.AbstractEventLoop, EventBus, argparse.Namespace]:
     """Loads config, sets up logging, and creates loop/event bus."""
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -225,6 +230,15 @@ def _init_basics() -> Tuple[Config, asyncio.AbstractEventLoop, EventBus]:
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
     parser.add_argument("--list-input-devices", action="store_true", help="List audio input devices")
     parser.add_argument("--list-output-devices", action="store_true", help="List audio output devices")
+
+    # Optional CLI override to match upstream style
+    parser.add_argument(
+        "--wake-word-threshold",
+        type=float,
+        default=None,
+        help="OpenWakeWord activation threshold (0.0-1.0). Overrides wake_word.openwakeword_threshold in config.json",
+    )
+
     args = parser.parse_args()
 
     if args.list_input_devices:
@@ -258,6 +272,17 @@ def _init_basics() -> Tuple[Config, asyncio.AbstractEventLoop, EventBus]:
     if args.debug:
         config.app.debug = True
 
+    # CLI override for OWW threshold (validated/clamped later by AudioEngine too)
+    if args.wake_word_threshold is not None:
+        try:
+            config.wake_word.openwakeword_threshold = float(args.wake_word_threshold)
+        except Exception:
+            _LOGGER.warning(
+                "Invalid --wake-word-threshold value %r; keeping config value %.2f",
+                args.wake_word_threshold,
+                getattr(config.wake_word, "openwakeword_threshold", 0.5),
+            )
+
     logging.basicConfig(
         level=logging.DEBUG if config.app.debug else logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
@@ -268,7 +293,7 @@ def _init_basics() -> Tuple[Config, asyncio.AbstractEventLoop, EventBus]:
     loop = asyncio.get_running_loop()
     event_bus = EventBus()
 
-    return config, loop, event_bus
+    return config, loop, event_bus, args
 
 def _load_preferences(config: Config) -> Preferences:
     """Loads preferences.json file."""
@@ -433,12 +458,24 @@ def _load_wake_words(config: Config, preferences: Preferences) -> WakeWordData:
                     else config_path
                 )
 
+                # Per-model OpenWakeWord threshold override.
+                # Supported keys in wakeword model json:
+                # - "threshold" (preferred)
+                # - "openwakeword_threshold" (alias)
+                oww_threshold = None
+                if model_type == WakeWordType.OPEN_WAKE_WORD:
+                    if "threshold" in model_config:
+                        oww_threshold = model_config.get("threshold")
+                    elif "openwakeword_threshold" in model_config:
+                        oww_threshold = model_config.get("openwakeword_threshold")
+
                 available[model_id] = AvailableWakeWord(
                     id=model_id,
                     type=model_type,
                     wake_word=model_config["wake_word"],
                     trained_languages=model_config.get("trained_languages", []),
                     wake_word_path=wake_word_path,
+                    oww_threshold=oww_threshold,
                 )
 
     active: Set[str] = set()
