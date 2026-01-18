@@ -82,7 +82,15 @@
     "refractory_seconds": 2.0,
 
     // Optional: directory for downloaded models (relative to repo root)
-    "download_dir": "local"
+    "download_dir": "local",
+
+    // Optional: OpenWakeWord activation threshold.
+    //
+    // OpenWakeWord triggers if its model probability exceeds this value.
+    // Range: 0.0 - 1.0
+    //
+    // Default: 0.5 (matches previous hardcoded behavior)
+    "openwakeword_threshold": 0.5
   },
 
   // ---------------------------------------------------------------------------
