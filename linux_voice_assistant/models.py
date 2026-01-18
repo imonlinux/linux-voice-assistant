@@ -36,6 +36,23 @@ class WakeWordType(str, Enum):
     OPEN_WAKE_WORD = "openWakeWord"
 
 
+def _clamp_0_1(name: str, value: float) -> float:
+    """Clamp float to [0.0, 1.0] with warnings."""
+    try:
+        v = float(value)
+    except Exception:
+        _LOGGER.warning("%s is not a number (%r); ignoring", name, value)
+        return 0.5
+
+    if v < 0.0:
+        _LOGGER.warning("%s < 0.0; clamping to 0.0 (was %s)", name, v)
+        return 0.0
+    if v > 1.0:
+        _LOGGER.warning("%s > 1.0; clamping to 1.0 (was %s)", name, v)
+        return 1.0
+    return v
+
+
 @dataclass
 class AvailableWakeWord:
     id: str
@@ -43,6 +60,10 @@ class AvailableWakeWord:
     wake_word: str
     trained_languages: List[str]
     wake_word_path: Path
+
+    # Optional per-model override for OpenWakeWord activation threshold.
+    # If set, AudioEngine will prefer this over the global config threshold.
+    oww_threshold: Optional[float] = None
 
     def load(self) -> "Union[MicroWakeWord, OpenWakeWord]":
         if self.type == WakeWordType.MICRO_WAKE_WORD:
@@ -54,6 +75,12 @@ class AvailableWakeWord:
 
             oww_model = OpenWakeWord.from_model(model_path=self.wake_word_path)
             setattr(oww_model, "wake_word", self.wake_word)
+
+            # Attach per-model threshold if configured
+            if self.oww_threshold is not None:
+                thr = _clamp_0_1(f"wakeword[{self.id}].threshold", self.oww_threshold)
+                setattr(oww_model, "threshold", thr)
+
             return oww_model
 
         raise ValueError(f"Unexpected wake word type: {self.type}")
