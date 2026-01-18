@@ -1,17 +1,28 @@
 #!/usr/bin/env python3
-import sys
 import subprocess
-import venv
+import sys
 from pathlib import Path
 
 _DIR = Path(__file__).parent
 _PROGRAM_DIR = _DIR.parent
 _VENV_DIR = _PROGRAM_DIR / ".venv"
 
-if _VENV_DIR.exists():
-    context = venv.EnvBuilder().ensure_directories(_VENV_DIR)
-    python_exe = context.env_exe
-else:
-    python_exe = "python3"
 
-subprocess.check_call([python_exe, "-m", "linux_voice_assistant"] + sys.argv[1:])
+def in_venv() -> bool:
+    return sys.prefix != getattr(sys, "base_prefix", sys.prefix)
+
+
+def venv_python(venv_dir: Path) -> Path:
+    return venv_dir / "bin" / "python"
+
+
+if in_venv():
+    python_exe = sys.executable
+else:
+    candidate = venv_python(_VENV_DIR)
+    python_exe = str(candidate) if candidate.exists() else "python3"
+
+subprocess.check_call(
+    [python_exe, "-m", "linux_voice_assistant", *sys.argv[1:]],
+    cwd=str(_PROGRAM_DIR),
+)

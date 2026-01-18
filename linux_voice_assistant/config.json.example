@@ -1,15 +1,32 @@
 {
+  // =============================================================================
+  // Linux Voice Assistant (LVA) — Configuration Example
+  //
+  // Notes:
+  // - This file uses JSON-with-comments (jsonc). Your editor may support it.
+  // - The app loads config via linux_voice_assistant.config.load_config_from_json().
+  // - Some behavior can be overridden by CLI flags (e.g., --debug).
+  // =============================================================================
+
   // ---------------------------------------------------------------------------
   // Required
   // ---------------------------------------------------------------------------
   "app": {
-    // Required
+    // Required: Friendly name for this LVA instance
     "name": "My Linux Voice Assistant",
 
-    // Optional
+    // Optional: Wake word triggered sound (relative to repo root)
     "wakeup_sound": "sounds/wake_word_triggered.flac",
+
+    // Optional: Timer finished sound (relative to repo root)
     "timer_finished_sound": "sounds/timer_finished.flac",
+
+    // Optional: Preferences file used to persist state like volume/num_leds
+    // (relative to repo root)
     "preferences_file": "preferences.json",
+
+    // Optional: Enables debug logging by default
+    // Note: can also be enabled via CLI flag --debug
     "debug": false
   },
 
@@ -31,24 +48,15 @@
     // - string => mpv audio-device (e.g. "pulse/alsa_output....")
     "output_device": null,
 
-    // Optional (NEW): Sync the host OS output device volume at startup to match
-    // the volume stored in preferences.json (LVA MediaPlayer volume).
+    // Optional: Sync the host OS output volume at startup to match the volume
+    // stored in preferences.json (LVA MediaPlayer volume).
     //
     // When enabled, LVA will attempt (in order): wpctl -> pactl -> amixer.
-    // This helps when PipeWire/Pulse/ALSA boots with a low default volume.
     //
     // Default: false
     "volume_sync": false,
 
-    // Optional (NEW): Maximum output volume percent for the underlying sink.
-    //
-    // Many PipeWire/PulseAudio sinks support >100% (e.g. 150%) "amplified" volume.
-    // This sets the ceiling used when mapping LVA volume (0.0–1.0) to the sink.
-    //
-    // Example:
-    //   - max_volume_percent: 150
-    //   - LVA volume 1.0 => sink set to 150%
-    //   - LVA volume 0.5 => sink set to 75%
+    // Optional: Maximum output volume percent for the underlying sink.
     //
     // Default: 100
     "max_volume_percent": 100
@@ -58,8 +66,10 @@
   // Optional: Wake word config
   // ---------------------------------------------------------------------------
   "wake_word": {
-    // Optional: if omitted/empty, code falls back to defaults:
+    // Optional: If omitted/empty, code falls back to defaults:
     // ["wakewords", "wakewords/openWakeWord"]
+    //
+    // Paths are relative to repo root.
     "directories": [],
 
     // Optional: default wake word model id
@@ -71,7 +81,7 @@
     // Optional: debounce/refractory window after wake word triggers
     "refractory_seconds": 2.0,
 
-    // Optional: directory for downloaded models (relative to repo)
+    // Optional: directory for downloaded models (relative to repo root)
     "download_dir": "local"
   },
 
@@ -79,7 +89,10 @@
   // Optional: ESPHome protocol server settings (the LVA exposes an ESPHome API)
   // ---------------------------------------------------------------------------
   "esphome": {
+    // Default: "0.0.0.0" (listen on all interfaces)
     "host": "0.0.0.0",
+
+    // Default: 6053
     "port": 6053
   },
 
@@ -96,13 +109,13 @@
     // "spi" | "gpio" | "usb"
     // - dotstar: "spi" or "gpio"
     // - neopixel: "spi" or "gpio"
-    // - xvf3800: "usb" (current intended support)
+    // - xvf3800: "usb"
     "interface": "spi",
 
-    // GPIO pins (BCM-ish via adafruit "board.Dxx" mapping) — used when interface="gpio"
+    // GPIO pins — used when interface="gpio"
     // For DotStar GPIO: both clock_pin + data_pin are used
     // For NeoPixel GPIO: only data_pin is used (clock_pin ignored)
-    // For xvf3800: unused and ignored
+    // For XVF3800: unused and ignored
     "clock_pin": 13,
     "data_pin": 12,
 
@@ -111,7 +124,11 @@
   },
 
   // ---------------------------------------------------------------------------
-  // Optional: MQTT (enabled automatically when host is set)
+  // Optional: MQTT
+  //
+  // IMPORTANT for Tray Client:
+  // - The tray client requires MQTT enabled AND mqtt.host set.
+  // - If mqtt.host is null/empty, tray client will refuse to start.
   // ---------------------------------------------------------------------------
   "mqtt": {
     // If set, mqtt.enabled becomes true automatically
@@ -131,7 +148,7 @@
 
     // "gpio" | "xvf3800"
     // - gpio: short/long press logic (pin + long_press_seconds)
-    // - xvf3800: uses the XVF3800 built-in mute button as a pure mute toggle
+    // - xvf3800: uses the XVF3800 built-in mute button as a mute toggle
     "mode": "gpio",
 
     // gpio mode only
@@ -140,5 +157,26 @@
 
     // Polling interval (used by both gpio + xvf3800 button controllers)
     "poll_interval_seconds": 0.01
+  },
+
+  // ---------------------------------------------------------------------------
+  // Optional: Desktop Tray Client
+  // ---------------------------------------------------------------------------
+  "tray": {
+    // The systemd --user unit name the tray client controls (start/stop/restart).
+    //
+    // The tray client default (if omitted): "linux-voice-assistant.service"
+    //
+    // If you renamed the LVA unit, set it here so the tray menu controls
+    // the correct service.
+    "systemd_service_name": "linux-voice-assistant.service"
   }
+
+  // ---------------------------------------------------------------------------
+  // Back-compat note (optional)
+  // ---------------------------------------------------------------------------
+  // Historically, some setups used a top-level "volume_sync".
+  // If your loader supports it, it typically maps to audio.volume_sync.
+  //
+  // "volume_sync": false
 }
