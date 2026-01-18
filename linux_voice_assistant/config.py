@@ -56,6 +56,11 @@ class WakeWordConfig:
     refractory_seconds: float = 2.0
     download_dir: str = "local"
 
+    # OpenWakeWord activation threshold.
+    # A wake word triggers when model probability exceeds this value.
+    # Range: 0.0 - 1.0
+    openwakeword_threshold: float = 0.5
+
 
 @dataclass
 class ESPHomeConfig:
@@ -133,6 +138,23 @@ class Config:
 # Helper Function
 # -----------------------------------------------------------------------------
 
+def _clamp_0_1(name: str, value: float) -> float:
+    """Clamp a float to [0.0, 1.0], logging a warning if clamped."""
+    try:
+        v = float(value)
+    except Exception:
+        _LOGGER.warning("%s is not a number (%r); using default 0.5", name, value)
+        return 0.5
+
+    if v < 0.0:
+        _LOGGER.warning("%s < 0.0; clamping to 0.0 (was %s)", name, v)
+        return 0.0
+    if v > 1.0:
+        _LOGGER.warning("%s > 1.0; clamping to 1.0 (was %s)", name, v)
+        return 1.0
+    return v
+
+
 def load_config_from_json(config_path: Path) -> Config:
     """Loads configuration from a JSON file and populates dataclasses."""
 
@@ -156,6 +178,12 @@ def load_config_from_json(config_path: Path) -> Config:
     led_config = LedConfig(**raw_data.get("led", {}))
     mqtt_config = MqttConfig(**raw_data.get("mqtt", {}))
     button_config = ButtonConfig(**raw_data.get("button", {}))
+
+    # Normalize / validate wake word threshold
+    wake_word_config.openwakeword_threshold = _clamp_0_1(
+        "wake_word.openwakeword_threshold",
+        getattr(wake_word_config, "openwakeword_threshold", 0.5),
+    )
 
     # Back-compat: allow top-level "volume_sync" (preferred location is audio.volume_sync)
     if "volume_sync" in raw_data and "volume_sync" not in raw_data.get("audio", {}):
