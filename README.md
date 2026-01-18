@@ -27,6 +27,7 @@ Want to run the satellite on a Linux desktop using a simple tray client? See [th
 - You can choose between all MWW and OWW wake word within HA after the VLA is registered. Chosen wake words are saved to preferences.json in the linux-voice-assistant folder.
 - The volume control is now persistent between connections and reboots. The volume setting gets stored in preferences.json and loaded when LVA starts.
 - **Acoustic Echo Cancellation (AEC) using WebRTC.** See [the tutorial](docs/linux-voice-assistant-2mic-install.md) for instructions on implementation and tuning.
+- **openWakeWord models theshold sensitivity can now be overridden by per model.json, globally with CLI flag --wake-word-threshold, or config.json.**
 
 ### Add Full MQTT Control for LEDs and Mute
 - This fork introduces a comprehensive MQTT integration to bypass limitations in the pinned aioesphomeapi library and provide full remote control over the voice satellite's features and appearance.
