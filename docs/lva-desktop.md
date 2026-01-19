@@ -158,6 +158,9 @@ systemctl --user edit --force --full linux-voice-assistant-tray.service
 ```ini
 [Unit]
 Description=Linux Voice Assistant Tray Client
+# Make sure we have a graphical session
+After=graphical-session.target
+Wants=graphical-session.target
 
 [Service]
 Type=simple
