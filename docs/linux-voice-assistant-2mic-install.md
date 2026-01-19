@@ -305,6 +305,7 @@ nano ~/linux-voice-assistant/linux_voice_assistant/config.json
 
 ```bash
   "led": {
+    "enabled": true,
     "led_type": "dotstar",
     "interface": "gpio",
     "clock_pin": 13,
@@ -328,6 +329,7 @@ nano ~/linux-voice-assistant/linux_voice_assistant/config.json
     "password": "mqtt_password"
   },
   "led": {
+    "enabled": true,
     "led_type": "dotstar",
     "interface": "gpio",
     "clock_pin": 13,
@@ -450,6 +452,7 @@ nano ~/linux-voice-assistant/linux_voice_assistant/config.json
     "password": "mqtt_password"
   },
   "led": {
+    "enabled": true,
     "led_type": "dotstar",
     "interface": "gpio",
     "clock_pin": 13,
@@ -547,6 +550,7 @@ nano ~/linux-voice-assistant/linux_voice_assistant/config.json
     "password": "mqtt_password"
   },
   "led": {
+    "enabled": true,
     "led_type": "dotstar",
     "interface": "gpio",
     "clock_pin": 13,
