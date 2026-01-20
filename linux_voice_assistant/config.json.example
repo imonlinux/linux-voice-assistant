@@ -194,7 +194,11 @@
   "sendspin": {
     // Master enable for the Sendspin subsystem
     "enabled": false,
-
+    // -----------------------------------------------------------------------
+    // Coordination sendspin audio duck during voice events
+    // -----------------------------------------------------------------------
+    "coordination": { 
+      "duck_during_voice": true },
     // -----------------------------------------------------------------------
     // Connection / discovery
     // -----------------------------------------------------------------------
