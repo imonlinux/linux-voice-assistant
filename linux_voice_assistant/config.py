@@ -123,6 +123,78 @@ class ButtonConfig:
     poll_interval_seconds: float = 0.01
 
 
+# -----------------------------------------------------------------------------
+# Sendspin Configuration Dataclasses
+# -----------------------------------------------------------------------------
+
+@dataclass
+class SendspinConnectionConfig:
+    """
+    Sendspin connection settings.
+
+    mode:
+      - "client_initiated": LVA discovers Sendspin servers via mDNS and connects.
+      - "server_initiated": LVA advertises itself and accepts server connections.
+    """
+    mode: str = "client_initiated"
+    mdns: bool = True
+    server_host: Optional[str] = None
+    server_port: int = 8927
+    server_path: str = "/sendspin"
+
+
+@dataclass
+class SendspinRolesConfig:
+    """Enable/disable Sendspin roles."""
+    player: bool = True
+    metadata: bool = True
+    controller: bool = True
+    artwork: bool = False
+    visualizer: bool = False
+
+
+@dataclass
+class SendspinPlayerConfig:
+    """Player capability preferences for Sendspin."""
+    preferred_codec: str = "pcm"
+    supported_codecs: List[str] = field(default_factory=lambda: ["pcm"])
+    sample_rate: int = 48000
+    channels: int = 2
+    bit_depth: int = 16
+
+    # Approximate stream buffer capacity to advertise (bytes).
+    # This is used by the Sendspin server to choose chunk sizing.
+    buffer_capacity_bytes: int = 1048576  # 1 MiB
+
+
+@dataclass
+class SendspinAudioOutputConfig:
+    """Local audio output settings for Sendspin playback."""
+    backend: str = "soundcard"  # Phase 1: soundcard experiment
+    device: Optional[str] = None  # None -> default output device
+    block_ms: int = 20
+    prebuffer_ms: int = 300
+
+
+@dataclass
+class SendspinCoordinationConfig:
+    """Coordination between voice interaction and Sendspin playback."""
+    duck_during_voice: bool = True
+    duck_gain: float = 0.3  # 0.0-1.0 multiplier applied to PCM samples
+    on_error: str = "mute"  # "mute" | "stop"
+
+
+@dataclass
+class SendspinConfig:
+    """Top-level Sendspin config block."""
+    enabled: bool = False
+    connection: SendspinConnectionConfig = field(default_factory=SendspinConnectionConfig)
+    roles: SendspinRolesConfig = field(default_factory=SendspinRolesConfig)
+    player: SendspinPlayerConfig = field(default_factory=SendspinPlayerConfig)
+    audio_output: SendspinAudioOutputConfig = field(default_factory=SendspinAudioOutputConfig)
+    coordination: SendspinCoordinationConfig = field(default_factory=SendspinCoordinationConfig)
+
+
 @dataclass
 class Config:
     """Main configuration object."""
@@ -133,6 +205,7 @@ class Config:
     led: LedConfig = field(default_factory=LedConfig)
     mqtt: MqttConfig = field(default_factory=MqttConfig)
     button: ButtonConfig = field(default_factory=ButtonConfig)
+    sendspin: SendspinConfig = field(default_factory=SendspinConfig)
 
 # -----------------------------------------------------------------------------
 # Helper Function
@@ -179,10 +252,27 @@ def load_config_from_json(config_path: Path) -> Config:
     mqtt_config = MqttConfig(**raw_data.get("mqtt", {}))
     button_config = ButtonConfig(**raw_data.get("button", {}))
 
+    # --- Sendspin (nested dataclasses; keep robust to partial configs) ---
+    sendspin_raw = raw_data.get("sendspin", {}) if isinstance(raw_data.get("sendspin", {}), dict) else {}
+    sendspin_cfg = SendspinConfig(
+        enabled=bool(sendspin_raw.get("enabled", False)),
+        connection=SendspinConnectionConfig(**(sendspin_raw.get("connection", {}) or {})),
+        roles=SendspinRolesConfig(**(sendspin_raw.get("roles", {}) or {})),
+        player=SendspinPlayerConfig(**(sendspin_raw.get("player", {}) or {})),
+        audio_output=SendspinAudioOutputConfig(**(sendspin_raw.get("audio_output", {}) or {})),
+        coordination=SendspinCoordinationConfig(**(sendspin_raw.get("coordination", {}) or {})),
+    )
+
     # Normalize / validate wake word threshold
     wake_word_config.openwakeword_threshold = _clamp_0_1(
         "wake_word.openwakeword_threshold",
         getattr(wake_word_config, "openwakeword_threshold", 0.5),
+    )
+
+    # Normalize / validate Sendspin duck_gain
+    sendspin_cfg.coordination.duck_gain = _clamp_0_1(
+        "sendspin.coordination.duck_gain",
+        getattr(sendspin_cfg.coordination, "duck_gain", 0.3),
     )
 
     # Back-compat: allow top-level "volume_sync" (preferred location is audio.volume_sync)
@@ -205,4 +295,5 @@ def load_config_from_json(config_path: Path) -> Config:
         led=led_config,
         mqtt=mqtt_config,
         button=button_config,
+        sendspin=sendspin_cfg,
     )
