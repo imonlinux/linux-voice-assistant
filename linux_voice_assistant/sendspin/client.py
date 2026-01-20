@@ -11,6 +11,10 @@ Sendspin client (LVA -> Music Assistant)
   - Uses mpv IPC (--input-ipc-server=...) to set mpv volume + mute
   - Ducking temporarily reduces mpv volume to user_volume * duck_percent/100
 - Publishes sendspin_volume_changed on EventBus when MA changes volume.
+- Milestone 1 hardening:
+  - Honor sendspin.coordination.duck_during_voice
+  - Harden mpv IPC apply with quiet retries during startup
+  - Publish sendspin_audio_state for downstream consumers
 """
 
 from __future__ import annotations
@@ -130,6 +134,7 @@ class SendspinClient:
         # Ducking state
         self._ducked: bool = False
         self._duck_percent: int = 20
+        self._duck_enabled: bool = True  # sendspin.coordination.duck_during_voice
 
         # Subscribe ducking handler to LVA event bus
         self._ducking_handler = _SendspinDuckingHandler(event_bus=self._event_bus, client=self)
@@ -165,14 +170,22 @@ class SendspinClient:
         self._mpv_ipc_ready: bool = False
         self._mpv_ipc_lock = asyncio.Lock()
 
+        # Milestone 1: track last published audio state to dedupe
+        self._last_audio_state: Optional[dict] = None
+
         # Pull duck percent from config (dict or object)
         try:
             player_cfg = self._cfg_get_section(self._cfg, "player")
             if player_cfg is not None:
-                self._duck_percent = int(self._cfg_get(player_cfg, "duck_volume_percent", self._duck_percent) or self._duck_percent)
+                self._duck_percent = int(
+                    self._cfg_get(player_cfg, "duck_volume_percent", self._duck_percent) or self._duck_percent
+                )
         except Exception:
             pass
         self._duck_percent = max(0, min(100, int(self._duck_percent)))
+
+        # Pull coordination settings from config
+        self._refresh_coordination_settings(log=True)
 
     # ---------------------------------------------------------------------
     # Config helpers (dict-or-object tolerant)
@@ -194,6 +207,59 @@ class SendspinClient:
         return val
 
     # ---------------------------------------------------------------------
+    # Coordination / ducking config
+    # ---------------------------------------------------------------------
+
+    def _refresh_coordination_settings(self, *, log: bool = False) -> None:
+        old = self._duck_enabled
+        new = old
+        raw_val = None
+        try:
+            coord_cfg = self._cfg_get_section(self._cfg, "coordination")
+            if coord_cfg is not None:
+                raw_val = self._cfg_get(coord_cfg, "duck_during_voice", old)
+                new = bool(raw_val)
+        except Exception:
+            new = old
+
+        self._duck_enabled = new
+
+        if log:
+            _LOGGER.info(
+                "Sendspin: coordination loaded (duck_during_voice=%s, raw=%r, cfg_type=%s)",
+                self._duck_enabled,
+                raw_val,
+                type(self._cfg).__name__,
+            )
+
+        if not self._duck_enabled and self._ducked:
+            self._ducked = False
+            self._publish_audio_state()
+            if self._stream_active:
+                self._loop.create_task(self._apply_mpv_audio_state())
+
+    # ---------------------------------------------------------------------
+    # Milestone 1: publish audio state
+    # ---------------------------------------------------------------------
+
+    def _publish_audio_state(self) -> None:
+        payload = {
+            "volume": int(self._volume),
+            "muted": bool(self._muted),
+            "ducked": bool(self._ducked),
+            "duck_percent": int(self._duck_percent),
+            "effective_volume": int(self._effective_mpv_volume()),
+            "duck_enabled": bool(self._duck_enabled),
+        }
+        if payload == self._last_audio_state:
+            return
+        self._last_audio_state = payload
+        try:
+            self._event_bus.publish("sendspin_audio_state", payload)
+        except Exception:
+            _LOGGER.debug("Sendspin: failed to publish sendspin_audio_state", exc_info=True)
+
+    # ---------------------------------------------------------------------
     # Public control
     # ---------------------------------------------------------------------
 
@@ -202,8 +268,22 @@ class SendspinClient:
         self._disconnect_event.set()
 
     def set_ducked(self, ducked: bool) -> None:
-        self._ducked = bool(ducked)
-        # Apply to mpv immediately if streaming
+        if not self._duck_enabled:
+            _LOGGER.debug("Sendspin: duck request ignored (duck_during_voice=false)")
+            if self._ducked:
+                self._ducked = False
+                self._publish_audio_state()
+                if self._stream_active:
+                    self._loop.create_task(self._apply_mpv_audio_state())
+            return
+
+        new_val = bool(ducked)
+        if new_val == self._ducked:
+            return
+
+        self._ducked = new_val
+        self._publish_audio_state()
+
         if self._stream_active:
             self._loop.create_task(self._apply_mpv_audio_state())
 
@@ -228,7 +308,8 @@ class SendspinClient:
             _LOGGER.info("Sendspin: disabled; not starting")
             return
 
-        # Optional: pull initial volume/mute from config if present
+        self._refresh_coordination_settings(log=True)
+
         try:
             initial = self._cfg_get_section(self._cfg, "initial")
             if initial is not None:
@@ -238,6 +319,7 @@ class SendspinClient:
             pass
 
         self._volume = max(0, min(100, int(self._volume)))
+        self._publish_audio_state()
 
         backoff_s = 1.0
 
@@ -453,6 +535,8 @@ class SendspinClient:
             except Exception:
                 _LOGGER.debug("Sendspin: failed to publish sendspin_volume_changed", exc_info=True)
 
+        self._publish_audio_state()
+
         if self._stream_active:
             self._loop.create_task(self._apply_mpv_audio_state())
 
@@ -461,11 +545,11 @@ class SendspinClient:
         if m == self._muted:
             return
         self._muted = m
+        self._publish_audio_state()
         if self._stream_active:
             self._loop.create_task(self._apply_mpv_audio_state())
 
     def _effective_mpv_volume(self) -> int:
-        """User volume optionally ducked."""
         if self._muted:
             return 0
         vol = int(self._volume)
@@ -485,10 +569,9 @@ class SendspinClient:
         path = self._mpv_ipc_path
         if not path:
             return
-        # Serialize one command per connection (simple + reliable)
         data = (json.dumps(payload) + "\n").encode("utf-8")
         try:
-            reader, writer = await asyncio.open_unix_connection(path)
+            _reader, writer = await asyncio.open_unix_connection(path)
             writer.write(data)
             await writer.drain()
             writer.close()
@@ -497,7 +580,6 @@ class SendspinClient:
             except Exception:
                 pass
         except Exception:
-            # Keep at debug; socket might not exist yet during startup
             _LOGGER.debug("Sendspin: mpv IPC send failed", exc_info=True)
 
     async def _wait_for_mpv_ipc(self, *, timeout_s: float = 1.5) -> bool:
@@ -512,16 +594,24 @@ class SendspinClient:
         return os.path.exists(path)
 
     async def _apply_mpv_audio_state(self) -> None:
-        """Apply volume+mute to mpv (idempotent)."""
         async with self._mpv_ipc_lock:
             if not self._mpv_ipc_path or not self._stream_active:
                 return
 
-            if not self._mpv_ipc_ready:
-                self._mpv_ipc_ready = await self._wait_for_mpv_ipc(timeout_s=2.0)
+            for attempt in range(6):
+                if not self._mpv_ipc_ready:
+                    self._mpv_ipc_ready = await self._wait_for_mpv_ipc(timeout_s=0.5)
+
+                if self._mpv_ipc_ready:
+                    break
+
+                if attempt == 5:
+                    _LOGGER.debug("Sendspin: mpv IPC not ready after retries (%s)", self._mpv_ipc_path)
+                    return
+
+                await asyncio.sleep(0.1)
 
             eff_vol = self._effective_mpv_volume()
-            # Set mpv properties
             await self._mpv_ipc_send({"command": ["set_property", "mute", bool(self._muted)]})
             await self._mpv_ipc_send({"command": ["set_property", "volume", int(eff_vol)]})
 
@@ -687,7 +777,6 @@ class SendspinClient:
         mpv_ao = self._cfg_get(player_cfg, "mpv_ao", None) if player_cfg else None
         mpv_audio_device = self._cfg_get(player_cfg, "mpv_audio_device", None) if player_cfg else None
 
-        # Unique mpv IPC socket per client
         sid = self._sanitize_id(self._client_id)
         self._mpv_ipc_path = f"/tmp/lva_sendspin_mpv_{sid}.sock"
         self._mpv_ipc_ready = False
@@ -736,7 +825,6 @@ class SendspinClient:
         self._pcm_writer_task = self._loop.create_task(self._pcm_writer_loop())
         self._pcm_stderr_task = self._loop.create_task(self._pcm_stderr_loop())
 
-        # Apply volume/mute/ducking once mpv IPC is up
         self._loop.create_task(self._apply_mpv_audio_state())
 
     async def _stop_stream(self, *, reason: str) -> None:
@@ -770,7 +858,6 @@ class SendspinClient:
             except Exception:
                 _LOGGER.debug("Sendspin: error stopping PCM sink", exc_info=True)
 
-        # Cleanup IPC socket
         try:
             if self._mpv_ipc_path and os.path.exists(self._mpv_ipc_path):
                 os.remove(self._mpv_ipc_path)
@@ -819,7 +906,6 @@ class SendspinClient:
             _LOGGER.debug("Sendspin: stderr loop error", exc_info=True)
 
     def _extract_pcm_payload(self, frame: bytes) -> bytes:
-        # Observed: 9-byte header + PCM payload
         if len(frame) <= 9:
             return b""
         return frame[9:]
@@ -879,17 +965,28 @@ class SendspinClient:
                     player = payload.get("player") or {}
                     if isinstance(player, dict):
                         cmd = player.get("command")
+
                         if cmd == "volume" and "volume" in player:
                             try:
                                 self._set_volume(int(player.get("volume")), publish=True)
                             except Exception:
                                 pass
+
                         elif cmd == "mute":
+                            # MA may send either {"muted": true} or {"mute": true}
                             if "muted" in player:
                                 try:
                                     self._set_muted(bool(player.get("muted")))
                                 except Exception:
                                     pass
+                            elif "mute" in player:
+                                try:
+                                    self._set_muted(bool(player.get("mute")))
+                                except Exception:
+                                    pass
+                            else:
+                                _LOGGER.debug("Sendspin: mute command missing 'muted'/'mute' key: %s", player)
+
                         await self._send_player_state(ws)
 
                 elif mtype == "group/update":
