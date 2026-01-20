@@ -16,6 +16,7 @@ def run(cmd: list[str]) -> None:
 parser = argparse.ArgumentParser()
 parser.add_argument("--dev", action="store_true", help="Install dev requirements (extras: dev)")
 parser.add_argument("--tray", action="store_true", help="Install tray client requirements (extras: tray)")
+parser.add_argument("--sendspin", action="store_true", help="Install Sendspin client requirements (extras: sendspin)")
 args = parser.parse_args()
 
 # Create virtual environment
@@ -33,6 +34,8 @@ if args.dev:
     extras.append("dev")
 if args.tray:
     extras.append("tray")
+if args.sendspin:
+    extras.append("sendspin")
 
 # Install project + optional extras
 if extras:
