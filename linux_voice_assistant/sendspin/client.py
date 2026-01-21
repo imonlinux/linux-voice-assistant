@@ -11,38 +11,37 @@ Sendspin client (LVA -> Music Assistant)
   - Uses mpv IPC (--input-ipc-server=...) to set mpv volume + mute
   - Ducking temporarily reduces mpv volume to user_volume * duck_percent/100
 - Publishes sendspin_volume_changed on EventBus when MA changes volume.
-
-Milestone 1:
+- Milestone 1 hardening:
   - Honor sendspin.coordination.duck_during_voice
   - Harden mpv IPC apply with quiet retries during startup
   - Publish sendspin_audio_state for downstream consumers
 
 Milestone 2:
-  - Maintain minimal internal state model (connection/playback/stream/metadata)
-  - Emit stable-shape events:
-      sendspin_connection_state
-      sendspin_playback_state
-      sendspin_metadata
-      sendspin_audio_state (from Milestone 1)
-  - Concise “state changed” logs (avoid raw payload dumps)
+- Maintain minimal internal state object (connection/playback/stream/metadata)
+- Emit events with stable payload shapes:
+  - sendspin_connection_state
+  - sendspin_playback_state
+  - sendspin_metadata
+  - sendspin_audio_state (from Milestone 1)
 """
 
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import logging
 import os
 import re
 import time
-from dataclasses import dataclass
-from typing import Any, Dict, Optional, Tuple
+from collections import deque
+from dataclasses import dataclass, field
+from typing import Any, Deque, Dict, Optional, Tuple
 
 import websockets
 from websockets.exceptions import ConnectionClosed
 
 from ..event_bus import EventBus, EventHandler, subscribe
-from .models import SendspinInternalState
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -57,6 +56,7 @@ for name in (
     logging.getLogger(name).setLevel(logging.WARNING)
 
 _SENDSPIN_SERVICE_TYPE = "_sendspin-server._tcp.local."
+_BINARY_HEADER_LEN = 9
 
 
 # ---------------------------------------------------------------------------
@@ -72,6 +72,39 @@ class SendspinEndpoint:
     @property
     def ws_url(self) -> str:
         return f"ws://{self.host}:{self.port}{self.path}"
+
+
+# ---------------------------------------------------------------------------
+# Milestone 2: Minimal publishable state object
+# ---------------------------------------------------------------------------
+
+@dataclass
+class _ConnectionState:
+    connected: bool = False
+    endpoint: Optional[str] = None
+    server_id: Optional[str] = None
+    server_name: Optional[str] = None
+
+
+@dataclass
+class _StreamState:
+    codec: Optional[str] = None
+    sample_rate: Optional[int] = None
+    channels: Optional[int] = None
+    bit_depth: Optional[int] = None
+
+
+@dataclass
+class _PlaybackState:
+    playback_state: str = "unknown"  # playing/paused/stopped/unknown
+
+
+@dataclass
+class _SendspinState:
+    connection: _ConnectionState = field(default_factory=_ConnectionState)
+    playback: _PlaybackState = field(default_factory=_PlaybackState)
+    stream: _StreamState = field(default_factory=_StreamState)
+    metadata: Optional[dict] = None  # preserve structure (no normalization yet)
 
 
 # ---------------------------------------------------------------------------
@@ -138,8 +171,11 @@ class SendspinClient:
         self._stop_event = asyncio.Event()
         self._disconnect_event = asyncio.Event()
 
-        # Milestone 2: minimal internal state model
-        self._state = SendspinInternalState()
+        # Milestone 2 publishable state
+        self._state = _SendspinState()
+        self._last_pub_connection: Optional[dict] = None
+        self._last_pub_playback: Optional[dict] = None
+        self._last_pub_metadata: Optional[dict] = None
 
         # Player state we report to MA (0-100)
         self._volume: int = 100
@@ -167,7 +203,7 @@ class SendspinClient:
         # Discovery cache
         self._last_endpoint: Optional[SendspinEndpoint] = None
 
-        # Streaming state
+        # Streaming state (local)
         self._stream_active: bool = False
         self._stream_codec: str = "pcm"
         self._stream_rate: int = 48000
@@ -177,7 +213,11 @@ class SendspinClient:
         self._pcm_proc: Optional[asyncio.subprocess.Process] = None
         self._pcm_writer_task: Optional[asyncio.Task] = None
         self._pcm_stderr_task: Optional[asyncio.Task] = None
+        self._pcm_wait_task: Optional[asyncio.Task] = None
         self._pcm_queue: "asyncio.Queue[bytes]" = asyncio.Queue(maxsize=200)
+
+        # mpv stderr tail buffer (for post-mortem)
+        self._mpv_stderr_tail: Deque[str] = deque(maxlen=40)
 
         # mpv IPC
         self._mpv_ipc_path: Optional[str] = None
@@ -187,14 +227,20 @@ class SendspinClient:
         # Milestone 1: track last published audio state to dedupe
         self._last_audio_state: Optional[dict] = None
 
-        # Milestone 2: track last published state payloads (dedupe)
-        self._last_connection_state: Optional[dict] = None
-        self._last_playback_state: Optional[dict] = None
-        self._last_metadata_state: Optional[dict] = None
+        # Diagnostics for binary frame flow
+        self._pcm_frame_count: int = 0
+        self._pcm_first_frame_at: Optional[float] = None
+        self._pcm_last_frame_at: Optional[float] = None
 
-        # Milestone 2: metadata publish throttling (avoid progress spam)
-        self._last_metadata_emit_ts: float = 0.0
-        self._last_metadata_position: Optional[int] = None  # ms or similar
+        # Session diagnostics
+        self._current_endpoint_url: Optional[str] = None
+        self._last_rx_type: Optional[str] = None
+        self._last_rx_at: Optional[float] = None
+        self._last_bin_at: Optional[float] = None
+
+        # IMPORTANT: stream stop is normal on pause/track-change.
+        # We only trigger websocket disconnect when the PCM sink fails unexpectedly.
+        self._sink_failed: bool = False
 
         # Pull duck percent from config (dict or object)
         try:
@@ -209,6 +255,104 @@ class SendspinClient:
 
         # Pull coordination settings from config
         self._refresh_coordination_settings(log=True)
+
+    # ---------------------------------------------------------------------
+    # Milestone 2: Event emission (stable payloads)
+    # ---------------------------------------------------------------------
+
+    def _emit_connection_state(self) -> None:
+        payload = {
+            "connected": bool(self._state.connection.connected),
+            "endpoint": self._state.connection.endpoint,
+            "server_id": self._state.connection.server_id,
+            "server_name": self._state.connection.server_name,
+        }
+        if payload == self._last_pub_connection:
+            return
+        self._last_pub_connection = payload
+        _LOGGER.info(
+            "Sendspin: connection_state -> %s endpoint=%s server=%s id=%s",
+            "connected" if payload["connected"] else "disconnected",
+            payload["endpoint"],
+            payload["server_name"],
+            payload["server_id"],
+        )
+        try:
+            self._event_bus.publish("sendspin_connection_state", payload)
+        except Exception:
+            _LOGGER.debug("Sendspin: failed to publish sendspin_connection_state", exc_info=True)
+
+    def _emit_playback_state(self) -> None:
+        payload = {
+            "playback_state": self._state.playback.playback_state or "unknown",
+            "codec": self._state.stream.codec,
+            "sample_rate": self._state.stream.sample_rate,
+            "channels": self._state.stream.channels,
+            "bit_depth": self._state.stream.bit_depth,
+        }
+        if payload == self._last_pub_playback:
+            return
+        self._last_pub_playback = payload
+        try:
+            self._event_bus.publish("sendspin_playback_state", payload)
+        except Exception:
+            _LOGGER.debug("Sendspin: failed to publish sendspin_playback_state", exc_info=True)
+
+    def _emit_metadata(self, metadata: dict) -> None:
+        # Defensive copy so dedupe comparisons are stable even if upstream mutates dicts.
+        safe_metadata = copy.deepcopy(metadata)
+        payload = {"metadata": safe_metadata}
+        if payload == self._last_pub_metadata:
+            return
+        self._last_pub_metadata = payload
+        try:
+            self._event_bus.publish("sendspin_metadata", payload)
+        except Exception:
+            _LOGGER.debug("Sendspin: failed to publish sendspin_metadata", exc_info=True)
+
+    def _set_connection(self, *, connected: bool, endpoint: Optional[str] = None) -> None:
+        changed = False
+        if self._state.connection.connected != bool(connected):
+            self._state.connection.connected = bool(connected)
+            changed = True
+        if endpoint is not None and self._state.connection.endpoint != endpoint:
+            self._state.connection.endpoint = endpoint
+            changed = True
+        if self._state.connection.server_id != self._server_id:
+            self._state.connection.server_id = self._server_id
+            changed = True
+        if self._state.connection.server_name != self._server_name:
+            self._state.connection.server_name = self._server_name
+            changed = True
+        if changed:
+            self._emit_connection_state()
+
+    def _set_playback(self, playback_state: str) -> None:
+        ps = str(playback_state or "unknown")
+        if ps not in ("playing", "paused", "stopped", "unknown"):
+            ps = "unknown"
+        if ps == self._state.playback.playback_state:
+            return
+        self._state.playback.playback_state = ps
+        _LOGGER.info("Sendspin: playback_state -> %s", ps)
+        self._emit_playback_state()
+
+    def _set_stream(self, *, codec: Optional[str], rate: Optional[int], ch: Optional[int], depth: Optional[int]) -> None:
+        changed = False
+        if codec != self._state.stream.codec:
+            self._state.stream.codec = codec
+            changed = True
+        if rate != self._state.stream.sample_rate:
+            self._state.stream.sample_rate = rate
+            changed = True
+        if ch != self._state.stream.channels:
+            self._state.stream.channels = ch
+            changed = True
+        if depth != self._state.stream.bit_depth:
+            self._state.stream.bit_depth = depth
+            changed = True
+        if changed:
+            self._emit_playback_state()
 
     # ---------------------------------------------------------------------
     # Config helpers (dict-or-object tolerant)
@@ -228,155 +372,6 @@ class SendspinClient:
         if val is None:
             return None
         return val
-
-    # ---------------------------------------------------------------------
-    # Milestone 2: publishable state events
-    # ---------------------------------------------------------------------
-
-    def _publish_connection_state(self) -> None:
-        payload = {
-            "connected": bool(self._state.connection.connected),
-            "endpoint": self._state.connection.endpoint,
-            "server_id": self._state.connection.server_id,
-            "server_name": self._state.connection.server_name,
-        }
-        if payload == self._last_connection_state:
-            return
-        self._last_connection_state = payload
-        try:
-            self._event_bus.publish("sendspin_connection_state", payload)
-        except Exception:
-            _LOGGER.debug("Sendspin: failed to publish sendspin_connection_state", exc_info=True)
-
-        _LOGGER.info(
-            "Sendspin: connection_state changed (connected=%s endpoint=%s server=%s)",
-            payload["connected"],
-            payload["endpoint"],
-            payload["server_name"] or payload["server_id"] or "unknown",
-        )
-
-    def _publish_playback_state(self) -> None:
-        stream = self._state.playback.stream
-        payload = {
-            "playback_state": str(self._state.playback.playback_state),
-            "codec": stream.codec,
-            "sample_rate": stream.sample_rate,
-            "channels": stream.channels,
-            "bit_depth": stream.bit_depth,
-        }
-        if payload == self._last_playback_state:
-            return
-        self._last_playback_state = payload
-        try:
-            self._event_bus.publish("sendspin_playback_state", payload)
-        except Exception:
-            _LOGGER.debug("Sendspin: failed to publish sendspin_playback_state", exc_info=True)
-
-        _LOGGER.info(
-            "Sendspin: playback_state changed (state=%s codec=%s %sHz %sch %sbit)",
-            payload["playback_state"],
-            payload["codec"] or "unknown",
-            payload["sample_rate"] or "?",
-            payload["channels"] or "?",
-            payload["bit_depth"] or "?",
-        )
-
-    @staticmethod
-    def _extract_metadata_summary(meta: dict) -> tuple[Optional[str], Optional[str], Optional[str]]:
-        title = meta.get("title")
-        artist = meta.get("artist") or meta.get("artists")
-        album = meta.get("album")
-        return (
-            str(title) if title is not None else None,
-            str(artist) if artist is not None else None,
-            str(album) if album is not None else None,
-        )
-
-    @staticmethod
-    def _extract_progress_position(meta: dict) -> Optional[int]:
-        # Don’t assume exact schema; try common shapes.
-        prog = meta.get("progress")
-        if isinstance(prog, dict):
-            # MA seems to use "track_progress" in your logs
-            pos = prog.get("track_progress")
-            if isinstance(pos, (int, float)):
-                return int(pos)
-            pos2 = prog.get("position")
-            if isinstance(pos2, (int, float)):
-                return int(pos2)
-        return None
-
-    def _publish_metadata(self, meta: dict, *, force: bool = False) -> None:
-        # Store whatever MA provides; don’t over-normalize
-        self._state.metadata = dict(meta) if isinstance(meta, dict) else {"value": meta}
-
-        payload = {"metadata": self._state.metadata}
-
-        # Throttle progress-only chatter: allow at most ~1Hz unless track info changes
-        now = time.monotonic()
-        title, artist, album = self._extract_metadata_summary(self._state.metadata)
-        pos = self._extract_progress_position(self._state.metadata)
-
-        last = self._last_metadata_state["metadata"] if self._last_metadata_state else None
-        last_title, last_artist, last_album = (None, None, None)
-        if isinstance(last, dict):
-            last_title, last_artist, last_album = self._extract_metadata_summary(last)
-
-        track_changed = (title, artist, album) != (last_title, last_artist, last_album)
-
-        if not force and not track_changed:
-            # If only progress is moving, publish at ~1Hz (or when position jumps)
-            if self._last_metadata_emit_ts and (now - self._last_metadata_emit_ts) < 1.0:
-                # If position jumps by >= 1000, allow through
-                if pos is not None and self._last_metadata_position is not None:
-                    if abs(pos - self._last_metadata_position) < 1000:
-                        return
-                else:
-                    return
-
-        if payload == self._last_metadata_state:
-            return
-
-        self._last_metadata_state = payload
-        self._last_metadata_emit_ts = now
-        self._last_metadata_position = pos
-
-        try:
-            self._event_bus.publish("sendspin_metadata", payload)
-        except Exception:
-            _LOGGER.debug("Sendspin: failed to publish sendspin_metadata", exc_info=True)
-
-        if track_changed:
-            _LOGGER.info(
-                "Sendspin: metadata changed (title=%s artist=%s album=%s)",
-                title or "unknown",
-                artist or "unknown",
-                album or "unknown",
-            )
-
-    def _set_playback_state(self, state: str) -> None:
-        state = str(state).lower().strip()
-        if state not in ("playing", "paused", "stopped", "unknown"):
-            state = "unknown"
-        if state == self._state.playback.playback_state:
-            return
-        self._state.playback.playback_state = state
-        self._publish_playback_state()
-
-    def _update_stream_state(self, *, codec: str, sample_rate: int, channels: int, bit_depth: int) -> None:
-        s = self._state.playback.stream
-        changed = (
-            s.codec != codec
-            or s.sample_rate != int(sample_rate)
-            or s.channels != int(channels)
-            or s.bit_depth != int(bit_depth)
-        )
-        s.codec = str(codec) if codec is not None else None
-        s.sample_rate = int(sample_rate) if sample_rate is not None else None
-        s.channels = int(channels) if channels is not None else None
-        s.bit_depth = int(bit_depth) if bit_depth is not None else None
-        if changed:
-            self._publish_playback_state()
 
     # ---------------------------------------------------------------------
     # Coordination / ducking config
@@ -492,16 +487,6 @@ class SendspinClient:
 
         self._volume = max(0, min(100, int(self._volume)))
         self._publish_audio_state()
-
-        # Initialize milestone 2 state publishes with safe defaults
-        self._state.playback.playback_state = "unknown"
-        self._update_stream_state(
-            codec=self._stream_codec,
-            sample_rate=self._stream_rate,
-            channels=self._stream_channels,
-            bit_depth=self._stream_bit_depth,
-        )
-        self._publish_playback_state()
 
         backoff_s = 1.0
 
@@ -642,6 +627,13 @@ class SendspinClient:
 
     async def _connect_and_run(self, endpoint: SendspinEndpoint) -> None:
         url = endpoint.ws_url
+        self._current_endpoint_url = url
+
+        # Reset per-session diagnostics
+        self._last_rx_type = None
+        self._last_rx_at = None
+        self._last_bin_at = None
+
         _LOGGER.info("Sendspin: connecting to %s", url)
 
         conn = self._cfg_get_section(self._cfg, "connection") or {}
@@ -649,14 +641,11 @@ class SendspinClient:
         ping_interval = float(self._cfg_get(conn, "ping_interval_seconds", 20.0) or 20.0)
         ping_timeout = float(self._cfg_get(conn, "ping_timeout_seconds", 20.0) or 20.0)
 
-        # Update connection state immediately
-        self._state.connection.connected = True
-        self._state.connection.endpoint = url
-        self._state.connection.server_id = None
-        self._state.connection.server_name = None
-        self._publish_connection_state()
-
         self._disconnect_event.clear()
+        self._sink_failed = False
+
+        # Mark disconnected until handshake completes
+        self._set_connection(connected=False, endpoint=url)
 
         async with websockets.connect(
             url,
@@ -674,6 +663,9 @@ class SendspinClient:
             if not ok:
                 _LOGGER.warning("Sendspin: handshake timed out waiting for server/hello; reconnecting")
                 return
+
+            # Connection state is now considered "connected" post server/hello
+            self._set_connection(connected=True, endpoint=url)
 
             await self._send_initial_client_state()
 
@@ -698,20 +690,27 @@ class SendspinClient:
                 if exc and not isinstance(exc, ConnectionClosed):
                     _LOGGER.debug("Sendspin: task ended with exception: %r", exc, exc_info=True)
 
+            close_code = getattr(ws, "close_code", None)
+            close_reason = getattr(ws, "close_reason", None)
+            if close_code is not None:
+                _LOGGER.info(
+                    "Sendspin: websocket close observed (code=%s reason=%r last_rx_type=%s last_bin_age_s=%s)",
+                    close_code,
+                    close_reason,
+                    self._last_rx_type,
+                    f"{(time.monotonic() - self._last_bin_at):.3f}" if self._last_bin_at else None,
+                )
+
         # Session ended
         self._ws = None
         self._server_id = None
         self._server_name = None
         self._active_roles = ()
 
-        # Mark disconnected + publish
-        self._state.connection.connected = False
-        self._state.connection.server_id = None
-        self._state.connection.server_name = None
-        self._publish_connection_state()
+        self._set_connection(connected=False, endpoint=url)
+        self._set_playback("unknown")
 
         await self._stop_stream(reason="ws_closed")
-        self._set_playback_state("stopped")
 
     async def _send_json(self, ws: websockets.WebSocketClientProtocol, obj: dict) -> None:
         await ws.send(json.dumps(obj))
@@ -911,11 +910,6 @@ class SendspinClient:
                 if isinstance(roles, list):
                     self._active_roles = tuple(str(r) for r in roles)
 
-                # Milestone 2: update + publish connection state
-                self._state.connection.server_id = self._server_id
-                self._state.connection.server_name = self._server_name
-                self._publish_connection_state()
-
                 _LOGGER.info(
                     "Sendspin: server/hello received (server=%s id=%s active_roles=%s)",
                     self._server_name,
@@ -957,11 +951,26 @@ class SendspinClient:
     # ---------------------------------------------------------------------
 
     async def _start_stream(self, *, codec: str, sample_rate: int, channels: int, bit_depth: int) -> None:
+        _LOGGER.info(
+            "Sendspin: stream/start (codec=%s rate=%s ch=%s depth=%s)",
+            codec,
+            sample_rate,
+            channels,
+            bit_depth,
+        )
+
+        self._set_stream(codec=str(codec), rate=int(sample_rate), ch=int(channels), depth=int(bit_depth))
+
         if codec != "pcm":
             _LOGGER.warning("Sendspin: unsupported codec '%s' (only pcm supported)", codec)
             return
 
         await self._stop_stream(reason="restart_stream")
+
+        self._sink_failed = False
+        self._pcm_frame_count = 0
+        self._pcm_first_frame_at = None
+        self._pcm_last_frame_at = None
 
         self._stream_active = True
         self._stream_codec = codec
@@ -969,15 +978,10 @@ class SendspinClient:
         self._stream_channels = channels
         self._stream_bit_depth = bit_depth
 
-        # Milestone 2: stream/playback state
-        self._update_stream_state(codec=codec, sample_rate=sample_rate, channels=channels, bit_depth=bit_depth)
-        self._set_playback_state("playing")
-
         fmt = "s16le" if bit_depth == 16 else None
         if fmt is None:
             _LOGGER.warning("Sendspin: unsupported bit depth %s (only 16 supported right now)", bit_depth)
             self._stream_active = False
-            self._set_playback_state("unknown")
             return
 
         player_cfg = self._cfg_get_section(self._cfg, "player")
@@ -1012,13 +1016,16 @@ class SendspinClient:
             cmd.insert(1, f"--audio-device={mpv_audio_device}")
 
         _LOGGER.info(
-            "Sendspin: starting PCM sink via mpv (rate=%s ch=%s depth=%s ao=%s dev=%s)",
+            "Sendspin: starting PCM sink via mpv (rate=%s ch=%s depth=%s ao=%s dev=%s ipc=%s)",
             sample_rate,
             channels,
             bit_depth,
             mpv_ao or "auto",
             mpv_audio_device or "auto",
+            self._mpv_ipc_path,
         )
+
+        self._mpv_stderr_tail.clear()
 
         self._pcm_proc = await asyncio.create_subprocess_exec(
             *cmd,
@@ -1030,12 +1037,16 @@ class SendspinClient:
         self._pcm_queue = asyncio.Queue(maxsize=200)
         self._pcm_writer_task = self._loop.create_task(self._pcm_writer_loop())
         self._pcm_stderr_task = self._loop.create_task(self._pcm_stderr_loop())
+        self._pcm_wait_task = self._loop.create_task(self._pcm_waiter_loop())
 
         self._loop.create_task(self._apply_mpv_audio_state())
 
     async def _stop_stream(self, *, reason: str) -> None:
-        was_active = self._stream_active
+        if self._stream_active or self._pcm_proc is not None:
+            _LOGGER.info("Sendspin: stopping stream (%s)", reason)
+
         self._stream_active = False
+        self._set_stream(codec=None, rate=None, ch=None, depth=None)
 
         if self._pcm_writer_task is not None:
             self._pcm_writer_task.cancel()
@@ -1047,11 +1058,15 @@ class SendspinClient:
             await asyncio.gather(self._pcm_stderr_task, return_exceptions=True)
             self._pcm_stderr_task = None
 
+        if self._pcm_wait_task is not None:
+            self._pcm_wait_task.cancel()
+            await asyncio.gather(self._pcm_wait_task, return_exceptions=True)
+            self._pcm_wait_task = None
+
         proc = self._pcm_proc
         self._pcm_proc = None
         if proc is not None:
             try:
-                _LOGGER.info("Sendspin: stopping PCM sink (%s)", reason)
                 if proc.stdin:
                     try:
                         proc.stdin.close()
@@ -1073,13 +1088,46 @@ class SendspinClient:
         self._mpv_ipc_path = None
         self._mpv_ipc_ready = False
 
-        if was_active:
-            self._set_playback_state("stopped")
+        if self._pcm_frame_count:
+            first = self._pcm_first_frame_at
+            last = self._pcm_last_frame_at
+            dur = (last - first) if (first is not None and last is not None) else None
+            _LOGGER.info(
+                "Sendspin: stream stats (frames=%s first=%s last=%s duration_s=%s sink_failed=%s)",
+                self._pcm_frame_count,
+                f"{first:.3f}" if first else None,
+                f"{last:.3f}" if last else None,
+                f"{dur:.3f}" if dur is not None else None,
+                self._sink_failed,
+            )
+
+    async def _pcm_waiter_loop(self) -> None:
+        proc = self._pcm_proc
+        if proc is None:
+            return
+        try:
+            rc = await proc.wait()
+            if self._stream_active and not self._stop_event.is_set():
+                self._sink_failed = True
+                _LOGGER.warning(
+                    "Sendspin: mpv exited unexpectedly (returncode=%s). Requesting reconnect. stderr_tail=%r",
+                    rc,
+                    list(self._mpv_stderr_tail),
+                )
+                self._disconnect_event.set()
+            else:
+                _LOGGER.debug("Sendspin: mpv exited (returncode=%s) during normal stop", rc)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            _LOGGER.debug("Sendspin: mpv waiter loop error", exc_info=True)
 
     async def _pcm_writer_loop(self) -> None:
         proc = self._pcm_proc
         if proc is None or proc.stdin is None:
             return
+
+        unexpected = False
 
         try:
             while self._stream_active and not self._stop_event.is_set():
@@ -1090,15 +1138,25 @@ class SendspinClient:
                     proc.stdin.write(chunk)
                     await proc.stdin.drain()
                 except (BrokenPipeError, ConnectionResetError):
-                    _LOGGER.warning("Sendspin: PCM sink pipe closed")
+                    unexpected = True
+                    self._sink_failed = True
+                    _LOGGER.warning("Sendspin: PCM sink pipe closed unexpectedly (broken pipe)")
                     break
                 except Exception:
+                    unexpected = True
+                    self._sink_failed = True
                     _LOGGER.debug("Sendspin: PCM sink write error", exc_info=True)
                     break
+
         except asyncio.CancelledError:
             raise
         finally:
-            self._disconnect_event.set()
+            if unexpected and not self._stop_event.is_set():
+                _LOGGER.warning(
+                    "Sendspin: requesting reconnect due to PCM sink failure (stderr_tail=%r)",
+                    list(self._mpv_stderr_tail),
+                )
+                self._disconnect_event.set()
 
     async def _pcm_stderr_loop(self) -> None:
         proc = self._pcm_proc
@@ -1109,16 +1167,18 @@ class SendspinClient:
                 line = await proc.stderr.readline()
                 if not line:
                     return
-                _LOGGER.debug("Sendspin mpv: %s", line.decode("utf-8", errors="replace").rstrip())
+                s = line.decode("utf-8", errors="replace").rstrip()
+                self._mpv_stderr_tail.append(s)
+                _LOGGER.debug("Sendspin mpv: %s", s)
         except asyncio.CancelledError:
             raise
         except Exception:
             _LOGGER.debug("Sendspin: stderr loop error", exc_info=True)
 
     def _extract_pcm_payload(self, frame: bytes) -> bytes:
-        if len(frame) <= 9:
+        if len(frame) <= _BINARY_HEADER_LEN:
             return b""
-        return frame[9:]
+        return frame[_BINARY_HEADER_LEN:]
 
     # ---------------------------------------------------------------------
     # Loops
@@ -1130,12 +1190,31 @@ class SendspinClient:
                 msg = await ws.recv()
 
                 if isinstance(msg, (bytes, bytearray)):
+                    self._last_bin_at = time.monotonic()
+
                     if not self._stream_active:
+                        self._pcm_frame_count += 1
+                        if self._pcm_frame_count == 1 or (self._pcm_frame_count % 500) == 0:
+                            _LOGGER.debug("Sendspin: received binary frame while stream inactive (%d bytes)", len(msg))
                         continue
 
                     pcm = self._extract_pcm_payload(bytes(msg))
                     if not pcm:
                         continue
+
+                    now = time.monotonic()
+                    self._pcm_frame_count += 1
+                    self._pcm_last_frame_at = now
+                    if self._pcm_first_frame_at is None:
+                        self._pcm_first_frame_at = now
+                        _LOGGER.info("Sendspin: first PCM frame received (%d bytes)", len(pcm))
+
+                    if (self._pcm_frame_count % 500) == 0:
+                        _LOGGER.debug(
+                            "Sendspin: PCM frames received=%d (last_chunk=%d bytes)",
+                            self._pcm_frame_count,
+                            len(pcm),
+                        )
 
                     try:
                         self._pcm_queue.put_nowait(pcm)
@@ -1152,11 +1231,13 @@ class SendspinClient:
                 mtype = data.get("type")
                 payload = data.get("payload") or {}
 
+                self._last_rx_type = str(mtype) if mtype else None
+                self._last_rx_at = time.monotonic()
+
                 if mtype == "server/time":
                     continue
 
                 if mtype == "server/state":
-                    # Milestone 2: avoid raw dumps; extract state + emit contract events
                     player = payload.get("player") or payload.get("controller") or {}
                     if isinstance(player, dict):
                         if "volume" in player:
@@ -1170,17 +1251,7 @@ class SendspinClient:
                             except Exception:
                                 pass
 
-                        # Optional: infer playback state if server provides it
-                        pstate = player.get("playback_state") or player.get("state")
-                        if isinstance(pstate, str):
-                            self._set_playback_state(pstate)
-
-                    meta = payload.get("metadata")
-                    if isinstance(meta, dict):
-                        self._publish_metadata(meta, force=False)
-
                 elif mtype == "server/command":
-                    # Milestone 2: interpret key commands for playback contract, no raw dumps
                     player = payload.get("player") or {}
                     if isinstance(player, dict):
                         cmd = player.get("command")
@@ -1192,7 +1263,6 @@ class SendspinClient:
                                 pass
 
                         elif cmd == "mute":
-                            # MA may send either {"muted": true} or {"mute": true}
                             if "muted" in player:
                                 try:
                                     self._set_muted(bool(player.get("muted")))
@@ -1204,21 +1274,16 @@ class SendspinClient:
                                 except Exception:
                                     pass
                             else:
-                                _LOGGER.debug("Sendspin: mute command missing 'muted'/'mute' key")
-
-                        elif cmd in ("play", "pause", "stop"):
-                            if cmd == "play":
-                                self._set_playback_state("playing")
-                            elif cmd == "pause":
-                                self._set_playback_state("paused")
-                            elif cmd == "stop":
-                                self._set_playback_state("stopped")
+                                _LOGGER.debug("Sendspin: mute command missing 'muted'/'mute' key (keys=%s)", sorted(player.keys()))
 
                         await self._send_player_state(ws)
 
                 elif mtype == "group/update":
-                    # No contract event needed yet
-                    continue
+                    if isinstance(payload, dict) and "playback_state" in payload:
+                        try:
+                            self._set_playback(str(payload.get("playback_state") or "unknown"))
+                        except Exception:
+                            pass
 
                 elif mtype == "stream/start":
                     p = payload.get("player") or {}
@@ -1226,23 +1291,50 @@ class SendspinClient:
                     rate = int(p.get("sample_rate", 48000) or 48000)
                     ch = int(p.get("channels", 2) or 2)
                     depth = int(p.get("bit_depth", 16) or 16)
+
+                    self._set_playback("playing")
                     await self._start_stream(codec=codec, sample_rate=rate, channels=ch, bit_depth=depth)
 
                 elif mtype == "stream/stop":
+                    _LOGGER.info("Sendspin: recv stream/stop")
                     await self._stop_stream(reason="stream_stop")
+                    if self._state.playback.playback_state == "playing":
+                        self._set_playback("paused")
 
                 elif mtype == "stream/end":
+                    _LOGGER.info("Sendspin: recv stream/end")
                     await self._stop_stream(reason="stream_end")
+                    if self._state.playback.playback_state == "playing":
+                        self._set_playback("paused")
+
+                elif mtype in ("metadata/update", "metadata", "server/metadata", "media/metadata"):
+                    if isinstance(payload, dict):
+                        self._state.metadata = copy.deepcopy(payload)
+                        self._emit_metadata(payload)
+                        _LOGGER.info("Sendspin: metadata updated (keys=%s)", sorted(payload.keys()))
+                    else:
+                        _LOGGER.debug("Sendspin: metadata message had non-dict payload")
 
                 else:
-                    _LOGGER.debug("Sendspin: recv type=%s", mtype)
+                    _LOGGER.debug(
+                        "Sendspin: recv type=%s (payload_keys=%s)",
+                        mtype,
+                        sorted(payload.keys()) if isinstance(payload, dict) else None,
+                    )
 
         except ConnectionClosed as e:
-            _LOGGER.info("Sendspin: websocket closed (%s)", e)
+            code = getattr(e, "code", None)
+            reason = getattr(e, "reason", None)
+            _LOGGER.info(
+                "Sendspin: websocket closed (code=%s reason=%r last_rx_type=%s)",
+                code,
+                reason,
+                self._last_rx_type,
+            )
         except asyncio.CancelledError:
             raise
         except Exception:
-            _LOGGER.debug("Sendspin: recv loop error", exc_info=True)
+            _LOGGER.exception("Sendspin: recv loop error")
         finally:
             _LOGGER.debug("Sendspin: recv loop ending")
             self._disconnect_event.set()
