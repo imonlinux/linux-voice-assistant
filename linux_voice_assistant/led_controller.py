@@ -105,6 +105,13 @@ class LedController(EventHandler):
                 self._is_ready = True
                 # XVF3800 ring has a fixed LED count (typically 12)
                 self.num_leds = int(getattr(self._xvf3800_backend, "ring_led_count", 12))
+                
+                # Disable firmware LED effects to give LVA full control
+                try:
+                    self._xvf3800_backend.set_effect(0)  # 0 = off, disables firmware effects
+                    _LOGGER.debug("Disabled XVF3800 firmware LED effects")
+                except Exception as e:
+                    _LOGGER.warning("Could not disable XVF3800 firmware LED effects: %s", e)
                 _LOGGER.info(
                     "LED Controller initialized for XVF3800 USB LED ring (num_leds=%d).",
                     self.num_leds,
