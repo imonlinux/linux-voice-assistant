@@ -23,12 +23,16 @@ Milestone 2:
   - sendspin_playback_state
   - sendspin_metadata
   - sendspin_audio_state (from Milestone 1)
+
+Milestone 3:
+- Handle stream/clear (clear buffered audio immediately without necessarily ending stream)
+- Tighten teardown rules (no orphan mpv, queue drained on stop, disconnect always stops stream)
+- Publish playback transitions (playing->stopped) on stop/end/disconnect
 """
 
 from __future__ import annotations
 
 import asyncio
-import copy
 import json
 import logging
 import os
@@ -270,13 +274,6 @@ class SendspinClient:
         if payload == self._last_pub_connection:
             return
         self._last_pub_connection = payload
-        _LOGGER.info(
-            "Sendspin: connection_state -> %s endpoint=%s server=%s id=%s",
-            "connected" if payload["connected"] else "disconnected",
-            payload["endpoint"],
-            payload["server_name"],
-            payload["server_id"],
-        )
         try:
             self._event_bus.publish("sendspin_connection_state", payload)
         except Exception:
@@ -299,9 +296,7 @@ class SendspinClient:
             _LOGGER.debug("Sendspin: failed to publish sendspin_playback_state", exc_info=True)
 
     def _emit_metadata(self, metadata: dict) -> None:
-        # Defensive copy so dedupe comparisons are stable even if upstream mutates dicts.
-        safe_metadata = copy.deepcopy(metadata)
-        payload = {"metadata": safe_metadata}
+        payload = {"metadata": metadata}
         if payload == self._last_pub_metadata:
             return
         self._last_pub_metadata = payload
@@ -455,7 +450,8 @@ class SendspinClient:
             self._loop.create_task(self._apply_mpv_audio_state())
 
     async def disconnect(self, *, reason: str = "disconnect") -> None:
-        await self._stop_stream(reason=reason)
+        # Per M3: disconnect always stops stream + publishes stopped.
+        await self._stop_stream(reason=reason, update_playback=True)
 
         ws = self._ws
         self._ws = None
@@ -681,6 +677,25 @@ class SendspinClient:
                 return_when=asyncio.FIRST_COMPLETED,
             )
 
+            # Helpful diagnostic: what ended the session?
+            for t in done:
+                if t is stop_task:
+                    _LOGGER.info("Sendspin: session ending (stop requested)")
+                elif t is disc_task:
+                    _LOGGER.warning(
+                        "Sendspin: session ending (disconnect requested; sink_failed=%s stream_active=%s last_rx_type=%s last_rx_age_s=%s)",
+                        self._sink_failed,
+                        self._stream_active,
+                        self._last_rx_type,
+                        f"{(time.monotonic() - self._last_rx_at):.3f}" if self._last_rx_at else None,
+                    )
+                elif t is recv_task:
+                    _LOGGER.info("Sendspin: session ending (recv loop ended)")
+                elif t is time_task:
+                    _LOGGER.info("Sendspin: session ending (time sync ended)")
+                elif t is hb_task:
+                    _LOGGER.info("Sendspin: session ending (heartbeat ended)")
+
             for t in pending:
                 t.cancel()
             await asyncio.gather(*pending, return_exceptions=True)
@@ -690,6 +705,7 @@ class SendspinClient:
                 if exc and not isinstance(exc, ConnectionClosed):
                     _LOGGER.debug("Sendspin: task ended with exception: %r", exc, exc_info=True)
 
+            # If the server closed us, websockets keeps these attributes
             close_code = getattr(ws, "close_code", None)
             close_reason = getattr(ws, "close_reason", None)
             if close_code is not None:
@@ -708,9 +724,10 @@ class SendspinClient:
         self._active_roles = ()
 
         self._set_connection(connected=False, endpoint=url)
-        self._set_playback("unknown")
 
-        await self._stop_stream(reason="ws_closed")
+        # Per M3: session end implies not playing.
+        self._set_playback("stopped")
+        await self._stop_stream(reason="ws_closed", update_playback=False)
 
     async def _send_json(self, ws: websockets.WebSocketClientProtocol, obj: dict) -> None:
         await ws.send(json.dumps(obj))
@@ -897,7 +914,7 @@ class SendspinClient:
             try:
                 data = json.loads(msg)
             except Exception:
-                _LOGGER.debug("Sendspin: received non-JSON during handshake")
+                _LOGGER.debug("Sendspin: received non-JSON during handshake: %r", msg)
                 continue
 
             mtype = data.get("type")
@@ -921,7 +938,7 @@ class SendspinClient:
             if mtype == "server/time":
                 continue
 
-            _LOGGER.debug("Sendspin: ignoring pre-hello message type=%s", mtype)
+            _LOGGER.debug("Sendspin: ignoring pre-hello message type=%s payload=%s", mtype, payload)
 
         return False
 
@@ -950,6 +967,45 @@ class SendspinClient:
     # Streaming (PCM -> mpv)
     # ---------------------------------------------------------------------
 
+    def _drain_pcm_queue(self) -> int:
+        """Drain queued audio immediately (used by stream/clear and stop)."""
+        drained = 0
+        try:
+            while True:
+                _ = self._pcm_queue.get_nowait()
+                drained += 1
+        except asyncio.QueueEmpty:
+            pass
+        return drained
+
+    async def _handle_stream_clear(self, payload: dict) -> None:
+        """
+        Sendspin spec: stream/clear clears buffers without ending stream (used for seek).
+        We treat our local asyncio queue as the buffer and drain it immediately.
+        """
+        roles = payload.get("roles")
+        if roles is None:
+            clear_player = True
+        else:
+            clear_player = False
+            try:
+                if isinstance(roles, list):
+                    clear_player = ("player" in roles) or ("player@v1" in roles)
+            except Exception:
+                clear_player = True
+
+        if not clear_player:
+            _LOGGER.info("Sendspin: stream/clear received (roles=%r) - nothing to clear for player", roles)
+            return
+
+        drained = self._drain_pcm_queue()
+        # Reset diagnostics so post-clear flow is obvious in logs.
+        self._pcm_frame_count = 0
+        self._pcm_first_frame_at = None
+        self._pcm_last_frame_at = None
+
+        _LOGGER.info("Sendspin: stream/clear -> drained %d queued chunk(s)", drained)
+
     async def _start_stream(self, *, codec: str, sample_rate: int, channels: int, bit_depth: int) -> None:
         _LOGGER.info(
             "Sendspin: stream/start (codec=%s rate=%s ch=%s depth=%s)",
@@ -959,13 +1015,14 @@ class SendspinClient:
             bit_depth,
         )
 
+        # Update publishable stream state immediately
         self._set_stream(codec=str(codec), rate=int(sample_rate), ch=int(channels), depth=int(bit_depth))
 
         if codec != "pcm":
             _LOGGER.warning("Sendspin: unsupported codec '%s' (only pcm supported)", codec)
             return
 
-        await self._stop_stream(reason="restart_stream")
+        await self._stop_stream(reason="restart_stream", update_playback=False)
 
         self._sink_failed = False
         self._pcm_frame_count = 0
@@ -1041,12 +1098,23 @@ class SendspinClient:
 
         self._loop.create_task(self._apply_mpv_audio_state())
 
-    async def _stop_stream(self, *, reason: str) -> None:
+    async def _stop_stream(self, *, reason: str, update_playback: bool = False) -> None:
         if self._stream_active or self._pcm_proc is not None:
             _LOGGER.info("Sendspin: stopping stream (%s)", reason)
 
+        # Stop accepting new frames first.
         self._stream_active = False
+
+        # Drain queued audio to satisfy M3 teardown rules.
+        drained = self._drain_pcm_queue()
+        if drained:
+            _LOGGER.debug("Sendspin: drained %d queued chunk(s) on stop", drained)
+
+        # When stream stops, clear stream format fields.
         self._set_stream(codec=None, rate=None, ch=None, depth=None)
+
+        if update_playback:
+            self._set_playback("stopped")
 
         if self._pcm_writer_task is not None:
             self._pcm_writer_task.cancel()
@@ -1102,11 +1170,16 @@ class SendspinClient:
             )
 
     async def _pcm_waiter_loop(self) -> None:
+        """
+        Watches mpv for unexpected exit.
+        This is critical for diagnosing "silent" disconnects during pause/next.
+        """
         proc = self._pcm_proc
         if proc is None:
             return
         try:
             rc = await proc.wait()
+            # If we're still "stream_active", mpv exiting is unexpected.
             if self._stream_active and not self._stop_event.is_set():
                 self._sink_failed = True
                 _LOGGER.warning(
@@ -1149,8 +1222,12 @@ class SendspinClient:
                     break
 
         except asyncio.CancelledError:
+            # Normal during stream stop/pause/track-change.
             raise
         finally:
+            # IMPORTANT:
+            # Do NOT tear down the websocket for a normal stream stop.
+            # Only request disconnect when the PCM sink failed unexpectedly.
             if unexpected and not self._stop_event.is_set():
                 _LOGGER.warning(
                     "Sendspin: requesting reconnect due to PCM sink failure (stderr_tail=%r)",
@@ -1193,6 +1270,7 @@ class SendspinClient:
                     self._last_bin_at = time.monotonic()
 
                     if not self._stream_active:
+                        # Server might still send a little audio during transitions; log once in a while.
                         self._pcm_frame_count += 1
                         if self._pcm_frame_count == 1 or (self._pcm_frame_count % 500) == 0:
                             _LOGGER.debug("Sendspin: received binary frame while stream inactive (%d bytes)", len(msg))
@@ -1209,6 +1287,7 @@ class SendspinClient:
                         self._pcm_first_frame_at = now
                         _LOGGER.info("Sendspin: first PCM frame received (%d bytes)", len(pcm))
 
+                    # Low-noise periodic debug
                     if (self._pcm_frame_count % 500) == 0:
                         _LOGGER.debug(
                             "Sendspin: PCM frames received=%d (last_chunk=%d bytes)",
@@ -1225,12 +1304,13 @@ class SendspinClient:
                 try:
                     data = json.loads(msg)
                 except Exception:
-                    _LOGGER.debug("Sendspin: received non-JSON message")
+                    _LOGGER.debug("Sendspin: received non-JSON message: %r", msg)
                     continue
 
                 mtype = data.get("type")
                 payload = data.get("payload") or {}
 
+                # Track last received message type/timestamp for session post-mortem
                 self._last_rx_type = str(mtype) if mtype else None
                 self._last_rx_at = time.monotonic()
 
@@ -1238,6 +1318,7 @@ class SendspinClient:
                     continue
 
                 if mtype == "server/state":
+                    _LOGGER.debug("Sendspin: server/state %s", payload)
                     player = payload.get("player") or payload.get("controller") or {}
                     if isinstance(player, dict):
                         if "volume" in player:
@@ -1251,7 +1332,14 @@ class SendspinClient:
                             except Exception:
                                 pass
 
+                    # Metadata sometimes arrives via server/state on MA
+                    meta = payload.get("metadata")
+                    if isinstance(meta, dict):
+                        self._state.metadata = meta
+                        self._emit_metadata(meta)
+
                 elif mtype == "server/command":
+                    _LOGGER.debug("Sendspin: server/command %s", payload)
                     player = payload.get("player") or {}
                     if isinstance(player, dict):
                         cmd = player.get("command")
@@ -1263,6 +1351,7 @@ class SendspinClient:
                                 pass
 
                         elif cmd == "mute":
+                            # MA may send either {"muted": true} or {"mute": true}
                             if "muted" in player:
                                 try:
                                     self._set_muted(bool(player.get("muted")))
@@ -1274,11 +1363,13 @@ class SendspinClient:
                                 except Exception:
                                     pass
                             else:
-                                _LOGGER.debug("Sendspin: mute command missing 'muted'/'mute' key (keys=%s)", sorted(player.keys()))
+                                _LOGGER.debug("Sendspin: mute command missing 'muted'/'mute' key: %s", player)
 
                         await self._send_player_state(ws)
 
                 elif mtype == "group/update":
+                    # Example: {'playback_state': 'stopped', 'group_id': '...'}
+                    _LOGGER.debug("Sendspin: group/update %s", payload)
                     if isinstance(payload, dict) and "playback_state" in payload:
                         try:
                             self._set_playback(str(payload.get("playback_state") or "unknown"))
@@ -1286,43 +1377,48 @@ class SendspinClient:
                             pass
 
                 elif mtype == "stream/start":
+                    _LOGGER.debug("Sendspin: recv type=stream/start payload=%s", payload)
                     p = payload.get("player") or {}
                     codec = str(p.get("codec", "pcm"))
                     rate = int(p.get("sample_rate", 48000) or 48000)
                     ch = int(p.get("channels", 2) or 2)
                     depth = int(p.get("bit_depth", 16) or 16)
 
+                    # Stream start generally implies "playing"
                     self._set_playback("playing")
+
                     await self._start_stream(codec=codec, sample_rate=rate, channels=ch, bit_depth=depth)
+
+                elif mtype == "stream/clear":
+                    # Spec: clear buffers without ending stream (seek).
+                    _LOGGER.info("Sendspin: recv stream/clear")
+                    if isinstance(payload, dict):
+                        await self._handle_stream_clear(payload)
+                    else:
+                        await self._handle_stream_clear({})
 
                 elif mtype == "stream/stop":
                     _LOGGER.info("Sendspin: recv stream/stop")
-                    await self._stop_stream(reason="stream_stop")
-                    if self._state.playback.playback_state == "playing":
-                        self._set_playback("paused")
+                    await self._stop_stream(reason="stream_stop", update_playback=True)
 
                 elif mtype == "stream/end":
                     _LOGGER.info("Sendspin: recv stream/end")
-                    await self._stop_stream(reason="stream_end")
-                    if self._state.playback.playback_state == "playing":
-                        self._set_playback("paused")
+                    await self._stop_stream(reason="stream_end", update_playback=True)
 
+                # Some servers use metadata events; preserve structure without normalizing.
                 elif mtype in ("metadata/update", "metadata", "server/metadata", "media/metadata"):
                     if isinstance(payload, dict):
-                        self._state.metadata = copy.deepcopy(payload)
+                        self._state.metadata = payload
                         self._emit_metadata(payload)
                         _LOGGER.info("Sendspin: metadata updated (keys=%s)", sorted(payload.keys()))
                     else:
-                        _LOGGER.debug("Sendspin: metadata message had non-dict payload")
+                        _LOGGER.debug("Sendspin: metadata message had non-dict payload: %r", payload)
 
                 else:
-                    _LOGGER.debug(
-                        "Sendspin: recv type=%s (payload_keys=%s)",
-                        mtype,
-                        sorted(payload.keys()) if isinstance(payload, dict) else None,
-                    )
+                    _LOGGER.debug("Sendspin: recv type=%s payload=%s", mtype, payload)
 
         except ConnectionClosed as e:
+            # This should always be visible when the server closes us.
             code = getattr(e, "code", None)
             reason = getattr(e, "reason", None)
             _LOGGER.info(
@@ -1338,7 +1434,7 @@ class SendspinClient:
         finally:
             _LOGGER.debug("Sendspin: recv loop ending")
             self._disconnect_event.set()
-            await self._stop_stream(reason="recv_loop_end")
+            await self._stop_stream(reason="recv_loop_end", update_playback=True)
 
     async def _time_sync_loop(self, ws: websockets.WebSocketClientProtocol) -> None:
         conn = self._cfg_get_section(self._cfg, "connection") or {}
