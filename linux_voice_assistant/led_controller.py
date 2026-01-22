@@ -359,6 +359,9 @@ class LedController(EventHandler):
     async def startup_sequence(self, color=None, brightness=None):
         # Use a simple green blink on startup for all backends.
         await self.blink(_GREEN, 1.0)
+        # After startup blink, explicitly apply idle state to prevent
+        # XVF3800 firmware from re-enabling DOA effects
+        self._apply_state_effect("idle", publish_state=False)
 
 
     async def off(self, color, brightness):
