@@ -1,14 +1,80 @@
-"""Configuration models for the application."""
+"""Configuration models for the application.
+
+This module is intentionally defensive:
+- Unknown keys in JSON config blocks are ignored (with a warning) rather than
+  crashing the app.
+- Certain fields are normalized to the expected types.
+"""
 
 from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional, Type, TypeVar
 
 _LOGGER = logging.getLogger(__name__)
+
+T = TypeVar("T")
+
+
+# -----------------------------------------------------------------------------
+# Helpers
+# -----------------------------------------------------------------------------
+
+def _clamp_0_1(name: str, value: float) -> float:
+    """Clamp a float to [0.0, 1.0], logging a warning if clamped."""
+    try:
+        v = float(value)
+    except Exception:
+        _LOGGER.warning("%s is not a number (%r); using default 0.5", name, value)
+        return 0.5
+
+    if v < 0.0:
+        _LOGGER.warning("%s < 0.0; clamping to 0.0 (was %s)", name, v)
+        return 0.0
+    if v > 1.0:
+        _LOGGER.warning("%s > 1.0; clamping to 1.0 (was %s)", name, v)
+        return 1.0
+    return v
+
+
+def _as_str_list(value: Any, *, default: Optional[List[str]] = None) -> List[str]:
+    """Normalize a config value into List[str]."""
+    if value is None:
+        return list(default) if default is not None else []
+    if isinstance(value, (list, tuple)):
+        out: List[str] = []
+        for item in value:
+            if item is None:
+                continue
+            out.append(str(item))
+        return out
+    # Accept a single string as a 1-item list.
+    return [str(value)]
+
+
+def _dataclass_from_dict(cls: Type[T], raw: Any, *, context: str) -> T:
+    """Create a dataclass instance from a dict, ignoring unknown keys.
+
+    This prevents config.json typos or future/extra keys from crashing startup.
+    """
+    if not isinstance(raw, dict):
+        raw = {}
+
+    allowed = {f.name for f in fields(cls)}
+    filtered = {k: v for k, v in raw.items() if k in allowed}
+    unknown = sorted({k for k in raw.keys() if k not in allowed})
+    if unknown:
+        _LOGGER.warning("%s: ignoring unknown keys: %s", context, unknown)
+
+    try:
+        return cls(**filtered)  # type: ignore[arg-type]
+    except Exception as e:
+        _LOGGER.warning("%s: failed to parse (%s); using defaults. raw=%r", context, e, raw)
+        return cls()  # type: ignore[call-arg]
+
 
 # -----------------------------------------------------------------------------
 # Configuration Dataclasses
@@ -129,8 +195,7 @@ class ButtonConfig:
 
 @dataclass
 class SendspinConnectionConfig:
-    """
-    Sendspin connection settings.
+    """Sendspin connection settings.
 
     mode:
       - "client_initiated": LVA discovers Sendspin servers via mDNS and connects.
@@ -141,6 +206,13 @@ class SendspinConnectionConfig:
     server_host: Optional[str] = None
     server_port: int = 8927
     server_path: str = "/sendspin"
+
+    # Optional tuning
+    timeout_seconds: float = 6.0
+    hello_timeout_seconds: float = 8.0
+    ping_interval_seconds: float = 20.0
+    ping_timeout_seconds: float = 20.0
+    time_sync_interval_seconds: float = 5.0
 
 
 @dataclass
@@ -155,7 +227,15 @@ class SendspinRolesConfig:
 
 @dataclass
 class SendspinPlayerConfig:
-    """Player capability preferences for Sendspin."""
+    """Player capability preferences for Sendspin.
+
+    Notes:
+    - `supported_codecs` controls what we advertise in `client/hello`.
+    - Actual playback is currently PCM-only; if the server starts a stream with
+      a non-PCM codec, the client will request a PCM format and log a warning.
+    - `mpv_*` and `ffmpeg_*` are pass-through knobs for downstream work.
+    """
+
     preferred_codec: str = "pcm"
     supported_codecs: List[str] = field(default_factory=lambda: ["pcm"])
     sample_rate: int = 48000
@@ -165,6 +245,52 @@ class SendspinPlayerConfig:
     # Approximate stream buffer capacity to advertise (bytes).
     # This is used by the Sendspin server to choose chunk sizing.
     buffer_capacity_bytes: int = 1048576  # 1 MiB
+
+    # Ducking level applied to mpv volume when voice is active (0-100).
+    duck_volume_percent: int = 20
+
+    # Local playback process configuration
+    mpv_path: str = "mpv"
+    mpv_ao: Optional[str] = None
+    mpv_audio_device: Optional[str] = None
+    mpv_extra_args: List[str] = field(default_factory=list)
+
+    # Decoder configuration (Milestone 4: wired-through, used in later milestones)
+    decoder_backend: str = "auto"  # auto|ffmpeg|none
+    ffmpeg_path: str = "ffmpeg"
+    ffmpeg_extra_args: List[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        self.preferred_codec = str(self.preferred_codec or "pcm").lower().strip()
+
+        # Normalize codecs lists
+        codecs = _as_str_list(self.supported_codecs, default=["pcm"])
+        codecs_norm: List[str] = []
+        for c in codecs:
+            c2 = str(c).lower().strip()
+            if not c2:
+                continue
+            if c2 not in codecs_norm:
+                codecs_norm.append(c2)
+        if "pcm" not in codecs_norm:
+            codecs_norm.append("pcm")
+        self.supported_codecs = codecs_norm
+
+        if self.preferred_codec not in self.supported_codecs:
+            _LOGGER.warning(
+                "sendspin.player.preferred_codec=%r not in supported_codecs=%r; falling back to 'pcm'",
+                self.preferred_codec,
+                self.supported_codecs,
+            )
+            self.preferred_codec = "pcm"
+
+        self.mpv_extra_args = _as_str_list(self.mpv_extra_args, default=[])
+        self.ffmpeg_extra_args = _as_str_list(self.ffmpeg_extra_args, default=[])
+
+        self.decoder_backend = str(self.decoder_backend or "auto").lower().strip()
+        if self.decoder_backend not in ("auto", "ffmpeg", "none"):
+            _LOGGER.warning("sendspin.player.decoder_backend=%r invalid; using 'auto'", self.decoder_backend)
+            self.decoder_backend = "auto"
 
 
 @dataclass
@@ -207,26 +333,10 @@ class Config:
     button: ButtonConfig = field(default_factory=ButtonConfig)
     sendspin: SendspinConfig = field(default_factory=SendspinConfig)
 
+
 # -----------------------------------------------------------------------------
-# Helper Function
+# Loader
 # -----------------------------------------------------------------------------
-
-def _clamp_0_1(name: str, value: float) -> float:
-    """Clamp a float to [0.0, 1.0], logging a warning if clamped."""
-    try:
-        v = float(value)
-    except Exception:
-        _LOGGER.warning("%s is not a number (%r); using default 0.5", name, value)
-        return 0.5
-
-    if v < 0.0:
-        _LOGGER.warning("%s < 0.0; clamping to 0.0 (was %s)", name, v)
-        return 0.0
-    if v > 1.0:
-        _LOGGER.warning("%s > 1.0; clamping to 1.0 (was %s)", name, v)
-        return 1.0
-    return v
-
 
 def load_config_from_json(config_path: Path) -> Config:
     """Loads configuration from a JSON file and populates dataclasses."""
@@ -244,23 +354,36 @@ def load_config_from_json(config_path: Path) -> Config:
     if "app" not in raw_data:
         raise ValueError("Configuration file must contain an 'app' section with a 'name'.")
 
-    app_config = AppConfig(**raw_data.get("app", {}))
-    audio_config = AudioConfig(**raw_data.get("audio", {}))
-    wake_word_config = WakeWordConfig(**raw_data.get("wake_word", {}))
-    esphome_config = ESPHomeConfig(**raw_data.get("esphome", {}))
-    led_config = LedConfig(**raw_data.get("led", {}))
-    mqtt_config = MqttConfig(**raw_data.get("mqtt", {}))
-    button_config = ButtonConfig(**raw_data.get("button", {}))
+    app_config = _dataclass_from_dict(AppConfig, raw_data.get("app", {}), context="app")
+    audio_config = _dataclass_from_dict(AudioConfig, raw_data.get("audio", {}), context="audio")
+    wake_word_config = _dataclass_from_dict(WakeWordConfig, raw_data.get("wake_word", {}), context="wake_word")
+    esphome_config = _dataclass_from_dict(ESPHomeConfig, raw_data.get("esphome", {}), context="esphome")
+    led_config = _dataclass_from_dict(LedConfig, raw_data.get("led", {}), context="led")
+    mqtt_config = _dataclass_from_dict(MqttConfig, raw_data.get("mqtt", {}), context="mqtt")
+    button_config = _dataclass_from_dict(ButtonConfig, raw_data.get("button", {}), context="button")
 
     # --- Sendspin (nested dataclasses; keep robust to partial configs) ---
-    sendspin_raw = raw_data.get("sendspin", {}) if isinstance(raw_data.get("sendspin", {}), dict) else {}
+    sendspin_raw = raw_data.get("sendspin", {})
+    if not isinstance(sendspin_raw, dict):
+        sendspin_raw = {}
+
     sendspin_cfg = SendspinConfig(
         enabled=bool(sendspin_raw.get("enabled", False)),
-        connection=SendspinConnectionConfig(**(sendspin_raw.get("connection", {}) or {})),
-        roles=SendspinRolesConfig(**(sendspin_raw.get("roles", {}) or {})),
-        player=SendspinPlayerConfig(**(sendspin_raw.get("player", {}) or {})),
-        audio_output=SendspinAudioOutputConfig(**(sendspin_raw.get("audio_output", {}) or {})),
-        coordination=SendspinCoordinationConfig(**(sendspin_raw.get("coordination", {}) or {})),
+        connection=_dataclass_from_dict(
+            SendspinConnectionConfig, (sendspin_raw.get("connection", {}) or {}), context="sendspin.connection"
+        ),
+        roles=_dataclass_from_dict(
+            SendspinRolesConfig, (sendspin_raw.get("roles", {}) or {}), context="sendspin.roles"
+        ),
+        player=_dataclass_from_dict(
+            SendspinPlayerConfig, (sendspin_raw.get("player", {}) or {}), context="sendspin.player"
+        ),
+        audio_output=_dataclass_from_dict(
+            SendspinAudioOutputConfig, (sendspin_raw.get("audio_output", {}) or {}), context="sendspin.audio_output"
+        ),
+        coordination=_dataclass_from_dict(
+            SendspinCoordinationConfig, (sendspin_raw.get("coordination", {}) or {}), context="sendspin.coordination"
+        ),
     )
 
     # Normalize / validate wake word threshold
@@ -280,7 +403,6 @@ def load_config_from_json(config_path: Path) -> Config:
         try:
             audio_config.volume_sync = bool(raw_data.get("volume_sync"))
         except Exception:
-            # If it's something strange, just leave default.
             pass
 
     # Set MQTT 'enabled' flag
