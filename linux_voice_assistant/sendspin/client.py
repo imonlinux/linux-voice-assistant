@@ -23,19 +23,16 @@ Milestone 2:
   - sendspin_playback_state
   - sendspin_metadata
   - sendspin_audio_state (from Milestone 1)
-
-Milestone 3:
-- Handle stream/clear (clear buffered audio immediately without necessarily ending stream)
-- Tighten teardown rules (no orphan mpv, queue drained on stop, disconnect always stops stream)
-- Publish playback transitions (playing->stopped) on stop/end/disconnect
 """
 
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import logging
 import os
+import shutil
 import re
 import time
 from collections import deque
@@ -149,6 +146,42 @@ class _SendspinDuckingHandler(EventHandler):
 
 
 # ---------------------------------------------------------------------------
+# Controller command handler (EventBus -> client controller commands)
+# ---------------------------------------------------------------------------
+
+class _SendspinControllerCommandHandler(EventHandler):
+    """Listens for EventBus events requesting Sendspin controller commands.
+
+    Expected event name: `sendspin_controller_command`
+
+    Payload example:
+      {"command": "play"}
+      {"command": "volume", "volume": 42}
+      {"command": "mute", "mute": True}
+    """
+
+    def __init__(self, event_bus: EventBus, client: "SendspinClient") -> None:
+        super().__init__(event_bus)
+        self._client = client
+        self._subscribe_all_methods()
+
+    @subscribe
+    def sendspin_controller_command(self, data: dict | None = None) -> None:
+        if not isinstance(data, dict):
+            return
+
+        cmd = data.get("command") or data.get("cmd")
+        if not cmd:
+            return
+
+        volume = data.get("volume")
+        mute = data.get("mute")
+        self._client._loop.create_task(
+            self._client.send_controller_command(str(cmd), volume=volume, mute=mute)
+        )
+
+
+# ---------------------------------------------------------------------------
 # Client
 # ---------------------------------------------------------------------------
 
@@ -193,6 +226,13 @@ class SendspinClient:
         # Subscribe ducking handler to LVA event bus
         self._ducking_handler = _SendspinDuckingHandler(event_bus=self._event_bus, client=self)
 
+        # Subscribe controller command handler to LVA event bus
+        # Event: sendspin_controller_command {command: str, volume?: 0-100, mute?: bool}
+        self._controller_handler = _SendspinControllerCommandHandler(event_bus=self._event_bus, client=self)
+
+        # Subscribe controller command handler to LVA event bus
+        self._controller_command_handler = _SendspinControllerCommandHandler(event_bus=self._event_bus, client=self)
+
         # Operational state per Sendspin spec: synchronized|error|external_source
         self._op_state: str = "synchronized"
 
@@ -200,6 +240,9 @@ class SendspinClient:
         self._server_id: Optional[str] = None
         self._server_name: Optional[str] = None
         self._active_roles: Tuple[str, ...] = ()
+
+        # Controller role: server-advertised supported commands (server/state controller.supported_commands)
+        self._controller_supported_commands: set[str] = set()
 
         # Websocket handle
         self._ws: Optional[websockets.WebSocketClientProtocol] = None
@@ -219,6 +262,21 @@ class SendspinClient:
         self._pcm_stderr_task: Optional[asyncio.Task] = None
         self._pcm_wait_task: Optional[asyncio.Task] = None
         self._pcm_queue: "asyncio.Queue[bytes]" = asyncio.Queue(maxsize=200)
+        # Decoder / transcoder state (for non-PCM codecs)
+        self._decoder_proc: Optional[asyncio.subprocess.Process] = None
+        self._decoder_writer_task: Optional[asyncio.Task] = None
+        self._decoder_reader_task: Optional[asyncio.Task] = None
+        self._decoder_stderr_task: Optional[asyncio.Task] = None
+        self._encoded_queue: "asyncio.Queue[bytes]" = asyncio.Queue(maxsize=200)
+
+        # Opus decoder (optional dependency; used when negotiated codec is 'opus')
+        self._opus_decoder: Any = None
+        self._opus_max_frame_size: int = 0
+        self._opus_available: bool = False
+
+        # FLAC decoder availability (ffmpeg required)
+        self._ffmpeg_path: str = "ffmpeg"
+        self._ffmpeg_available: bool = False
 
         # mpv stderr tail buffer (for post-mortem)
         self._mpv_stderr_tail: Deque[str] = deque(maxlen=40)
@@ -245,13 +303,12 @@ class SendspinClient:
         # IMPORTANT: stream stop is normal on pause/track-change.
         # We only trigger websocket disconnect when the PCM sink fails unexpectedly.
         self._sink_failed: bool = False
-
         # Pull duck percent from config (dict or object)
         try:
-            player_cfg = self._cfg_get_section(self._cfg, "player")
+            player_cfg = self._cfg_get_section(self._cfg, 'player')
             if player_cfg is not None:
                 self._duck_percent = int(
-                    self._cfg_get(player_cfg, "duck_volume_percent", self._duck_percent) or self._duck_percent
+                    self._cfg_get(player_cfg, 'duck_volume_percent', self._duck_percent) or self._duck_percent
                 )
         except Exception:
             pass
@@ -259,6 +316,20 @@ class SendspinClient:
 
         # Pull coordination settings from config
         self._refresh_coordination_settings(log=True)
+
+        # Cache decoder availability for codec advertisement and runtime decisions
+        try:
+            player_cfg = self._cfg_get_section(self._cfg, "player")
+            if player_cfg is not None:
+                self._ffmpeg_path = str(self._cfg_get(player_cfg, "ffmpeg_path", self._ffmpeg_path) or self._ffmpeg_path)
+        except Exception:
+            pass
+        try:
+            import opuslib  # type: ignore
+            self._opus_available = True
+        except Exception:
+            self._opus_available = False
+        self._ffmpeg_available = shutil.which(self._ffmpeg_path) is not None
 
     # ---------------------------------------------------------------------
     # Milestone 2: Event emission (stable payloads)
@@ -274,6 +345,13 @@ class SendspinClient:
         if payload == self._last_pub_connection:
             return
         self._last_pub_connection = payload
+        _LOGGER.info(
+            "Sendspin: connection_state -> %s endpoint=%s server=%s id=%s",
+            "connected" if payload["connected"] else "disconnected",
+            payload["endpoint"],
+            payload["server_name"],
+            payload["server_id"],
+        )
         try:
             self._event_bus.publish("sendspin_connection_state", payload)
         except Exception:
@@ -296,7 +374,9 @@ class SendspinClient:
             _LOGGER.debug("Sendspin: failed to publish sendspin_playback_state", exc_info=True)
 
     def _emit_metadata(self, metadata: dict) -> None:
-        payload = {"metadata": metadata}
+        # Defensive copy so dedupe comparisons are stable even if upstream mutates dicts.
+        safe_metadata = copy.deepcopy(metadata)
+        payload = {"metadata": safe_metadata}
         if payload == self._last_pub_metadata:
             return
         self._last_pub_metadata = payload
@@ -450,8 +530,7 @@ class SendspinClient:
             self._loop.create_task(self._apply_mpv_audio_state())
 
     async def disconnect(self, *, reason: str = "disconnect") -> None:
-        # Per M3: disconnect always stops stream + publishes stopped.
-        await self._stop_stream(reason=reason, update_playback=True)
+        await self._stop_stream(reason=reason)
 
         ws = self._ws
         self._ws = None
@@ -461,6 +540,83 @@ class SendspinClient:
         except Exception:
             _LOGGER.debug("Sendspin: ws close failed", exc_info=True)
 
+
+
+    async def request_pcm_fallback(
+        self,
+        *,
+        reason: str,
+        sample_rate: int = 48000,
+        channels: int = 2,
+        bit_depth: int = 16,
+    ) -> None:
+        """Request a PCM stream format from the server (best-effort fallback)."""
+        ws = self._ws
+        if ws is None:
+            _LOGGER.debug("Sendspin: cannot request PCM fallback (not connected)")
+            return
+
+        payload = {
+            "player": {
+                "codec": "pcm",
+                "sample_rate": int(sample_rate),
+                "channels": int(channels),
+                "bit_depth": int(bit_depth),
+            }
+        }
+        try:
+            await self._send_json(ws, {"type": "stream/request-format", "payload": payload})
+            _LOGGER.warning("Sendspin: requested PCM fallback (%s)", reason)
+        except Exception:
+            _LOGGER.debug("Sendspin: failed to request PCM fallback", exc_info=True)
+
+    async def send_controller_command(
+        self,
+        command: str,
+        *,
+        volume: Optional[int] = None,
+        mute: Optional[bool] = None,
+    ) -> bool:
+        """Send a Sendspin controller command (client -> server).
+
+        Returns True if the message was queued to the websocket; False otherwise.
+
+        Commands are validated against the server-advertised supported_commands
+        (best-effort). If the server hasn't advertised supported_commands yet,
+        the command is still sent.
+        """
+        ws = self._ws
+        if ws is None:
+            _LOGGER.debug("Sendspin: controller command ignored (not connected): %s", command)
+            return False
+
+        cmd = str(command or "").strip()
+        if not cmd:
+            return False
+
+        if self._controller_supported_commands and cmd not in self._controller_supported_commands:
+            _LOGGER.warning(
+                "Sendspin: controller command '%s' not in server supported_commands=%s; sending anyway",
+                cmd,
+                sorted(self._controller_supported_commands),
+            )
+
+        controller_obj: Dict[str, Any] = {"command": cmd}
+        if cmd == "volume" and volume is not None:
+            try:
+                controller_obj["volume"] = max(0, min(100, int(volume)))
+            except Exception:
+                pass
+        if cmd == "mute" and mute is not None:
+            controller_obj["mute"] = bool(mute)
+
+        try:
+            await self._send_json(ws, {"type": "client/command", "payload": {"controller": controller_obj}})
+            _LOGGER.debug("Sendspin: sent controller command %s", controller_obj)
+            return True
+        except Exception:
+            _LOGGER.debug("Sendspin: failed to send controller command", exc_info=True)
+            return False
     # ---------------------------------------------------------------------
     # Main loop
     # ---------------------------------------------------------------------
@@ -677,25 +833,6 @@ class SendspinClient:
                 return_when=asyncio.FIRST_COMPLETED,
             )
 
-            # Helpful diagnostic: what ended the session?
-            for t in done:
-                if t is stop_task:
-                    _LOGGER.info("Sendspin: session ending (stop requested)")
-                elif t is disc_task:
-                    _LOGGER.warning(
-                        "Sendspin: session ending (disconnect requested; sink_failed=%s stream_active=%s last_rx_type=%s last_rx_age_s=%s)",
-                        self._sink_failed,
-                        self._stream_active,
-                        self._last_rx_type,
-                        f"{(time.monotonic() - self._last_rx_at):.3f}" if self._last_rx_at else None,
-                    )
-                elif t is recv_task:
-                    _LOGGER.info("Sendspin: session ending (recv loop ended)")
-                elif t is time_task:
-                    _LOGGER.info("Sendspin: session ending (time sync ended)")
-                elif t is hb_task:
-                    _LOGGER.info("Sendspin: session ending (heartbeat ended)")
-
             for t in pending:
                 t.cancel()
             await asyncio.gather(*pending, return_exceptions=True)
@@ -705,7 +842,6 @@ class SendspinClient:
                 if exc and not isinstance(exc, ConnectionClosed):
                     _LOGGER.debug("Sendspin: task ended with exception: %r", exc, exc_info=True)
 
-            # If the server closed us, websockets keeps these attributes
             close_code = getattr(ws, "close_code", None)
             close_reason = getattr(ws, "close_reason", None)
             if close_code is not None:
@@ -724,10 +860,9 @@ class SendspinClient:
         self._active_roles = ()
 
         self._set_connection(connected=False, endpoint=url)
+        self._set_playback("unknown")
 
-        # Per M3: session end implies not playing.
-        self._set_playback("stopped")
-        await self._stop_stream(reason="ws_closed", update_playback=False)
+        await self._stop_stream(reason="ws_closed")
 
     async def _send_json(self, ws: websockets.WebSocketClientProtocol, obj: dict) -> None:
         await ws.send(json.dumps(obj))
@@ -867,12 +1002,63 @@ class SendspinClient:
         sample_rate = int(self._cfg_get(player_cfg, "sample_rate", 48000) or 48000) if player_cfg else 48000
         channels = int(self._cfg_get(player_cfg, "channels", 2) or 2) if player_cfg else 2
         bit_depth = int(self._cfg_get(player_cfg, "bit_depth", 16) or 16) if player_cfg else 16
-        buffer_capacity = int(self._cfg_get(player_cfg, "buffer_capacity_bytes", 1048576) or 1048576) if player_cfg else 1048576
+        buffer_capacity = (
+            int(self._cfg_get(player_cfg, "buffer_capacity_bytes", 1048576) or 1048576) if player_cfg else 1048576
+        )
+
+        preferred = str(self._cfg_get(player_cfg, "preferred_codec", "pcm") or "pcm").lower().strip() if player_cfg else "pcm"
+        raw_supported = self._cfg_get(player_cfg, "supported_codecs", ["pcm"]) if player_cfg else ["pcm"]
+
+        # Normalize codecs list (accept string or list)
+        if isinstance(raw_supported, str):
+            codecs_in = [raw_supported]
+        elif isinstance(raw_supported, (list, tuple)):
+            codecs_in = [str(x) for x in raw_supported if x is not None]
+        else:
+            codecs_in = []
+
+        allowed = {"opus", "flac", "pcm"}
+        codecs: list[str] = []
+        for c in codecs_in:
+            c2 = str(c).lower().strip()
+            if not c2 or c2 not in allowed:
+                continue
+            if c2 not in codecs:
+                codecs.append(c2)
+
+        if "pcm" not in codecs:
+            codecs.append("pcm")
+
+        if preferred not in codecs:
+            preferred = "pcm"
+
+        ordered_codecs = [preferred] + [c for c in codecs if c != preferred]
+
+        # Filter advertised codecs by local decoder availability (best-effort).
+        available: list[str] = []
+        for c in ordered_codecs:
+            if c == "pcm":
+                available.append(c)
+            elif c == "opus" and self._opus_available:
+                available.append(c)
+            elif c == "flac" and self._ffmpeg_available:
+                available.append(c)
+        if "pcm" not in available:
+            available.append("pcm")
+
+        # If preferred isn't available locally, prefer the first available codec.
+        if preferred not in available:
+            preferred = available[0]
+
+        ordered_codecs = [preferred] + [c for c in available if c != preferred]
+
+        supported_formats = [
+            {"codec": c, "channels": channels, "sample_rate": sample_rate, "bit_depth": bit_depth}
+            for c in ordered_codecs
+        ]
 
         return {
-            "supported_formats": [
-                {"codec": "pcm", "channels": channels, "sample_rate": sample_rate, "bit_depth": bit_depth}
-            ],
+            "supported_formats": supported_formats,
             "buffer_capacity": buffer_capacity,
             "supported_commands": ["volume", "mute"],
         }
@@ -914,7 +1100,7 @@ class SendspinClient:
             try:
                 data = json.loads(msg)
             except Exception:
-                _LOGGER.debug("Sendspin: received non-JSON during handshake: %r", msg)
+                _LOGGER.debug("Sendspin: received non-JSON during handshake")
                 continue
 
             mtype = data.get("type")
@@ -938,7 +1124,7 @@ class SendspinClient:
             if mtype == "server/time":
                 continue
 
-            _LOGGER.debug("Sendspin: ignoring pre-hello message type=%s payload=%s", mtype, payload)
+            _LOGGER.debug("Sendspin: ignoring pre-hello message type=%s", mtype)
 
         return False
 
@@ -967,45 +1153,6 @@ class SendspinClient:
     # Streaming (PCM -> mpv)
     # ---------------------------------------------------------------------
 
-    def _drain_pcm_queue(self) -> int:
-        """Drain queued audio immediately (used by stream/clear and stop)."""
-        drained = 0
-        try:
-            while True:
-                _ = self._pcm_queue.get_nowait()
-                drained += 1
-        except asyncio.QueueEmpty:
-            pass
-        return drained
-
-    async def _handle_stream_clear(self, payload: dict) -> None:
-        """
-        Sendspin spec: stream/clear clears buffers without ending stream (used for seek).
-        We treat our local asyncio queue as the buffer and drain it immediately.
-        """
-        roles = payload.get("roles")
-        if roles is None:
-            clear_player = True
-        else:
-            clear_player = False
-            try:
-                if isinstance(roles, list):
-                    clear_player = ("player" in roles) or ("player@v1" in roles)
-            except Exception:
-                clear_player = True
-
-        if not clear_player:
-            _LOGGER.info("Sendspin: stream/clear received (roles=%r) - nothing to clear for player", roles)
-            return
-
-        drained = self._drain_pcm_queue()
-        # Reset diagnostics so post-clear flow is obvious in logs.
-        self._pcm_frame_count = 0
-        self._pcm_first_frame_at = None
-        self._pcm_last_frame_at = None
-
-        _LOGGER.info("Sendspin: stream/clear -> drained %d queued chunk(s)", drained)
-
     async def _start_stream(self, *, codec: str, sample_rate: int, channels: int, bit_depth: int) -> None:
         _LOGGER.info(
             "Sendspin: stream/start (codec=%s rate=%s ch=%s depth=%s)",
@@ -1015,14 +1162,23 @@ class SendspinClient:
             bit_depth,
         )
 
-        # Update publishable stream state immediately
         self._set_stream(codec=str(codec), rate=int(sample_rate), ch=int(channels), depth=int(bit_depth))
 
-        if codec != "pcm":
-            _LOGGER.warning("Sendspin: unsupported codec '%s' (only pcm supported)", codec)
+        codec = str(codec or "pcm").lower().strip()
+
+        if not self._codec_available(codec):
+            # Phase 2 Milestone 4 decision: best-effort fallback to PCM.
+            _LOGGER.warning("Sendspin: codec %r not available locally; requesting PCM fallback", codec)
+            await self.request_pcm_fallback(
+                reason=f"codec_unavailable:{codec}",
+                sample_rate=sample_rate,
+                channels=channels,
+                bit_depth=bit_depth,
+            )
             return
 
-        await self._stop_stream(reason="restart_stream", update_playback=False)
+        # Stop any existing stream first.
+        await self._stop_stream(reason="restart_stream")
 
         self._sink_failed = False
         self._pcm_frame_count = 0
@@ -1037,11 +1193,89 @@ class SendspinClient:
 
         fmt = "s16le" if bit_depth == 16 else None
         if fmt is None:
-            _LOGGER.warning("Sendspin: unsupported bit depth %s (only 16 supported right now)", bit_depth)
+            _LOGGER.warning(
+                "Sendspin: unsupported bit depth %s (only 16 supported); requesting PCM 16-bit fallback",
+                bit_depth,
+            )
             self._stream_active = False
+            await self.request_pcm_fallback(
+                reason=f"unsupported_bit_depth:{bit_depth}",
+                sample_rate=sample_rate,
+                channels=channels,
+                bit_depth=16,
+            )
             return
 
         player_cfg = self._cfg_get_section(self._cfg, "player")
+
+        mpv_path = self._cfg_get(player_cfg, "mpv_path", "mpv") if player_cfg else "mpv"
+        mpv_extra_args = self._cfg_get(player_cfg, "mpv_extra_args", []) if player_cfg else []
+        if isinstance(mpv_extra_args, (str, bytes, bytearray)):
+            mpv_extra_args_list = [str(mpv_extra_args)]
+        elif isinstance(mpv_extra_args, (list, tuple)):
+            mpv_extra_args_list = [str(x) for x in mpv_extra_args if x is not None]
+        else:
+            mpv_extra_args_list = []
+
+        async def _spawn_mpv_with_prune(cmd_tokens: list[str]) -> Optional[asyncio.subprocess.Process]:
+            """Start mpv, pruning any unrecognized flags from the command.
+
+            This is best-effort: if mpv errors on startup due to an unknown option,
+            we remove the offending token and retry a few times.
+            """
+            tokens = list(cmd_tokens)
+            for _ in range(6):
+                try:
+                    proc = await asyncio.create_subprocess_exec(
+                        *tokens,
+                        stdin=asyncio.subprocess.PIPE,
+                        stdout=asyncio.subprocess.DEVNULL,
+                        stderr=asyncio.subprocess.PIPE,
+                    )
+                except FileNotFoundError:
+                    _LOGGER.error("Sendspin: mpv executable not found: %r", tokens[0])
+                    return None
+                except Exception:
+                    _LOGGER.exception("Sendspin: failed to start mpv")
+                    return None
+
+                # Give mpv a moment to fail-fast on bad options.
+                await asyncio.sleep(0.15)
+                if proc.returncode is None:
+                    return proc
+
+                # mpv exited immediately. Try to identify a bad flag and retry.
+                stderr_bytes = b""
+                try:
+                    if proc.stderr is not None:
+                        stderr_bytes = await proc.stderr.read()  # type: ignore[func-returns-value]
+                except Exception:
+                    pass
+
+                stderr_s = stderr_bytes.decode("utf-8", errors="replace")
+                m = re.search(r"(?:Error parsing option|unknown option|Unrecognized option)\s+'?\s*(--[^\s'\"\)]+)", stderr_s, re.IGNORECASE)
+                bad = m.group(1) if m else None
+
+                if bad:
+                    removed = False
+                    new_tokens: list[str] = []
+                    for t in tokens:
+                        if t == bad or t.startswith(bad + "="):
+                            removed = True
+                            continue
+                        new_tokens.append(t)
+                    if removed:
+                        _LOGGER.warning("Sendspin: mpv rejected flag %r; ignoring it and retrying", bad)
+                        tokens = new_tokens
+                        continue
+
+                # Can't identify the bad option; stop retrying.
+                _LOGGER.error("Sendspin: mpv failed to start (rc=%s). stderr=%r", proc.returncode, stderr_s[-400:])
+                return None
+
+            _LOGGER.error("Sendspin: mpv failed to start after pruning attempts")
+            return None
+
         mpv_ao = self._cfg_get(player_cfg, "mpv_ao", None) if player_cfg else None
         mpv_audio_device = self._cfg_get(player_cfg, "mpv_audio_device", None) if player_cfg else None
 
@@ -1055,7 +1289,7 @@ class SendspinClient:
             pass
 
         cmd = [
-            "mpv",
+            str(mpv_path),
             "--no-video",
             "--really-quiet",
             "--profile=low-latency",
@@ -1065,12 +1299,18 @@ class SendspinClient:
             f"--demuxer-rawaudio-rate={sample_rate}",
             f"--demuxer-rawaudio-channels={channels}",
             f"--demuxer-rawaudio-format={fmt}",
-            "-",
         ]
+
+        # Optional device/backend selectors
         if mpv_ao:
-            cmd.insert(1, f"--ao={mpv_ao}")
+            cmd.append(f"--ao={mpv_ao}")
         if mpv_audio_device:
-            cmd.insert(1, f"--audio-device={mpv_audio_device}")
+            cmd.append(f"--audio-device={mpv_audio_device}")
+
+        # User-provided pass-through args (best-effort; bad ones are pruned at runtime)
+        cmd.extend(mpv_extra_args_list)
+
+        cmd.append("-")
 
         _LOGGER.info(
             "Sendspin: starting PCM sink via mpv (rate=%s ch=%s depth=%s ao=%s dev=%s ipc=%s)",
@@ -1084,37 +1324,63 @@ class SendspinClient:
 
         self._mpv_stderr_tail.clear()
 
-        self._pcm_proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.PIPE,
-        )
+        self._pcm_proc = await _spawn_mpv_with_prune(cmd)
+        if self._pcm_proc is None:
+            self._stream_active = False
+            self._sink_failed = True
+            self._disconnect_event.set()
+            return
 
         self._pcm_queue = asyncio.Queue(maxsize=200)
         self._pcm_writer_task = self._loop.create_task(self._pcm_writer_loop())
         self._pcm_stderr_task = self._loop.create_task(self._pcm_stderr_loop())
         self._pcm_wait_task = self._loop.create_task(self._pcm_waiter_loop())
 
+
+        # Initialize decoder for negotiated codec (if needed).
+        if codec == "opus":
+            if not self._init_opus_decoder(sample_rate=sample_rate, channels=channels):
+                self._stream_active = False
+                await self._stop_stream(reason="opus_decoder_failed")
+                await self.request_pcm_fallback(
+                    reason="opus_decoder_failed",
+                    sample_rate=sample_rate,
+                    channels=channels,
+                    bit_depth=bit_depth,
+                )
+                return
+        else:
+            self._opus_decoder = None
+            self._opus_max_frame_size = 0
+
+        if codec == "flac":
+            ok = await self._start_flac_decoder(sample_rate=sample_rate, channels=channels)
+            if not ok:
+                self._stream_active = False
+                await self._stop_stream(reason="flac_decoder_failed")
+                await self.request_pcm_fallback(
+                    reason="flac_decoder_failed",
+                    sample_rate=sample_rate,
+                    channels=channels,
+                    bit_depth=bit_depth,
+                )
+                return
+        else:
+            await self._stop_decoder(reason="codec_not_flac")
+
         self._loop.create_task(self._apply_mpv_audio_state())
 
-    async def _stop_stream(self, *, reason: str, update_playback: bool = False) -> None:
+    async def _stop_stream(self, *, reason: str) -> None:
         if self._stream_active or self._pcm_proc is not None:
             _LOGGER.info("Sendspin: stopping stream (%s)", reason)
 
-        # Stop accepting new frames first.
         self._stream_active = False
-
-        # Drain queued audio to satisfy M3 teardown rules.
-        drained = self._drain_pcm_queue()
-        if drained:
-            _LOGGER.debug("Sendspin: drained %d queued chunk(s) on stop", drained)
-
-        # When stream stops, clear stream format fields.
         self._set_stream(codec=None, rate=None, ch=None, depth=None)
 
-        if update_playback:
-            self._set_playback("stopped")
+        # Stop any active decoder (ffmpeg) and clear codec-specific state.
+        self._opus_decoder = None
+        self._opus_max_frame_size = 0
+        await self._stop_decoder(reason=reason)
 
         if self._pcm_writer_task is not None:
             self._pcm_writer_task.cancel()
@@ -1170,16 +1436,11 @@ class SendspinClient:
             )
 
     async def _pcm_waiter_loop(self) -> None:
-        """
-        Watches mpv for unexpected exit.
-        This is critical for diagnosing "silent" disconnects during pause/next.
-        """
         proc = self._pcm_proc
         if proc is None:
             return
         try:
             rc = await proc.wait()
-            # If we're still "stream_active", mpv exiting is unexpected.
             if self._stream_active and not self._stop_event.is_set():
                 self._sink_failed = True
                 _LOGGER.warning(
@@ -1222,12 +1483,8 @@ class SendspinClient:
                     break
 
         except asyncio.CancelledError:
-            # Normal during stream stop/pause/track-change.
             raise
         finally:
-            # IMPORTANT:
-            # Do NOT tear down the websocket for a normal stream stop.
-            # Only request disconnect when the PCM sink failed unexpectedly.
             if unexpected and not self._stop_event.is_set():
                 _LOGGER.warning(
                     "Sendspin: requesting reconnect due to PCM sink failure (stderr_tail=%r)",
@@ -1252,6 +1509,205 @@ class SendspinClient:
         except Exception:
             _LOGGER.debug("Sendspin: stderr loop error", exc_info=True)
 
+    def _codec_available(self, codec: str) -> bool:
+        c = str(codec or "").lower().strip()
+        if c == "pcm":
+            return True
+        if c == "opus":
+            return bool(self._opus_available)
+        if c == "flac":
+            return bool(self._ffmpeg_available)
+        return False
+
+    def _init_opus_decoder(self, *, sample_rate: int, channels: int) -> bool:
+        if not self._opus_available:
+            return False
+        try:
+            import opuslib  # type: ignore
+            self._opus_decoder = opuslib.Decoder(int(sample_rate), int(channels))
+            # Opus packets can represent up to 120ms of audio.
+            self._opus_max_frame_size = max(960, int(int(sample_rate) * 0.12))
+            return True
+        except Exception:
+            _LOGGER.warning("Sendspin: failed to initialize opus decoder; falling back to PCM", exc_info=True)
+            self._opus_decoder = None
+            self._opus_max_frame_size = 0
+            return False
+
+    def _decode_opus_packet(self, packet: bytes) -> Optional[bytes]:
+        if not packet:
+            return b""
+        dec = self._opus_decoder
+        if dec is None or self._opus_max_frame_size <= 0:
+            return None
+        try:
+            return dec.decode(packet, self._opus_max_frame_size, decode_fec=False)  # type: ignore[attr-defined]
+        except Exception:
+            return None
+
+    async def _start_flac_decoder(self, *, sample_rate: int, channels: int) -> bool:
+        # Start ffmpeg to decode FLAC bitstream from stdin -> raw PCM on stdout
+        if not self._ffmpeg_available:
+            _LOGGER.warning("Sendspin: ffmpeg not available; cannot decode FLAC")
+            return False
+
+        await self._stop_decoder(reason="restart_decoder")
+
+        player_cfg = self._cfg_get_section(self._cfg, "player")
+        ffmpeg_path = str(self._cfg_get(player_cfg, "ffmpeg_path", self._ffmpeg_path) or self._ffmpeg_path) if player_cfg else self._ffmpeg_path
+        extra = self._cfg_get(player_cfg, "ffmpeg_extra_args", []) if player_cfg else []
+        if isinstance(extra, (str, bytes, bytearray)):
+            extra_args = [str(extra)]
+        elif isinstance(extra, (list, tuple)):
+            extra_args = [str(x) for x in extra if x is not None]
+        else:
+            extra_args = []
+
+        cmd = [
+            ffmpeg_path,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "flac",
+            "-i",
+            "pipe:0",
+            "-f",
+            "s16le",
+            "-acodec",
+            "pcm_s16le",
+            "-ac",
+            str(int(channels)),
+            "-ar",
+            str(int(sample_rate)),
+            *extra_args,
+            "pipe:1",
+        ]
+
+        try:
+            self._decoder_proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except FileNotFoundError:
+            _LOGGER.error("Sendspin: ffmpeg executable not found: %r", ffmpeg_path)
+            self._decoder_proc = None
+            return False
+        except Exception:
+            _LOGGER.exception("Sendspin: failed to start ffmpeg decoder")
+            self._decoder_proc = None
+            return False
+
+        # Reset queue and start loops
+        self._encoded_queue = asyncio.Queue(maxsize=200)
+        self._decoder_writer_task = self._loop.create_task(self._decoder_writer_loop())
+        self._decoder_reader_task = self._loop.create_task(self._decoder_reader_loop())
+        self._decoder_stderr_task = self._loop.create_task(self._decoder_stderr_loop())
+        _LOGGER.info("Sendspin: FLAC decoder started via ffmpeg (rate=%s ch=%s)", sample_rate, channels)
+        return True
+
+    async def _stop_decoder(self, *, reason: str) -> None:
+        if self._decoder_writer_task is not None:
+            self._decoder_writer_task.cancel()
+            await asyncio.gather(self._decoder_writer_task, return_exceptions=True)
+            self._decoder_writer_task = None
+        if self._decoder_reader_task is not None:
+            self._decoder_reader_task.cancel()
+            await asyncio.gather(self._decoder_reader_task, return_exceptions=True)
+            self._decoder_reader_task = None
+        if self._decoder_stderr_task is not None:
+            self._decoder_stderr_task.cancel()
+            await asyncio.gather(self._decoder_stderr_task, return_exceptions=True)
+            self._decoder_stderr_task = None
+
+        proc = self._decoder_proc
+        self._decoder_proc = None
+        if proc is not None:
+            try:
+                if proc.stdin:
+                    try:
+                        proc.stdin.close()
+                    except Exception:
+                        pass
+                proc.terminate()
+                await asyncio.wait_for(proc.wait(), timeout=2.0)
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+            except Exception:
+                _LOGGER.debug("Sendspin: error stopping decoder (%s)", reason, exc_info=True)
+
+    async def _decoder_writer_loop(self) -> None:
+        proc = self._decoder_proc
+        if proc is None or proc.stdin is None:
+            return
+
+        unexpected = False
+
+        try:
+            while self._stream_active and not self._stop_event.is_set():
+                chunk = await self._encoded_queue.get()
+                if not chunk:
+                    continue
+                try:
+                    proc.stdin.write(chunk)
+                    await proc.stdin.drain()
+                except (BrokenPipeError, ConnectionResetError):
+                    unexpected = True
+                    self._sink_failed = True
+                    _LOGGER.warning("Sendspin: decoder stdin pipe closed unexpectedly (broken pipe)")
+                    break
+                except Exception:
+                    unexpected = True
+                    self._sink_failed = True
+                    _LOGGER.debug("Sendspin: decoder stdin write error", exc_info=True)
+                    break
+
+        except asyncio.CancelledError:
+            raise
+        finally:
+            if unexpected and not self._stop_event.is_set():
+                _LOGGER.warning("Sendspin: requesting reconnect due to decoder failure")
+                self._disconnect_event.set()
+
+    async def _decoder_reader_loop(self) -> None:
+        proc = self._decoder_proc
+        if proc is None or proc.stdout is None:
+            return
+        try:
+            while self._stream_active and not self._stop_event.is_set():
+                chunk = await proc.stdout.read(4096)
+                if not chunk:
+                    return
+                try:
+                    self._pcm_queue.put_nowait(chunk)
+                except asyncio.QueueFull:
+                    _LOGGER.debug("Sendspin: PCM queue full; dropping decoded audio (%d bytes)", len(chunk))
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            _LOGGER.debug("Sendspin: decoder stdout read error", exc_info=True)
+        finally:
+            _LOGGER.debug("Sendspin: decoder reader loop ending")
+
+    async def _decoder_stderr_loop(self) -> None:
+        proc = self._decoder_proc
+        if proc is None or proc.stderr is None:
+            return
+        try:
+            while not self._stop_event.is_set():
+                line = await proc.stderr.readline()
+                if not line:
+                    return
+                s = line.decode("utf-8", errors="replace").rstrip()
+                _LOGGER.debug("Sendspin ffmpeg: %s", s)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            _LOGGER.debug("Sendspin: decoder stderr loop error", exc_info=True)
+
     def _extract_pcm_payload(self, frame: bytes) -> bytes:
         if len(frame) <= _BINARY_HEADER_LEN:
             return b""
@@ -1270,13 +1726,49 @@ class SendspinClient:
                     self._last_bin_at = time.monotonic()
 
                     if not self._stream_active:
-                        # Server might still send a little audio during transitions; log once in a while.
                         self._pcm_frame_count += 1
                         if self._pcm_frame_count == 1 or (self._pcm_frame_count % 500) == 0:
                             _LOGGER.debug("Sendspin: received binary frame while stream inactive (%d bytes)", len(msg))
                         continue
 
-                    pcm = self._extract_pcm_payload(bytes(msg))
+                    payload_bytes = self._extract_pcm_payload(bytes(msg))
+                    if not payload_bytes:
+                        continue
+
+                    # Decode / route based on negotiated codec
+                    if self._stream_codec == "pcm":
+                        pcm = payload_bytes
+                    elif self._stream_codec == "opus":
+                        pcm = self._decode_opus_packet(payload_bytes)
+                        if pcm is None:
+                            _LOGGER.warning("Sendspin: opus decode failed; requesting PCM fallback")
+                            await self.request_pcm_fallback(
+                                reason="opus_decode_failed",
+                                sample_rate=self._stream_rate,
+                                channels=self._stream_channels,
+                                bit_depth=self._stream_bit_depth,
+                            )
+                            await self._stop_stream(reason="opus_decode_failed")
+                            continue
+                    elif self._stream_codec == "flac":
+                        if self._decoder_proc is None:
+                            _LOGGER.warning("Sendspin: FLAC decoder not running; requesting PCM fallback")
+                            await self.request_pcm_fallback(
+                                reason="flac_decoder_missing",
+                                sample_rate=self._stream_rate,
+                                channels=self._stream_channels,
+                                bit_depth=self._stream_bit_depth,
+                            )
+                            await self._stop_stream(reason="flac_decoder_missing")
+                            continue
+                        try:
+                            self._encoded_queue.put_nowait(payload_bytes)
+                        except asyncio.QueueFull:
+                            _LOGGER.debug("Sendspin: encoded queue full; dropping FLAC frame (%d bytes)", len(payload_bytes))
+                        continue
+                    else:
+                        continue
+
                     if not pcm:
                         continue
 
@@ -1287,7 +1779,6 @@ class SendspinClient:
                         self._pcm_first_frame_at = now
                         _LOGGER.info("Sendspin: first PCM frame received (%d bytes)", len(pcm))
 
-                    # Low-noise periodic debug
                     if (self._pcm_frame_count % 500) == 0:
                         _LOGGER.debug(
                             "Sendspin: PCM frames received=%d (last_chunk=%d bytes)",
@@ -1304,13 +1795,12 @@ class SendspinClient:
                 try:
                     data = json.loads(msg)
                 except Exception:
-                    _LOGGER.debug("Sendspin: received non-JSON message: %r", msg)
+                    _LOGGER.debug("Sendspin: received non-JSON message")
                     continue
 
                 mtype = data.get("type")
                 payload = data.get("payload") or {}
 
-                # Track last received message type/timestamp for session post-mortem
                 self._last_rx_type = str(mtype) if mtype else None
                 self._last_rx_at = time.monotonic()
 
@@ -1318,8 +1808,8 @@ class SendspinClient:
                     continue
 
                 if mtype == "server/state":
-                    _LOGGER.debug("Sendspin: server/state %s", payload)
-                    player = payload.get("player") or payload.get("controller") or {}
+                    # player: per-device state updates (volume/mute)
+                    player = payload.get("player") or {}
                     if isinstance(player, dict):
                         if "volume" in player:
                             try:
@@ -1332,14 +1822,35 @@ class SendspinClient:
                             except Exception:
                                 pass
 
-                    # Metadata sometimes arrives via server/state on MA
+                    # controller: group-level state (supported_commands + volume/mute)
+                    controller = payload.get("controller") or {}
+                    if isinstance(controller, dict):
+                        sc = controller.get("supported_commands")
+                        if isinstance(sc, list):
+                            try:
+                                self._controller_supported_commands = {str(x) for x in sc}
+                            except Exception:
+                                self._controller_supported_commands = set()
+
+                        if "volume" in controller:
+                            try:
+                                # Mirror group volume to local player volume.
+                                self._set_volume(int(controller.get("volume")), publish=True)
+                            except Exception:
+                                pass
+                        if "muted" in controller:
+                            try:
+                                self._set_muted(bool(controller.get("muted")))
+                            except Exception:
+                                pass
+
+                    # metadata can be delivered via server/state per spec
                     meta = payload.get("metadata")
                     if isinstance(meta, dict):
-                        self._state.metadata = meta
+                        self._state.metadata = copy.deepcopy(meta)
                         self._emit_metadata(meta)
 
                 elif mtype == "server/command":
-                    _LOGGER.debug("Sendspin: server/command %s", payload)
                     player = payload.get("player") or {}
                     if isinstance(player, dict):
                         cmd = player.get("command")
@@ -1351,7 +1862,6 @@ class SendspinClient:
                                 pass
 
                         elif cmd == "mute":
-                            # MA may send either {"muted": true} or {"mute": true}
                             if "muted" in player:
                                 try:
                                     self._set_muted(bool(player.get("muted")))
@@ -1363,13 +1873,11 @@ class SendspinClient:
                                 except Exception:
                                     pass
                             else:
-                                _LOGGER.debug("Sendspin: mute command missing 'muted'/'mute' key: %s", player)
+                                _LOGGER.debug("Sendspin: mute command missing 'muted'/'mute' key (keys=%s)", sorted(player.keys()))
 
                         await self._send_player_state(ws)
 
                 elif mtype == "group/update":
-                    # Example: {'playback_state': 'stopped', 'group_id': '...'}
-                    _LOGGER.debug("Sendspin: group/update %s", payload)
                     if isinstance(payload, dict) and "playback_state" in payload:
                         try:
                             self._set_playback(str(payload.get("playback_state") or "unknown"))
@@ -1377,48 +1885,43 @@ class SendspinClient:
                             pass
 
                 elif mtype == "stream/start":
-                    _LOGGER.debug("Sendspin: recv type=stream/start payload=%s", payload)
                     p = payload.get("player") or {}
                     codec = str(p.get("codec", "pcm"))
                     rate = int(p.get("sample_rate", 48000) or 48000)
                     ch = int(p.get("channels", 2) or 2)
                     depth = int(p.get("bit_depth", 16) or 16)
 
-                    # Stream start generally implies "playing"
                     self._set_playback("playing")
-
                     await self._start_stream(codec=codec, sample_rate=rate, channels=ch, bit_depth=depth)
-
-                elif mtype == "stream/clear":
-                    # Spec: clear buffers without ending stream (seek).
-                    _LOGGER.info("Sendspin: recv stream/clear")
-                    if isinstance(payload, dict):
-                        await self._handle_stream_clear(payload)
-                    else:
-                        await self._handle_stream_clear({})
 
                 elif mtype == "stream/stop":
                     _LOGGER.info("Sendspin: recv stream/stop")
-                    await self._stop_stream(reason="stream_stop", update_playback=True)
+                    await self._stop_stream(reason="stream_stop")
+                    if self._state.playback.playback_state == "playing":
+                        self._set_playback("paused")
 
                 elif mtype == "stream/end":
                     _LOGGER.info("Sendspin: recv stream/end")
-                    await self._stop_stream(reason="stream_end", update_playback=True)
+                    await self._stop_stream(reason="stream_end")
+                    if self._state.playback.playback_state == "playing":
+                        self._set_playback("paused")
 
-                # Some servers use metadata events; preserve structure without normalizing.
                 elif mtype in ("metadata/update", "metadata", "server/metadata", "media/metadata"):
                     if isinstance(payload, dict):
-                        self._state.metadata = payload
+                        self._state.metadata = copy.deepcopy(payload)
                         self._emit_metadata(payload)
                         _LOGGER.info("Sendspin: metadata updated (keys=%s)", sorted(payload.keys()))
                     else:
-                        _LOGGER.debug("Sendspin: metadata message had non-dict payload: %r", payload)
+                        _LOGGER.debug("Sendspin: metadata message had non-dict payload")
 
                 else:
-                    _LOGGER.debug("Sendspin: recv type=%s payload=%s", mtype, payload)
+                    _LOGGER.debug(
+                        "Sendspin: recv type=%s (payload_keys=%s)",
+                        mtype,
+                        sorted(payload.keys()) if isinstance(payload, dict) else None,
+                    )
 
         except ConnectionClosed as e:
-            # This should always be visible when the server closes us.
             code = getattr(e, "code", None)
             reason = getattr(e, "reason", None)
             _LOGGER.info(
@@ -1434,7 +1937,7 @@ class SendspinClient:
         finally:
             _LOGGER.debug("Sendspin: recv loop ending")
             self._disconnect_event.set()
-            await self._stop_stream(reason="recv_loop_end", update_playback=True)
+            await self._stop_stream(reason="recv_loop_end")
 
     async def _time_sync_loop(self, ws: websockets.WebSocketClientProtocol) -> None:
         conn = self._cfg_get_section(self._cfg, "connection") or {}
