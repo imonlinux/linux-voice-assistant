@@ -63,6 +63,7 @@ tray = [
 sendspin = [
     "websockets>=12,<15",
     "aiosendspin>=3,<4",
+    "opuslib",
 ]
 
 [project.scripts]
