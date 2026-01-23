@@ -269,6 +269,26 @@ class SendspinClient:
         self._decoder_stderr_task: Optional[asyncio.Task] = None
         self._encoded_queue: "asyncio.Queue[bytes]" = asyncio.Queue(maxsize=200)
 
+        # Prebuffer for codecs that require an external decoder (e.g., FLAC via ffmpeg).
+        # Binary frames can arrive before the decoder process is fully started; we buffer briefly
+        # to avoid dropping initial audio or tripping fallback logic.
+        self._flac_prebuffer: Deque[bytes] = deque()
+        self._flac_prebuffer_bytes: int = 0
+        self._flac_prebuffer_max_bytes: int = 512 * 1024  # 512KB cap (best-effort)
+        # Opus decoder backend selection:
+        # - Prefer opuslib when available (raw Opus packets)
+        # - Fall back to ffmpeg when opuslib fails or when only ffmpeg is available
+        self._opus_backend: str = "none"  # none|opuslib|ffmpeg
+
+        # Prebuffer for Opus when using ffmpeg decoder (same race as FLAC: frames may arrive before decoder is ready)
+        self._opus_prebuffer: Deque[bytes] = deque()
+        self._opus_prebuffer_bytes: int = 0
+        self._opus_prebuffer_max_bytes: int = 256 * 1024  # 256KB cap (best-effort)
+
+
+        # Count binary frames received while stream inactive (diagnostics only)
+        self._inactive_bin_count: int = 0
+
         # Opus decoder (optional dependency; used when negotiated codec is 'opus')
         self._opus_decoder: Any = None
         self._opus_max_frame_size: int = 0
@@ -285,6 +305,9 @@ class SendspinClient:
         self._mpv_ipc_path: Optional[str] = None
         self._mpv_ipc_ready: bool = False
         self._mpv_ipc_lock = asyncio.Lock()
+
+        # Serialize heavy stream stop/start so recv loop never blocks.
+        self._stream_lock = asyncio.Lock()
 
         # Milestone 1: track last published audio state to dedupe
         self._last_audio_state: Optional[dict] = None
@@ -530,7 +553,8 @@ class SendspinClient:
             self._loop.create_task(self._apply_mpv_audio_state())
 
     async def disconnect(self, *, reason: str = "disconnect") -> None:
-        await self._stop_stream(reason=reason)
+        async with self._stream_lock:
+            await self._stop_stream(reason=reason)
 
         ws = self._ws
         self._ws = None
@@ -550,25 +574,17 @@ class SendspinClient:
         channels: int = 2,
         bit_depth: int = 16,
     ) -> None:
-        """Request a PCM stream format from the server (best-effort fallback)."""
-        ws = self._ws
-        if ws is None:
-            _LOGGER.debug("Sendspin: cannot request PCM fallback (not connected)")
-            return
+        """Request a PCM stream format from the server (best-effort fallback).
 
-        payload = {
-            "player": {
-                "codec": "pcm",
-                "sample_rate": int(sample_rate),
-                "channels": int(channels),
-                "bit_depth": int(bit_depth),
-            }
-        }
-        try:
-            await self._send_json(ws, {"type": "stream/request-format", "payload": payload})
-            _LOGGER.warning("Sendspin: requested PCM fallback (%s)", reason)
-        except Exception:
-            _LOGGER.debug("Sendspin: failed to request PCM fallback", exc_info=True)
+        NOTE: Music Assistant's Sendspin server currently raises NotImplementedError for
+        stream/request-format (player format changes). To avoid breaking playback, this
+        method is a no-op for now and only logs a warning.
+        """
+        _LOGGER.warning(
+            "Sendspin: PCM fallback requested but server format-change is not supported yet (reason=%s).",
+            reason,
+        )
+        return
 
     async def send_controller_command(
         self,
@@ -862,7 +878,8 @@ class SendspinClient:
         self._set_connection(connected=False, endpoint=url)
         self._set_playback("unknown")
 
-        await self._stop_stream(reason="ws_closed")
+        async with self._stream_lock:
+            await self._stop_stream(reason="ws_closed")
 
     async def _send_json(self, ws: websockets.WebSocketClientProtocol, obj: dict) -> None:
         await ws.send(json.dumps(obj))
@@ -1039,7 +1056,7 @@ class SendspinClient:
         for c in ordered_codecs:
             if c == "pcm":
                 available.append(c)
-            elif c == "opus" and self._opus_available:
+            elif c == "opus" and (self._opus_available or self._ffmpeg_available):
                 available.append(c)
             elif c == "flac" and self._ffmpeg_available:
                 available.append(c)
@@ -1150,6 +1167,25 @@ class SendspinClient:
         _LOGGER.debug("Sendspin: client/state heartbeat sent")
 
     # ---------------------------------------------------------------------
+    # Stream transition helpers (avoid blocking recv loop)
+    # ---------------------------------------------------------------------
+
+    async def _handle_stream_start(self, *, codec: str, rate: int, ch: int, depth: int) -> None:
+        """Start stream under lock so it can't interleave with heavy teardown."""
+        async with self._stream_lock:
+            await self._start_stream(codec=codec, sample_rate=rate, channels=ch, bit_depth=depth)
+
+    async def _handle_stream_end(self, ws: websockets.WebSocketClientProtocol, *, reason: str) -> None:
+        """Stop stream under lock without blocking the websocket receive loop."""
+        async with self._stream_lock:
+            await self._stop_stream(reason=reason)
+            # Nudge control-plane post-stop (helps MA track transitions).
+            try:
+                await self._send_player_state(ws)
+            except Exception:
+                _LOGGER.debug("Sendspin: failed to send player/state after %s", reason, exc_info=True)
+
+    # ---------------------------------------------------------------------
     # Streaming (PCM -> mpv)
     # ---------------------------------------------------------------------
 
@@ -1167,14 +1203,11 @@ class SendspinClient:
         codec = str(codec or "pcm").lower().strip()
 
         if not self._codec_available(codec):
-            # Phase 2 Milestone 4 decision: best-effort fallback to PCM.
-            _LOGGER.warning("Sendspin: codec %r not available locally; requesting PCM fallback", codec)
-            await self.request_pcm_fallback(
-                reason=f"codec_unavailable:{codec}",
-                sample_rate=sample_rate,
-                channels=channels,
-                bit_depth=bit_depth,
-            )
+            # We should never negotiate a codec we can't decode if _build_player_support()
+            # filtered correctly, but be defensive. MA's server does not support runtime
+            # format changes, so we cannot request a different format here.
+            _LOGGER.warning("Sendspin: codec %r not available locally; stopping stream start", codec)
+            await self._stop_stream(reason=f"codec_unavailable:{codec}")
             return
 
         # Stop any existing stream first.
@@ -1185,6 +1218,11 @@ class SendspinClient:
         self._pcm_first_frame_at = None
         self._pcm_last_frame_at = None
 
+        # Reset diagnostics counters/buffers for this session
+        self._inactive_bin_count = 0
+        self._flac_prebuffer.clear()
+        self._flac_prebuffer_bytes = 0
+
         self._stream_active = True
         self._stream_codec = codec
         self._stream_rate = sample_rate
@@ -1194,16 +1232,11 @@ class SendspinClient:
         fmt = "s16le" if bit_depth == 16 else None
         if fmt is None:
             _LOGGER.warning(
-                "Sendspin: unsupported bit depth %s (only 16 supported); requesting PCM 16-bit fallback",
+                "Sendspin: unsupported bit depth %s (only 16 supported); cannot continue",
                 bit_depth,
             )
             self._stream_active = False
-            await self.request_pcm_fallback(
-                reason=f"unsupported_bit_depth:{bit_depth}",
-                sample_rate=sample_rate,
-                channels=channels,
-                bit_depth=16,
-            )
+            await self._stop_stream(reason=f"unsupported_bit_depth:{bit_depth}")
             return
 
         player_cfg = self._cfg_get_section(self._cfg, "player")
@@ -1339,34 +1372,49 @@ class SendspinClient:
 
         # Initialize decoder for negotiated codec (if needed).
         if codec == "opus":
-            if not self._init_opus_decoder(sample_rate=sample_rate, channels=channels):
-                self._stream_active = False
-                await self._stop_stream(reason="opus_decoder_failed")
-                await self.request_pcm_fallback(
-                    reason="opus_decoder_failed",
-                    sample_rate=sample_rate,
-                    channels=channels,
-                    bit_depth=bit_depth,
-                )
-                return
+            # Reset Opus prebuffer on stream start
+            self._opus_prebuffer.clear()
+            self._opus_prebuffer_bytes = 0
+
+            self._opus_backend = "none"
+            if self._opus_available:
+                if not self._init_opus_decoder(sample_rate=sample_rate, channels=channels):
+                    # If opuslib is present but fails to init, fall back to ffmpeg if available.
+                    self._opus_backend = "none"
+                else:
+                    self._opus_backend = "opuslib"
+
+            # If opuslib isn't available (or failed), try ffmpeg decoder.
+            if self._opus_backend != "opuslib":
+                if self._ffmpeg_available:
+                    ok = await self._start_opus_decoder(sample_rate=sample_rate, channels=channels, first_packet=None)
+                    if not ok:
+                        self._stream_active = False
+                        await self._stop_stream(reason="opus_decoder_failed")
+                        return
+                    self._opus_backend = "ffmpeg"
+                else:
+                    self._stream_active = False
+                    await self._stop_stream(reason="opus_decoder_failed")
+                    return
         else:
+            self._opus_backend = "none"
             self._opus_decoder = None
             self._opus_max_frame_size = 0
+            self._opus_prebuffer.clear()
+            self._opus_prebuffer_bytes = 0
 
         if codec == "flac":
             ok = await self._start_flac_decoder(sample_rate=sample_rate, channels=channels)
             if not ok:
                 self._stream_active = False
                 await self._stop_stream(reason="flac_decoder_failed")
-                await self.request_pcm_fallback(
-                    reason="flac_decoder_failed",
-                    sample_rate=sample_rate,
-                    channels=channels,
-                    bit_depth=bit_depth,
-                )
                 return
+        elif codec == "opus" and self._opus_backend == "ffmpeg":
+            # Keep ffmpeg decoder running for Opus streams.
+            pass
         else:
-            await self._stop_decoder(reason="codec_not_flac")
+            await self._stop_decoder(reason="codec_not_pcm_or_ffmpeg")
 
         self._loop.create_task(self._apply_mpv_audio_state())
 
@@ -1378,9 +1426,16 @@ class SendspinClient:
         self._set_stream(codec=None, rate=None, ch=None, depth=None)
 
         # Stop any active decoder (ffmpeg) and clear codec-specific state.
+        self._opus_backend = "none"
         self._opus_decoder = None
         self._opus_max_frame_size = 0
+        self._opus_prebuffer.clear()
+        self._opus_prebuffer_bytes = 0
         await self._stop_decoder(reason=reason)
+        # Clear any codec prebuffer (e.g., FLAC startup frames)
+        self._flac_prebuffer.clear()
+        self._flac_prebuffer_bytes = 0
+
 
         if self._pcm_writer_task is not None:
             self._pcm_writer_task.cancel()
@@ -1422,7 +1477,7 @@ class SendspinClient:
         self._mpv_ipc_path = None
         self._mpv_ipc_ready = False
 
-        if self._pcm_frame_count:
+        if self._pcm_first_frame_at is not None:
             first = self._pcm_first_frame_at
             last = self._pcm_last_frame_at
             dur = (last - first) if (first is not None and last is not None) else None
@@ -1514,7 +1569,7 @@ class SendspinClient:
         if c == "pcm":
             return True
         if c == "opus":
-            return bool(self._opus_available)
+            return bool(self._opus_available or self._ffmpeg_available)
         if c == "flac":
             return bool(self._ffmpeg_available)
         return False
@@ -1544,6 +1599,145 @@ class SendspinClient:
             return dec.decode(packet, self._opus_max_frame_size, decode_fec=False)  # type: ignore[attr-defined]
         except Exception:
             return None
+
+    def _guess_opus_input_format(self, packet: Optional[bytes]) -> Optional[str]:
+        """Best-effort guess for ffmpeg input demuxer for Opus streams."""
+        if not packet:
+            return None
+        # If this is an Ogg Opus page stream, it will start with the Ogg page capture pattern.
+        if packet[:4] == b"OggS":
+            return "ogg"
+        # Some implementations may send OpusHead/OpusTags blobs directly at the beginning.
+        if packet[:8] in (b"OpusHead", b"OpusTags"):
+            return "ogg"
+        return None
+
+    async def _start_opus_decoder(
+        self,
+        *,
+        sample_rate: int,
+        channels: int,
+        first_packet: Optional[bytes],
+    ) -> bool:
+        """Start ffmpeg to decode an Opus stream (often Ogg Opus) from stdin -> raw PCM on stdout."""
+        if not self._ffmpeg_available:
+            _LOGGER.warning("Sendspin: ffmpeg not available; cannot decode Opus")
+            return False
+
+        await self._stop_decoder(reason="restart_decoder")
+
+        player_cfg = self._cfg_get_section(self._cfg, "player")
+        ffmpeg_path = (
+            str(self._cfg_get(player_cfg, "ffmpeg_path", self._ffmpeg_path) or self._ffmpeg_path)
+            if player_cfg
+            else self._ffmpeg_path
+        )
+        extra = self._cfg_get(player_cfg, "ffmpeg_extra_args", []) if player_cfg else []
+        if isinstance(extra, (str, bytes, bytearray)):
+            extra_args = [str(extra)]
+        elif isinstance(extra, (list, tuple)):
+            extra_args = [str(x) for x in extra if x is not None]
+        else:
+            extra_args = []
+
+        # Optional override for ffmpeg input format for Opus (advanced users).
+        # If not set, we let ffmpeg probe; we also apply a small heuristic when a first packet is available.
+        opus_input_format = None
+        try:
+            if player_cfg is not None:
+                opus_input_format = self._cfg_get(player_cfg, "opus_ffmpeg_input_format", None)
+        except Exception:
+            opus_input_format = None
+
+        if isinstance(opus_input_format, str):
+            opus_input_format = opus_input_format.strip().lower() or None
+        else:
+            opus_input_format = None
+
+        if not opus_input_format:
+            opus_input_format = self._guess_opus_input_format(first_packet)
+
+        cmd = [
+            ffmpeg_path,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            # Help ffmpeg probe quickly on a pipe.
+            "-probesize",
+            "64k",
+            "-analyzeduration",
+            "0",
+        ]
+        if opus_input_format:
+            cmd.extend(["-f", opus_input_format])
+
+        cmd.extend(
+            [
+                "-i",
+                "pipe:0",
+                "-f",
+                "s16le",
+                "-acodec",
+                "pcm_s16le",
+                "-ac",
+                str(int(channels)),
+                "-ar",
+                str(int(sample_rate)),
+                *extra_args,
+                "pipe:1",
+            ]
+        )
+
+        try:
+            self._decoder_proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except FileNotFoundError:
+            _LOGGER.error("Sendspin: ffmpeg executable not found: %r", ffmpeg_path)
+            self._decoder_proc = None
+            return False
+        except Exception:
+            _LOGGER.exception("Sendspin: failed to start ffmpeg opus decoder")
+            self._decoder_proc = None
+            return False
+
+        # Reset queue and start loops
+        self._encoded_queue = asyncio.Queue(maxsize=200)
+        self._decoder_writer_task = self._loop.create_task(self._decoder_writer_loop())
+        self._decoder_reader_task = self._loop.create_task(self._decoder_reader_loop())
+        self._decoder_stderr_task = self._loop.create_task(self._decoder_stderr_loop())
+
+        # Flush any prebuffered Opus frames collected before the decoder was ready.
+        if self._opus_prebuffer:
+            flushed = 0
+            dropped = 0
+            while self._opus_prebuffer:
+                frame = self._opus_prebuffer.popleft()
+                self._opus_prebuffer_bytes = max(0, self._opus_prebuffer_bytes - len(frame))
+                try:
+                    self._encoded_queue.put_nowait(frame)
+                    flushed += 1
+                except asyncio.QueueFull:
+                    dropped += 1
+                    break
+            if flushed or dropped:
+                _LOGGER.debug(
+                    "Sendspin: flushed OPUS prebuffer (flushed=%s dropped=%s)",
+                    flushed,
+                    dropped,
+                )
+
+        _LOGGER.info(
+            "Sendspin: OPUS decoder started via ffmpeg (rate=%s ch=%s fmt=%s)",
+            sample_rate,
+            channels,
+            opus_input_format or "auto",
+        )
+        return True
+
 
     async def _start_flac_decoder(self, *, sample_rate: int, channels: int) -> bool:
         # Start ffmpeg to decode FLAC bitstream from stdin -> raw PCM on stdout
@@ -1605,6 +1799,26 @@ class SendspinClient:
         self._decoder_writer_task = self._loop.create_task(self._decoder_writer_loop())
         self._decoder_reader_task = self._loop.create_task(self._decoder_reader_loop())
         self._decoder_stderr_task = self._loop.create_task(self._decoder_stderr_loop())
+        # Flush any prebuffered FLAC frames collected before the decoder was ready.
+        if self._flac_prebuffer:
+            flushed = 0
+            dropped = 0
+            while self._flac_prebuffer:
+                frame = self._flac_prebuffer.popleft()
+                self._flac_prebuffer_bytes = max(0, self._flac_prebuffer_bytes - len(frame))
+                try:
+                    self._encoded_queue.put_nowait(frame)
+                    flushed += 1
+                except asyncio.QueueFull:
+                    dropped += 1
+                    break
+            if flushed or dropped:
+                _LOGGER.debug(
+                    "Sendspin: flushed FLAC prebuffer (flushed=%s dropped=%s)",
+                    flushed,
+                    dropped,
+                )
+
         _LOGGER.info("Sendspin: FLAC decoder started via ffmpeg (rate=%s ch=%s)", sample_rate, channels)
         return True
 
@@ -1726,9 +1940,14 @@ class SendspinClient:
                     self._last_bin_at = time.monotonic()
 
                     if not self._stream_active:
-                        self._pcm_frame_count += 1
-                        if self._pcm_frame_count == 1 or (self._pcm_frame_count % 500) == 0:
-                            _LOGGER.debug("Sendspin: received binary frame while stream inactive (%d bytes)", len(msg))
+                        # During stop/start transitions, MA can still be sending binary frames.
+                        # Track these separately from PCM stats.
+                        self._inactive_bin_count += 1
+                        if self._inactive_bin_count == 1 or (self._inactive_bin_count % 500) == 0:
+                            _LOGGER.debug(
+                                "Sendspin: received binary frame while stream inactive (%d bytes)",
+                                len(msg),
+                            )
                         continue
 
                     payload_bytes = self._extract_pcm_payload(bytes(msg))
@@ -1739,27 +1958,52 @@ class SendspinClient:
                     if self._stream_codec == "pcm":
                         pcm = payload_bytes
                     elif self._stream_codec == "opus":
-                        pcm = self._decode_opus_packet(payload_bytes)
-                        if pcm is None:
-                            _LOGGER.warning("Sendspin: opus decode failed; requesting PCM fallback")
-                            await self.request_pcm_fallback(
-                                reason="opus_decode_failed",
-                                sample_rate=self._stream_rate,
-                                channels=self._stream_channels,
-                                bit_depth=self._stream_bit_depth,
-                            )
-                            await self._stop_stream(reason="opus_decode_failed")
+                        # Opus can be decoded via opuslib (raw Opus packets) or via ffmpeg (Ogg Opus / other framing).
+                        if self._opus_backend == "opuslib":
+                            pcm = self._decode_opus_packet(payload_bytes)
+                            if pcm is None:
+                                # If opuslib can't decode the stream, switch to ffmpeg if available.
+                                if self._ffmpeg_available:
+                                    _LOGGER.warning("Sendspin: opus decode failed via opuslib; switching to ffmpeg decoder")
+                                    # Prebuffer the current packet and start decoder (best-effort).
+                                    if self._opus_prebuffer_bytes < self._opus_prebuffer_max_bytes:
+                                        self._opus_prebuffer.append(payload_bytes)
+                                        self._opus_prebuffer_bytes += len(payload_bytes)
+                                    await self._start_opus_decoder(
+                                        sample_rate=self._stream_rate,
+                                        channels=self._stream_channels,
+                                        first_packet=payload_bytes,
+                                    )
+                                    self._opus_backend = "ffmpeg"
+                                    continue
+                                _LOGGER.warning("Sendspin: opus decode failed; stopping stream")
+                                await self._stop_stream(reason="opus_decode_failed")
+                                continue
+                        else:
+                            # ffmpeg-backed opus decode path (same as FLAC: feed encoded bytes into decoder stdin).
+                            pcm = None
+                            if self._decoder_proc is None:
+                                # Decoder may still be starting up (race vs. first packets). Prebuffer briefly.
+                                if self._opus_prebuffer_bytes < self._opus_prebuffer_max_bytes:
+                                    self._opus_prebuffer.append(payload_bytes)
+                                    self._opus_prebuffer_bytes += len(payload_bytes)
+                                continue
+                            try:
+                                self._encoded_queue.put_nowait(payload_bytes)
+                            except asyncio.QueueFull:
+                                _LOGGER.debug("Sendspin: encoded queue full; dropping OPUS frame (%d bytes)", len(payload_bytes))
                             continue
                     elif self._stream_codec == "flac":
                         if self._decoder_proc is None:
-                            _LOGGER.warning("Sendspin: FLAC decoder not running; requesting PCM fallback")
-                            await self.request_pcm_fallback(
-                                reason="flac_decoder_missing",
-                                sample_rate=self._stream_rate,
-                                channels=self._stream_channels,
-                                bit_depth=self._stream_bit_depth,
-                            )
-                            await self._stop_stream(reason="flac_decoder_missing")
+                            # Decoder may still be starting up (race vs. first packets). Prebuffer briefly.
+                            if self._flac_prebuffer_bytes < self._flac_prebuffer_max_bytes:
+                                self._flac_prebuffer.append(payload_bytes)
+                                self._flac_prebuffer_bytes += len(payload_bytes)
+                            else:
+                                _LOGGER.debug(
+                                    "Sendspin: FLAC prebuffer full; dropping frame (%d bytes)",
+                                    len(payload_bytes),
+                                )
                             continue
                         try:
                             self._encoded_queue.put_nowait(payload_bytes)
@@ -1892,19 +2136,23 @@ class SendspinClient:
                     depth = int(p.get("bit_depth", 16) or 16)
 
                     self._set_playback("playing")
-                    await self._start_stream(codec=codec, sample_rate=rate, channels=ch, bit_depth=depth)
+                    # Start under lock so it can't interleave with heavy stop,
+                    # but don't block the recv loop.
+                    self._loop.create_task(self._handle_stream_start(codec=codec, rate=rate, ch=ch, depth=depth))
 
                 elif mtype == "stream/stop":
                     _LOGGER.info("Sendspin: recv stream/stop")
-                    await self._stop_stream(reason="stream_stop")
-                    if self._state.playback.playback_state == "playing":
+                    if self._state.playback.playback_state != "stopped":
                         self._set_playback("paused")
+                    # Stop under lock but don't block recv loop.
+                    self._loop.create_task(self._handle_stream_end(ws, reason="stream_stop"))
 
                 elif mtype == "stream/end":
                     _LOGGER.info("Sendspin: recv stream/end")
-                    await self._stop_stream(reason="stream_end")
-                    if self._state.playback.playback_state == "playing":
+                    if self._state.playback.playback_state != "stopped":
                         self._set_playback("paused")
+                    # Stop under lock but don't block recv loop.
+                    self._loop.create_task(self._handle_stream_end(ws, reason="stream_end"))
 
                 elif mtype in ("metadata/update", "metadata", "server/metadata", "media/metadata"):
                     if isinstance(payload, dict):
@@ -1937,7 +2185,8 @@ class SendspinClient:
         finally:
             _LOGGER.debug("Sendspin: recv loop ending")
             self._disconnect_event.set()
-            await self._stop_stream(reason="recv_loop_end")
+            async with self._stream_lock:
+                await self._stop_stream(reason="recv_loop_end")
 
     async def _time_sync_loop(self, ws: websockets.WebSocketClientProtocol) -> None:
         conn = self._cfg_get_section(self._cfg, "connection") or {}
