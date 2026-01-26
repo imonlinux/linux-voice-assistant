@@ -1,4 +1,4 @@
-# Linux Voice Assistant on RaspberryPi with ReSpeaker 2‑Mic — Installation & Configuration Guide
+# Linux Voice Assistant on Raspberry Pi — Installation & Configuration Guide
 
 > Created using ChatGPT 5 with the following prompt:
 ```html
@@ -9,14 +9,13 @@
 ```
 > Modeled after the Wyoming Satellite two‑mic tutorial, adapted from actual shell history.
 
-This guide reproduces a working setup of the **linux-voice-assistant** project with **Wyoming OpenWakeWord** and **MicroWakeWord** on a Raspberry PI Zero 2W and a Respeaker 2‑mic HAT (e.g., seeed-2mic-voicecard). It assumes a fresh system with sudo access and the default "pi" user. Included is the option to use PipeWire or PulseAudio instead of ALSA.
+This guide reproduces a working setup of the **linux-voice-assistant** project with **Wyoming OpenWakeWord** and **MicroWakeWord** on a Raspberry PI. It assumes a fresh system with sudo access and the default "pi" user. This guide now assumes a **PipeWire-Pulse** (recommended) or **PulseAudio** userspace audio stack (ALSA-only is no longer sufficient with the current audio backend).
 
 ## Prerequisites
 - Raspberry Pi OS Lite (64-bit) (Bookworm or Trixie)
 - Default Python 3.11+ recommended
-- A ReSpeaker 2‑mic sound card or compatable
+- A microphone and speaker (see the options for reSpeaker devices in section 5)
 - Network access to your Home Assistant instance
-
 
 ## 1. Install system packages
 
@@ -29,23 +28,19 @@ sudo reboot
 ```
 
 
-## 2. Get the code
+## 2. (Optional) ReSpeaker 2‑Mic HAT drivers or ReSpeaker XVF3800 support
+
+Instructions for the install of the ReSpeaker 2-Mic Hat or the ReSpeaker XVF3800 USB 4-Mic Array have been moved to Section 5.
+
+
+## 3. Get the code
 
 ```bash
 git clone https://github.com/imonlinux/linux-voice-assistant.git
 ```
 
 
-## 3. Install ReSpeaker drivers
-
-```bash
-chmod +x ~/linux-voice-assistant/respeaker2mic/install-respeaker-drivers.sh
-sudo ~/linux-voice-assistant/respeaker2mic/install-respeaker-drivers.sh 
-sudo reboot
-```
-
-
-## 4. Linux Voice Assistant (LVA)
+## 4. Setup Linux Voice Assistant (LVA)
 
 ```bash
 cd ~/linux-voice-assistant/
@@ -53,14 +48,19 @@ script/setup
 ```
 
 
-## 5. Choose your install option "Choose your Adventure!"
+## 5. Choose your audio stack + install the LVA service ("Choose your Adventure!")
 
 Pick **one** of the following install paths. Expand a section to see the exact steps.
 
+> **Recommended:** PipeWire (PipeWire-Pulse).
+>
+> **Note:** With the current audio backend (`soundcard`), you must run **PipeWire-Pulse** or **PulseAudio**. ALSA-only is not supported.
+
 > Tip: All services run in *user* mode (requires `loginctl enable-linger`);
 
+
 <details>
-<summary><strong>PipeWire (user-mode services)</strong></summary>
+<summary><strong>PipeWire (recommended; user-mode services)</strong></summary>
 
 **Prep (PipeWire):** Follow the PipeWire tutorial first: [the tutorial](install_pipewire.md).
 
@@ -122,40 +122,183 @@ systemctl --user status linux-voice-assistant --no-pager -l
 </details>
 
 <details>
-<summary><strong>ALSA (user-mode services)</strong></summary>
+<summary><strong>Optional (ReSpeaker 2‑Mic HAT drivers)</strong></summary>
 
-**No extra audio stack needed.** If you’re using a different sound card/driver, confirm device names:
+If you are using the **ReSpeaker 2‑Mic HAT** (seeed-2mic-voicecard), install the vendor driver + overlay using the project helper script:
+
+```bash
+chmod +x ~/linux-voice-assistant/respeaker2mic/install-respeaker-drivers.sh
+sudo ~/linux-voice-assistant/respeaker2mic/install-respeaker-drivers.sh
+sudo reboot
+```
+
+After reboot, you can sanity-check the device is present:
+
 ```bash
 arecord -l
 aplay -l
 ```
 
-**Enable linger (required for user services to start after reboot):**
+**Optional (GPIO Button)**
+
+Add support for the ReSpeaker 2-Mic HAT momentary button as a first-class control surface for the Linux Voice Assistant. The button now behaves like:
+
+***Short press***
+
+If TTS or music is playing → stop playback (equivalent to the Stop wake word)
+
+Otherwise → start a new conversation (equivalent to a wake word trigger)
+
+***Long press***
+
+Toggle microphone mute (wired through the existing set_mic_mute event, so MQTT state and LEDs stay in sync)
+
+The implementation uses a polling-based GPIO loop (RPi.GPIO) instead of kernel edge-detection to avoid “Failed to add edge detection” issues on some HAT/overlay setups. Button behavior is fully configurable via config.json.
+
+**Requires a compatible GPIO board** This has been tested on the ReSpeaker 2-Mic Pi Hat:
+
+**Edit the LVA config.json file:**
+
 ```bash
-sudo loginctl enable-linger pi
+nano ~/linux-voice-assistant/linux_voice_assistant/config.json
 ```
 
-**Install LVA user-mode services:**
+**Enable the GPIO button support:**
 
 ```bash
-mkdir -p ~/.config/systemd/user
+"button": {
+  "enabled": true,
+  "pin": 17,
+  "long_press_seconds": 1.0
+  }
 ```
 
+**Example (LVA config.json file with MQTT, Grove Port, and GPIO Button enabled** ***Note: The GPIO button can be changed from the default (17) on the 2-Mic hat.***
+
 ```bash
-cp ~/linux-voice-assistant/service/linux-voice-assistant.service     ~/.config/systemd/user/linux-voice-assistant.service
+{
+  "app": {
+    "name": "Linux Voice Assistant"
+  },
+  "mqtt": {
+    "host": "192.168.1.2",
+    "port": 1883,
+    "username": "mqtt_username",
+    "password": "mqtt_password"
+  },
+  "led": {
+    "enabled": true,
+    "led_type": "dotstar",
+    "interface": "gpio",
+    "clock_pin": 13,
+    "data_pin": 12,
+    "num_leds": 10
+  },
+  "button": {
+  "enabled": true,
+  "pin": 17,
+  "long_press_seconds": 1.0
+  }
+}
 ```
 
 **Enable & start:**
+
 ```bash
-systemctl --user daemon-reload
-systemctl --user enable --now linux-voice-assistant.service
+systemctl --user restart linux-voice-assistant.service
 ```
 
 **Verify:**
+
 ```bash
 systemctl --user status linux-voice-assistant --no-pager -l
 ```
+
 </details>
+
+<details>
+<summary><strong>Optional (ReSpeaker XVF3800 USB 4‑Mic Array)</strong></summary>
+
+## Recommended Configuration
+
+- To use the advanced LED effects, upgrade to the latest XVF3800 firmware (respeaker_xvf3800_usb_dfu_firmware_v2.0.7.bin as of this writing). 
+-- https://github.com/respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY/blob/master/xmos_firmwares/dfu_guide.md
+- Tested and works on a Raspberry Pi Zero 2W, but I don't recommend attempting to flash the firmware with this device.
+- PipeWire (or PulseAudio) installed and tested.
+	
+If you are only using the Mic and or Speaker you do not need to do anything further. The LVA should load them automatically. If there is an issue, make sure that the "audio" section either omits the input_device and output_device or that they match the example config.json below.
+
+If you are using the **ReSpeaker XVF3800 USB 4‑Mic Array** LEDs and Mute Button
+
+Edit the config.json file:
+
+```bash
+nano ~/linux-voice-assistant/linux_voice_assistant/config.json
+```
+
+Add or update the following sections (Recommended settings):
+
+> Tip: Be sure to change the name if you have more than one LVA!
+
+```json
+{
+  "app": {
+    "name": "Linux Voice Assistant"
+  },
+  "audio": {
+    "input_device": "reSpeaker XVF3800 4-Mic Array Analog Stereo",
+    "input_block_size": 1024,
+    "output_device": "pipewire/alsa_output.usb-Seeed_Studio_reSpeaker_XVF3800_4-Mic_Array_114993701254500222-00.analog-stereo"
+  },
+  "led": {
+    "enabled": true,
+    "led_type": "xvf3800",
+    "interface": "usb"
+  },
+  "button": {
+    "enabled": true,
+    "mode": "xvf3800",
+    "poll_interval_seconds": 0.15
+  },
+  "mqtt": {
+    "host": "192.168.1.2",
+    "port": 1883,
+    "username": "mqtt_server",
+    "password": "mqtt_password"
+  }
+}
+```
+
+> Take a look at ~/linux-voice-assistant/linux_voice_assistant/config.json.example for details on these settings as well as all available options.
+
+Install these additional debian packages
+
+```bash
+sudo apt install \
+    libusb-1.0-0 dbus-user-session
+```
+
+Install the udev rule shipped with the project so LVA can access the USB controls (LED ring, mute state, etc.).
+
+```bash
+# Copy the provided udev rule into place
+sudo cp ~/linux-voice-assistant/XVF3800/99-respeaker-xvf3800.rules /etc/udev/rules.d/
+sudo udevadm control --reload-rules
+sudo udevadm trigger
+# Unplug/replug the XVF3800 (or reboot)
+```
+
+Add user to the plugdev group for access to the XVF3800 and reboot
+
+> Tip: If you use a different username than `pi`, adjust user accordingly.
+
+```bash
+sudo usermod -aG plugdev pi
+sudo reboot
+```
+
+</details>
+
 
 <details>
 <summary><strong>Optional (MQTT Controls)</strong></summary>
@@ -502,81 +645,95 @@ systemctl --user status linux-voice-assistant --no-pager -l
 </details>
 
 <details>
-<summary><strong>Optional (GPIO Button)</strong></summary>
+<summary><strong>Optional (Sendspin client for Music Assistant)</strong></summary>
 
-Add support for the ReSpeaker 2-Mic HAT momentary button as a first-class control surface for the Linux Voice Assistant. The button now behaves like:
+This optional configuration enables the **Sendspin** client inside LVA so Music Assistant can stream audio to the device and control it (play/pause/stop, volume, mute, etc.). The Sendspin client will automatically show up in Music Assistant with the name of the LVA.
 
-***Short press***
+**Requirements:**
+- Music Assistant is running a Sendspin server on your network.
+- LVA is installed with a working **PipeWire-Pulse** (recommended) or **PulseAudio** stack (see Section 5 above).
+- FFMPEG for the FLAC codec if used.
 
-If TTS or music is playing → stop playback (equivalent to the Stop wake word)
+***Confirm FFMPEG is installed***
 
-Otherwise → start a new conversation (equivalent to a wake word trigger)
+```bash
+sudo apt-get install ffmpeg
+```
 
-***Long press***
+***Setup LVA to implement the Sendspin Client***
 
-Toggle microphone mute (wired through the existing set_mic_mute event, so MQTT state and LEDs stay in sync)
+```bash
+cd ~/linux-voice-assistant
+script/setup --sendspin
+```
 
-The implementation uses a polling-based GPIO loop (RPi.GPIO) instead of kernel edge-detection to avoid “Failed to add edge detection” issues on some HAT/overlay setups. Button behavior is fully configurable via config.json.
-
-**Requires a compatible GPIO board** This has been tested on the ReSpeaker 2-Mic Pi Hat:
-
-**Edit the LVA config.json file:**
+***Edit LVA config.json file:***
 
 ```bash
 nano ~/linux-voice-assistant/linux_voice_assistant/config.json
 ```
 
-**Enable the GPIO button support:**
+***Add a Sendspin block (minimum):***
 
-```bash
-"button": {
-  "enabled": true,
-  "pin": 17,
-  "long_press_seconds": 1.0
-  }
-```
-
-**Example (LVA config.json file with MQTT, Grove Port, and GPIO Button enabled** ***Note: The GPIO button can be changed from the default (17) on the 2-Mic hat.***
-
-```bash
-{
-  "app": {
-    "name": "Linux Voice Assistant"
-  },
-  "mqtt": {
-    "host": "192.168.1.2",
-    "port": 1883,
-    "username": "mqtt_username",
-    "password": "mqtt_password"
-  },
-  "led": {
+```json
+  ,
+  "sendspin": {
     "enabled": true,
-    "led_type": "dotstar",
-    "interface": "gpio",
-    "clock_pin": 13,
-    "data_pin": 12,
-    "num_leds": 10
-  },
-  "button": {
-  "enabled": true,
-  "pin": 17,
-  "long_press_seconds": 1.0
+    "connection": {
+      "mdns": true
+    }
   }
-}
 ```
 
-**Enable & start:**
+***As tested***
+
+```bash
+  ,
+  "sendspin": {
+    "enabled": true,
+    "coordination": { 
+      "duck_during_voice": true },
+    "connection": {
+      "ping_interval_seconds": 0,
+      "ping_timeout_seconds": 0,
+      "mode": "client_initiated",
+      "mdns": true,
+      "server_host": null,
+      "server_port": 8927,
+      "server_path": "/sendspin" },
+    "roles": {
+      "player": true,
+      "metadata": true,
+      "controller": true,
+      "artwork": false,
+      "visualizer": false },
+    "player": {
+      "preferred_codec": "opus",
+      "supported_codecs": ["opus","flac","pcm"],
+      "sample_rate": 48000,
+      "channels": 2,
+      "bit_depth": 16
+    }
+  }
+
+```
+
+> Take a look at ~/linux-voice-assistant/linux_voice_assistant/config.json.example for details on these settings as well as all available options.
+
+***Restart LVA:***
 
 ```bash
 systemctl --user restart linux-voice-assistant.service
 ```
 
-**Verify:**
+***Verify:***
 
 ```bash
 systemctl --user status linux-voice-assistant --no-pager -l
 ```
+
 </details>
+
 
 ## 6. Connect to Home Assistant
 
@@ -618,8 +775,8 @@ ok_nabu_v0.1.tflite     -> OK Nabu **(I had to say OK Nobu)**
 Additional community provided OWW models available from this repository:
 https://github.com/fwartner/home-assistant-wakewords-collection
 
-You just copy the ones you want into the ~/linux-voice-assistant/wakewords/openWakeWord directory. If a model is currupted, the LVA will fail to start.
-Each model added will need a corresponding json file. (note the json file names matches the tflite name)
+You just copy the ones you want into the ~/linux-voice-assistant/wakewords/openWakeWord directory. If a model is corrupted, the LVA will fail to start.
+Each model added will need a corresponding json file. (note the json file names match the tflite name)
 
 ***Example***
 
@@ -644,23 +801,24 @@ Contents:
 **Word of warning. I have had problems with some of the community provided wake words. YMMV**
 
 
-## 9. Switching between ALSA, PW, or PA see section 5.
 
-If you intend to switch from PA or PW to ALSA, you must first stop and disable the corresponding user-mode services.
+## 9. Switching between PipeWire and PulseAudio (see Section 5)
 
-###PulseAudio
+**ALSA-only is not supported** with the current audio backend.
 
-```bash
-sudo systemctl --user stop pulseaudio.service
-```
-```bash
-sudo systemctl --user disable pulseaudio.service
-```
-###PipeWire
+If you want to switch between **PulseAudio** and **PipeWire-Pulse**, first stop/disable the currently-running user services, then follow the matching tutorial in Section 5 and restart LVA.
+
+### PulseAudio
 
 ```bash
-sudo systemctl --user stop pipewire.service
+systemctl --user stop pulseaudio.service || true
+systemctl --user disable pulseaudio.service || true
 ```
+
+### PipeWire (PipeWire-Pulse)
+
 ```bash
-sudo systemctl --user disable pipewire.service
+systemctl --user stop pipewire.service pipewire-pulse.service wireplumber.service || true
+systemctl --user disable pipewire.service pipewire-pulse.service wireplumber.service || true
 ```
+

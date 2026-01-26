@@ -82,7 +82,15 @@
     "refractory_seconds": 2.0,
 
     // Optional: directory for downloaded models (relative to repo root)
-    "download_dir": "local"
+    "download_dir": "local",
+
+    // Optional: OpenWakeWord activation threshold.
+    //
+    // OpenWakeWord triggers if its model probability exceeds this value.
+    // Range: 0.0 - 1.0
+    //
+    // Default: 0.5 (matches previous hardcoded behavior)
+    "openwakeword_threshold": 0.5
   },
 
   // ---------------------------------------------------------------------------
@@ -170,7 +178,107 @@
     // If you renamed the LVA unit, set it here so the tray menu controls
     // the correct service.
     "systemd_service_name": "linux-voice-assistant.service"
-  }
+  },
+  
+  // ---------------------------------------------------------------------------
+  // Optional: Sendspin (Music Assistant "Send to player" / streaming)
+  //
+  // Enables this LVA instance to appear as a player in Music Assistant via
+  // the Sendspin server, accept PCM streams, play them via mpv, and support:
+  // - mDNS discovery (_sendspin-server._tcp.local.) OR explicit host/port
+  // - volume/mute control from MA (independent from LVA's normal volume)
+  // - ducking on LVA voice events (wake word / listening / responding)
+  //
+  // The last Sendspin volume is persisted in preferences.json (sendspin_volume).
+  // ---------------------------------------------------------------------------
+  "sendspin": {
+    // Master enable for the Sendspin subsystem
+    "enabled": false,
+    // -----------------------------------------------------------------------
+    // Coordination sendspin audio duck during voice events
+    // -----------------------------------------------------------------------
+    "coordination": { 
+      "duck_during_voice": true },
+    // -----------------------------------------------------------------------
+    // Connection / discovery
+    // -----------------------------------------------------------------------
+    "connection": {
+      // If true, discover MA Sendspin server via mDNS.
+      // If false, you must set server_host (and optionally port/path).
+      "mdns": true,
+
+      // Optional: override discovery and connect directly:
+      // - server_host: IP or hostname of Music Assistant host
+      // - server_port: default 8927
+      // - server_path: default "/sendspin"
+      "server_host": null,
+      "server_port": 8927,
+      "server_path": "/sendspin",
+
+      // Websocket connection behavior
+      "timeout_seconds": 6.0,
+      "hello_timeout_seconds": 8.0,
+
+      // Websocket keepalive ping (handled by websockets library)
+      "ping_interval_seconds": 20.0,
+      "ping_timeout_seconds": 20.0,
+
+      // Periodic Sendspin messages
+      // client/time interval (microseconds monotonic time domain)
+      "time_sync_interval_seconds": 5.0,
+
+      // client/state heartbeat interval (keeps presence online)
+      "state_heartbeat_seconds": 5.0
+    },
+
+    // -----------------------------------------------------------------------
+    // Roles advertised to the server
+    // -----------------------------------------------------------------------
+    "roles": {
+      // Minimum recommended:
+      "player": true,
+      "controller": true,
+      "metadata": true,
+
+      // Optional (not currently implemented in LVA Sendspin client):
+      "artwork": false,
+      "visualizer": false
+    },
+
+    // -----------------------------------------------------------------------
+    // Player / streaming settings
+    // -----------------------------------------------------------------------
+    "player": {
+      // Advertised support (and expected stream format from MA)
+      "sample_rate": 48000,
+      "channels": 2,
+      "bit_depth": 16,
+
+      // Buffer capacity advertised to MA (bytes)
+      "buffer_capacity_bytes": 1048576,
+
+      // Optional: force mpv audio backend/device for Sendspin playback only.
+      // If null/omit, mpv chooses automatically.
+      //
+      // Examples:
+      //   "mpv_ao": "pipewire"
+      //   "mpv_audio_device": "pipewire/alsa_output.platform-fe00b840.mailbox.stereo-fallback"
+      "mpv_ao": null,
+      "mpv_audio_device": null,
+
+      // Optional: ducking behavior when LVA begins listening/responding.
+      // If enabled, Sendspin playback volume is reduced temporarily.
+      "ducking": {
+        "enabled": true,
+
+        // Volume percent to duck to (0-100)
+        "duck_volume_percent": 20,
+
+        // If true, also duck on voice_wake / voice_listen events.
+        // (Exact events depend on what your Sendspin client subscribes to.)
+        "duck_on_voice_events": true
+      }
+    }
 
   // ---------------------------------------------------------------------------
   // Back-compat note (optional)

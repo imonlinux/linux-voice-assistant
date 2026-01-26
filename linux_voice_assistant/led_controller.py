@@ -46,6 +46,9 @@ class LedController(EventHandler):
         self._is_ready = False
         self.leds = None
 
+        # Track mute overlay so reconnect/bootstrap state sync can't override it
+        self._mic_is_muted: bool = False
+
         # Backend mode:
         #   "pixels"  -> DotStar / NeoPixel via Adafruit drivers
         #   "xvf3800" -> XVF3800 USB LED ring backend
@@ -201,6 +204,15 @@ class LedController(EventHandler):
         self.current_task = asyncio.run_coroutine_threadsafe(coro, self.loop)
 
     def _apply_state_effect(self, state_name: str, publish_state: bool = True):
+        # Mute has highest precedence over any voice/idle effects.
+        if self._mic_is_muted:
+            _LOGGER.debug(
+                "Mic is muted; overriding requested state '%s' with mute LED",
+                state_name,
+            )
+            self.run_action("solid", _DIM_RED, 1.0)
+            return
+
         config = self.configs.get(state_name, self.configs["idle"])
         _LOGGER.debug(
             "Applying effect for state '%s': %s", state_name, config["effect"]
@@ -582,11 +594,15 @@ class LedController(EventHandler):
 
     @subscribe
     def mic_muted(self, data: dict):
+        # Mute overlay has precedence over any other state.
+        self._mic_is_muted = True
         # When muted, show a solid dim red on all backends.
         self.run_action("solid", _DIM_RED, 1.0)
 
     @subscribe
     def mic_unmuted(self, data: dict):
+        # Clear overlay and return to idle (or other future state logic).
+        self._mic_is_muted = False
         self._apply_state_effect("idle")
 
     # -----------------------------------------------------------------------
@@ -623,8 +639,14 @@ class LedController(EventHandler):
 
         if is_retained:
             if changed and state_name == "idle":
-                # Re-apply idle but don't republish back to MQTT
-                self._apply_state_effect("idle", publish_state=False)
+                # Re-apply idle but don't republish back to MQTT.
+                # IMPORTANT: Don't override mute overlay during reconnect/bootstrap.
+                if not self._mic_is_muted:
+                    self._apply_state_effect("idle", publish_state=False)
+                else:
+                    _LOGGER.debug(
+                        "Retained idle config received, but mic is muted; skipping idle re-apply"
+                    )
             return
 
         if changed:

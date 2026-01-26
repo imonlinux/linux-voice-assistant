@@ -57,6 +57,15 @@ tray = [
     "PyQt5>=5.15",
 ]
 
+# Optional Sendspin client support (extras: sendspin)
+# - websockets: required for WS client connections
+# - aiosendspin: reference protocol implementation + time sync utilities (future phases)
+sendspin = [
+    "websockets>=12,<15",
+    "aiosendspin>=3,<4",
+    "opuslib",
+]
+
 [project.scripts]
 lva-tray = "linux_voice_assistant.tray_client.client:main"
 
