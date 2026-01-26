@@ -14,7 +14,7 @@ The LVA now supports the ReSpeaker XVF3800 4 Mic array via the USB interface. Se
 
 Want to run the satellite on a Linux desktop using a simple tray client? See [this tutorial](docs/lva-desktop.md).
 
-How about a Sendspin client? See Section 5 of [the tutorial](docs/linux-voice-assistant-install.md).
+How about a Sendspin client? See Section 5 of [the tutorial](docs/linux-voice-assistant-install.md) ***Requires Python 3.12 or higher***.
 
 ### What's working:
 - **The LVA can now be setup with a fully supported Sendspin client.**
