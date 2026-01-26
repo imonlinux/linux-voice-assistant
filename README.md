@@ -8,17 +8,20 @@ Runs on Linux `aarch64` and `x86_64` platforms. Tested with Python 3.14, 3.13, a
 
 Supports announcments, start/continue conversation, and timers.
 
-See [the tutorial](docs/linux-voice-assistant-2mic-install.md) to build a satellite using a [Raspberry Pi Zero 2 W](https://www.raspberrypi.com/products/raspberry-pi-zero-2-w/) and a [ReSpeaker 2Mic HAT](https://wiki.keyestudio.com/Ks0314_keyestudio_ReSpeaker_2-Mic_Pi_HAT_V1.0).
+See [the tutorial](docs/linux-voice-assistant-install.md) to build a satellite using a [Raspberry Pi Zero 2 W](https://www.raspberrypi.com/products/raspberry-pi-zero-2-w/) and a [ReSpeaker 2Mic HAT](https://wiki.keyestudio.com/Ks0314_keyestudio_ReSpeaker_2-Mic_Pi_HAT_V1.0).
 
-The LVA now supports the ReSpeaker XVF3800 4 Mic array via the USB interface. See [this tutorial](docs/linux-voice-assistant-xvf3800.md).
+The LVA now supports the ReSpeaker XVF3800 4 Mic array via the USB interface. See Section 5 of [the tutorial](docs/linux-voice-assistant-install.md).
 
 Want to run the satellite on a Linux desktop using a simple tray client? See [this tutorial](docs/lva-desktop.md).
 
+How about a Sendspin client? See Section 5 of [the tutorial](docs/linux-voice-assistant-install.md).
+
 ### What's working:
+- **The LVA can now be setup with a fully supported Sendspin client.**
 - This fork is from https://github.com/OHF-Voice/linux-voice-assistant Release v1.0.0 which introduces the ability to use both MicroWakeWord and OpenWakeWord detections models.
 - Refactor: Sync with Upstream architectural changes, includes the 7 commits since the release of v1.0.0.
 - **Core Refactor (Nov 2025):** Major architectural cleanup moving audio logic to a dedicated engine.
-- **Added ReSpeaker 2-Mic Button Support:** The GPIO button (17) can be enabled via the config.json file. See [the tutorial](docs/linux-voice-assistant-2mic-install.md).
+- **Added ReSpeaker 2-Mic Button Support:** The GPIO button (17) can be enabled via the config.json file. See section 5 of [the tutorial](docs/linux-voice-assistant-install.md).
 - **Changed Alarm to include a Duration Setting:** Added a MQTT control to make the alarm duration adjustable.
 - **Performance Optimization:** Optimized audio threading for lower CPU usage when muted and improved responsiveness (reduced latency) when unmuted.
 - **Non-Blocking Operations:** Wake word model downloads are now handled in background threads, preventing the device (LEDs/MQTT) from freezing during configuration updates.
@@ -26,7 +29,7 @@ Want to run the satellite on a Linux desktop using a simple tray client? See [th
 - Updated to support running either APA102 or WS2812B LEDs from the SPI interface using a Micro Connectors 40-pin GPIO 1 to 2 Expansion Board. See the tutorial for instructions.
 - You can choose between all MWW and OWW wake word within HA after the VLA is registered. Chosen wake words are saved to preferences.json in the linux-voice-assistant folder.
 - The volume control is now persistent between connections and reboots. The volume setting gets stored in preferences.json and loaded when LVA starts.
-- **Acoustic Echo Cancellation (AEC) using WebRTC.** See [the tutorial](docs/linux-voice-assistant-2mic-install.md) for instructions on implementation and tuning.
+- **Acoustic Echo Cancellation (AEC) using WebRTC.** See section 5 of [the tutorial](docs/linux-voice-assistant-install.md) for instructions on implementation and tuning.
 - **openWakeWord models theshold sensitivity can now be overridden by per model.json, globally with CLI flag --wake-word-threshold, or config.json.**
 
 ### Add Full MQTT Control for LEDs and Mute
@@ -46,9 +49,9 @@ Want to run the satellite on a Linux desktop using a simple tray client? See [th
 
 - All settings are persistent, retained by the MQTT broker and re-applied whenever the application restarts.
 
-  See [the tutorial](docs/linux-voice-assistant-2mic-install.md) to enable MQTT Controls.
+  See section 5 of [the tutorial](docs/linux-voice-assistant-install.md) to enable MQTT Controls.
 
-## Installation
+## Minimal Installation
 
 Install system dependencies (`apt-get`):
 
@@ -83,7 +86,7 @@ See `linux_voice_assistant/config.json.example` for more options.
 
 ## ToDo:
 
-* Implement the Sendspin client protocol
+* ~~Implement the Sendspin client protocol~~
 * ~~Implement echo-cancellation filter in PipeWire/PulseAudio.~~ (Taken from upstream and successfully tested)
 * ~~Merge jianyu-li's PR from source project to add mute switch function in this branch~~
 * ~~Implement MQTT entities to support advanced controls of the LVA.~~
