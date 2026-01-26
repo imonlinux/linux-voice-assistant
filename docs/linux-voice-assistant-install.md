@@ -650,6 +650,7 @@ systemctl --user status linux-voice-assistant --no-pager -l
 This optional configuration enables the **Sendspin** client inside LVA so Music Assistant can stream audio to the device and control it (play/pause/stop, volume, mute, etc.). The Sendspin client will automatically show up in Music Assistant with the name of the LVA.
 
 **Requirements:**
+- ***Requires Python 3.12 or higher*** Recommend RaspberryPI OS (Trixie)
 - Music Assistant is running a Sendspin server on your network.
 - LVA is installed with a working **PipeWire-Pulse** (recommended) or **PulseAudio** stack (see Section 5 above).
 - FFMPEG for the FLAC codec if used.
