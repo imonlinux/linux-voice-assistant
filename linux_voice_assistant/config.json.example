@@ -38,7 +38,7 @@
     // - null/omit => default microphone
     // - string name => exact device name (soundcard backend)
     // - string number => index into soundcard device list (e.g. "0", "1", ...)
-    "input_device": null,
+    "input_device": "reSpeaker XVF3800 4-Mic Array Analog Stereo",
 
     // Optional: audio capture block size
     "input_block_size": 1024,
@@ -46,7 +46,7 @@
     // Optional:
     // - null/omit => mpv chooses default output
     // - string => mpv audio-device (e.g. "pulse/alsa_output....")
-    "output_device": null,
+    "output_device": "alsa_output.usb-Seeed_Studio_reSpeaker_XVF3800_4-Mic_Array_114993701254500095-00.analog-stereo: reSpeaker XVF3800 4-Mic Array Analog Stereo",
 
     // Optional: Sync the host OS output volume at startup to match the volume
     // stored in preferences.json (LVA MediaPlayer volume).
@@ -181,110 +181,152 @@
   },
   
   // ---------------------------------------------------------------------------
-  // Optional: Sendspin (Music Assistant "Send to player" / streaming)
+  // Sendspin client configuration (LVA -> Music Assistant)
   //
-  // Enables this LVA instance to appear as a player in Music Assistant via
-  // the Sendspin server, accept PCM streams, play them via mpv, and support:
-  // - mDNS discovery (_sendspin-server._tcp.local.) OR explicit host/port
-  // - volume/mute control from MA (independent from LVA's normal volume)
-  // - ducking on LVA voice events (wake word / listening / responding)
-  //
-  // The last Sendspin volume is persisted in preferences.json (sendspin_volume).
+  // Notes:
+  // - This file is JSON-with-comments (JSONC). If your JSON loader does NOT
+  //   support comments, remove lines starting with //.
+  // - All times are seconds unless the key name ends with _ms.
   // ---------------------------------------------------------------------------
+
   "sendspin": {
-    // Master enable for the Sendspin subsystem
-    "enabled": false,
+    // Enable/disable the Sendspin client feature.
+    "enabled": true,
+
     // -----------------------------------------------------------------------
-    // Coordination sendspin audio duck during voice events
+    // Client identity / capabilities
     // -----------------------------------------------------------------------
-    "coordination": { 
-      "duck_during_voice": true },
+    "client": {
+      // Name shown in Music Assistant / Sendspin UI.
+      "name": "LVA Sendspin Client",
+
+      // Optional extra info that MA may display (safe to omit).
+      "device_info": {
+        "manufacturer": "OHF-Voice",
+        "model": "Linux Voice Assistant",
+        "sw_version": "dev"
+      }
+    },
+
+    // Which Sendspin roles this client will advertise. Most installs can leave
+    // these defaults as-is.
+    "roles": {
+      "player": true,
+      "metadata": true,
+      "controller": true
+    },
+
     // -----------------------------------------------------------------------
-    // Connection / discovery
+    // Startup state (seeded from preferences.json by LVA __main__.py)
+    // If you don't have preferences.json yet, these values provide defaults.
+    // -----------------------------------------------------------------------
+    "initial": {
+      // User volume (0–100). This is the *saved* volume shown in MA.
+      "volume": 50,
+
+      // Whether the client starts muted.
+      "muted": false
+    },
+
+    // -----------------------------------------------------------------------
+    // Connection / discovery / keepalive / clock sync
     // -----------------------------------------------------------------------
     "connection": {
-      // If true, discover MA Sendspin server via mDNS.
-      // If false, you must set server_host (and optionally port/path).
+      // If true, use mDNS discovery to find the MA Sendspin server.
+      // If you set server_host, discovery is bypassed.
       "mdns": true,
 
-      // Optional: override discovery and connect directly:
-      // - server_host: IP or hostname of Music Assistant host
-      // - server_port: default 8927
-      // - server_path: default "/sendspin"
-      "server_host": null,
-      "server_port": 8927,
-      "server_path": "/sendspin",
+      // Optional static connection (recommended if you want to avoid discovery):
+      // "server_host": "192.168.0.100",
+      // "server_port": 8927,
+      // "server_path": "/sendspin",
 
-      // Websocket connection behavior
-      "timeout_seconds": 6.0,
+      // Time to wait for server/hello after connecting.
       "hello_timeout_seconds": 8.0,
 
-      // Websocket keepalive ping (handled by websockets library)
-      "ping_interval_seconds": 20.0,
-      "ping_timeout_seconds": 20.0,
+      // WebSocket protocol keepalive pings.
+      // IMPORTANT: Some MA/Sendspin servers mis-handle protocol pings while idle
+      // (e.g., after stream/end on FLAC). Set either value to 0 to disable pings.
+      "ping_interval_seconds": 0,
+      "ping_timeout_seconds": 0,
 
-      // Periodic Sendspin messages
-      // client/time interval (microseconds monotonic time domain)
-      "time_sync_interval_seconds": 5.0,
-
-      // client/state heartbeat interval (keeps presence online)
-      "state_heartbeat_seconds": 5.0
+      // How often the client sends client/time for clock sync.
+      // 1.0s gives faster convergence; 3–5s reduces network chatter.
+      "time_sync_interval_seconds": 1.0
     },
 
     // -----------------------------------------------------------------------
-    // Roles advertised to the server
-    // -----------------------------------------------------------------------
-    "roles": {
-      // Minimum recommended:
-      "player": true,
-      "controller": true,
-      "metadata": true,
-
-      // Optional (not currently implemented in LVA Sendspin client):
-      "artwork": false,
-      "visualizer": false
-    },
-
-    // -----------------------------------------------------------------------
-    // Player / streaming settings
+    // Player / audio pipeline configuration
     // -----------------------------------------------------------------------
     "player": {
-      // Advertised support (and expected stream format from MA)
+      // Preferred codec. The client will advertise a minimal set of codecs so
+      // MA is more likely to select your preference.
+      // Valid: "pcm" | "flac" | "opus"
+      "preferred_codec": "pcm",
+
+      // Which codecs this client *can* accept. Keep "pcm" in the list.
+      // If you include "flac" or "opus", MA may still choose them depending on
+      // server policy (the client will try to honor preferred_codec).
+      "supported_codecs": ["pcm", "flac", "opus"],
+
+      // Audio format we request/expect for PCM output
       "sample_rate": 48000,
       "channels": 2,
       "bit_depth": 16,
 
-      // Buffer capacity advertised to MA (bytes)
+      // Optional: path to ffmpeg (used for FLAC decode and Opus fallback).
+      "ffmpeg_path": "ffmpeg",
+
+      // ---------------------------------------------------------------------
+      // Sync / buffering knobs (Stages A+B)
+      // ---------------------------------------------------------------------
+
+      // Target playout latency (ms) for the timestamp-aware jitter buffer.
+      // Higher = more resilient to Wi-Fi jitter, but more delay.
+      // Typical: 150–300ms for LAN, 300–500ms for noisier networks.
+      "sync_target_latency_ms": 250,
+
+      // Late frame drop threshold (ms).
+      // If a packet arrives "too late" (its timestamp is already in the past by
+      // more than this window), we drop it rather than playing it late.
+      // Typical: 60–150ms.
+      "sync_late_drop_ms": 100,
+
+      // Per-device latency compensation (ms).
+      // Use this to align devices that have *fixed* extra delay (DSP, amp, etc.).
+      // - If THIS LVA client plays EARLIER than others, INCREASE this value.
+      // - If THIS LVA client plays LATER than others, DECREASE it (cannot be < 0;
+      //   instead, add delay to the other devices).
+      "output_latency_ms": 0,
+
+      // Ducking amount while voice is active (if coordination.duck_during_voice is true).
+      "duck_volume_percent": 20,
+
+      // Advertised buffer capacity to MA (bytes). This does not directly change
+      // mpv's internal queue, but helps MA size bursts.
       "buffer_capacity_bytes": 1048576,
 
-      // Optional: force mpv audio backend/device for Sendspin playback only.
-      // If null/omit, mpv chooses automatically.
-      //
-      // Examples:
-      //   "mpv_ao": "pipewire"
-      //   "mpv_audio_device": "pipewire/alsa_output.platform-fe00b840.mailbox.stereo-fallback"
-      "mpv_ao": null,
-      "mpv_audio_device": null,
+      // Player-side commands the client will accept from MA.
+      "supported_commands": ["volume", "mute"]
+    },
 
-      // Optional: ducking behavior when LVA begins listening/responding.
-      // If enabled, Sendspin playback volume is reduced temporarily.
-      "ducking": {
-        "enabled": true,
+    // -----------------------------------------------------------------------
+    // Coordination with voice assistant states (ducking)
+    // -----------------------------------------------------------------------
+    "coordination": {
+      // If true, reduce (duck) Sendspin playback while LVA is speaking/listening.
+      "duck_during_voice": true
+    },
 
-        // Volume percent to duck to (0-100)
-        "duck_volume_percent": 20,
+    // -----------------------------------------------------------------------
+    // Debug logging toggles
+    // -----------------------------------------------------------------------
+    "logging": {
+      // Log message types (rx/tx).
+      "debug_protocol": false,
 
-        // If true, also duck on voice_wake / voice_listen events.
-        // (Exact events depend on what your Sendspin client subscribes to.)
-        "duck_on_voice_events": true
-      }
+      // Log full JSON payloads (verbose).
+      "debug_payloads": false
     }
-
-  // ---------------------------------------------------------------------------
-  // Back-compat note (optional)
-  // ---------------------------------------------------------------------------
-  // Historically, some setups used a top-level "volume_sync".
-  // If your loader supports it, it typically maps to audio.volume_sync.
-  //
-  // "volume_sync": false
+  }
 }
