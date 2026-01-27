@@ -26,6 +26,11 @@ Protocol compatibility notes:
 websockets compatibility:
 - Newer websockets releases on Python 3.13 may return a ClientConnection object
   without a `.closed` attribute. Use `_ws_is_closed()` instead of `ws.closed`.
+
+Clock sync + multi-room timing:
+- Sendspin binary audio frames include a server timestamp (us) for first sample.
+- We maintain a Kalman clock sync to convert server time -> local time.
+- The player uses this mapping to schedule playout for improved multi-room sync.
 """
 
 from __future__ import annotations
@@ -41,6 +46,7 @@ import websockets
 from websockets.exceptions import ConnectionClosed
 
 from ..event_bus import EventBus
+from .clock_sync import KalmanClockSync
 from .controller import SendspinControllerCommandHandler, SendspinDuckingHandler
 from .discovery import discover_sendspin_servers
 from .models import SendspinInternalState
@@ -60,7 +66,7 @@ for _name in (
 
 
 def _now_us() -> int:
-    """Monotonic-ish microseconds for Sendspin timing messages."""
+    """Monotonic microseconds for Sendspin timing messages."""
     return int(time.monotonic_ns() // 1000)
 
 
@@ -69,7 +75,6 @@ def _ws_is_closed(ws: Any) -> bool:
     if ws is None:
         return True
 
-    # Classic protocol objects expose `.closed` (bool).
     try:
         closed_attr = getattr(ws, "closed")
         if isinstance(closed_attr, bool):
@@ -77,7 +82,6 @@ def _ws_is_closed(ws: Any) -> bool:
     except Exception:
         pass
 
-    # Many versions expose `.close_code` (None until closed).
     try:
         close_code = getattr(ws, "close_code", None)
         if close_code is not None:
@@ -85,7 +89,6 @@ def _ws_is_closed(ws: Any) -> bool:
     except Exception:
         pass
 
-    # Newer objects expose `.state` (enum-like). Try the official enum if available.
     try:
         state = getattr(ws, "state", None)
         if state is None:
@@ -99,11 +102,9 @@ def _ws_is_closed(ws: Any) -> bool:
         except Exception:
             pass
 
-        # Heuristic fallbacks
         if isinstance(state, str):
             return state.lower() == "closed"
         if isinstance(state, int):
-            # Common pattern: 3 == CLOSED, but avoid hard-failing if different.
             return state == 3
     except Exception:
         pass
@@ -181,6 +182,10 @@ class SendspinClient:
         self._debug_protocol: bool = bool(self._cfg_get(log_cfg, "debug_protocol", False))
         self._debug_payloads: bool = bool(self._cfg_get(log_cfg, "debug_payloads", False))
 
+        # Clock sync (offset + drift)
+        self._clock = KalmanClockSync()
+        self._last_time_sync_t1: int = 0
+
         # Player pipeline (extracted)
         self._player = SendspinPlayerPipeline(
             loop=self._loop,
@@ -189,6 +194,7 @@ class SendspinClient:
             stop_event=self._stop_event,
             disconnect_event=self._disconnect_event,
         )
+        self._player.set_clock_sync(self._clock)
         self._player.set_audio_state(muted=self._muted, effective_volume=self._effective_volume())
 
         # EventBus hooks
@@ -390,6 +396,23 @@ class SendspinClient:
             },
         )
 
+    def _publish_clock_sync(self) -> None:
+        # Lightweight + deduped
+        stats = self._clock.get_stats()
+        self._emit_event_dedup(
+            "sendspin_clock_sync",
+            {
+                "offset_us": float(stats.offset_us),
+                "drift_ppm": float(stats.drift_ppm),
+                "offset_stddev_us": float(stats.offset_stddev_us),
+                "samples": int(stats.samples),
+                "last_rtt_us": int(stats.last_rtt_us),
+                "ewma_rtt_us": float(stats.ewma_rtt_us),
+                "ewma_jitter_us": float(stats.ewma_jitter_us),
+                "synced": bool(stats.synced),
+            },
+        )
+
     # ---------------------------------------------------------------------
     # Audio apply
     # ---------------------------------------------------------------------
@@ -471,6 +494,10 @@ class SendspinClient:
         self._server_hello = {}
         self._active_roles = set()
         self._supported_controller_commands = set()
+
+        # Reset sync model per connection (server may move / restart)
+        self._clock.reset()
+        self._player.set_clock_sync(self._clock)
 
         self._state.connection.connected = False
         self._state.connection.endpoint = endpoint
@@ -762,7 +789,9 @@ class SendspinClient:
         try:
             while not self._stop_event.is_set() and not _ws_is_closed(ws):
                 try:
-                    msg = self._build_message("client/time", {"client_transmitted": _now_us()})
+                    t1 = _now_us()
+                    self._last_time_sync_t1 = int(t1)
+                    msg = self._build_message("client/time", {"client_transmitted": int(t1)})
                     await ws.send(json.dumps(msg))
                 except Exception:
                     return
@@ -779,6 +808,10 @@ class SendspinClient:
     async def _handle_json_message(self, mtype: str, payload: dict) -> None:
         if mtype == "server/state":
             await self._handle_server_state(payload)
+            return
+
+        if mtype == "server/time":
+            await self._handle_server_time(payload)
             return
 
         if mtype == "group/update":
@@ -816,6 +849,54 @@ class SendspinClient:
         if isinstance(md, dict):
             self._state.metadata = md
             self._publish_metadata()
+
+    async def _handle_server_time(self, payload: dict) -> None:
+        """
+        Handle server/time response to client/time.
+
+        Spec fields (payload):
+          - client_transmitted
+          - server_received
+          - server_transmitted
+
+        We use local receive time as client_received.
+        """
+        try:
+            t1_raw = payload.get("client_transmitted")
+            t2_raw = payload.get("server_received")
+            t3_raw = payload.get("server_transmitted")
+
+            try:
+                t1 = int(t1_raw) if t1_raw is not None else 0
+            except Exception:
+                t1 = 0
+            try:
+                t2 = int(t2_raw) if t2_raw is not None else 0
+            except Exception:
+                t2 = 0
+            try:
+                t3 = int(t3_raw) if t3_raw is not None else 0
+            except Exception:
+                t3 = 0
+
+            # Some servers don't echo client_transmitted; use our last request timestamp.
+            if t1 <= 0:
+                t1 = int(self._last_time_sync_t1 or 0)
+
+            if t1 <= 0 or t2 <= 0 or t3 <= 0:
+                return
+
+            t4 = _now_us()
+            self._clock.update(
+                client_transmitted_us=t1,
+                server_received_us=t2,
+                server_transmitted_us=t3,
+                client_received_us=int(t4),
+            )
+            # Emit stats (deduped)
+            self._publish_clock_sync()
+        except Exception:
+            _LOGGER.debug("Sendspin: failed to handle server/time", exc_info=True)
 
     async def _handle_group_update(self, payload: dict) -> None:
         pstate = payload.get("playback_state")
