@@ -346,8 +346,18 @@ class KalmanClockSync:
 
     @property
     def is_synced(self) -> bool:
-        """True when we have enough samples and variance is below ~1ms^2."""
-        return self._samples >= 6 and self._p00 < 1e6
+        """True when we have enough samples and uncertainty is "good enough".
+
+        The previous threshold (~1ms stddev) was intentionally strict, but in
+        practice it can keep `is_synced` False on real networks, which leads
+        to clients bypassing timestamp-based scheduling entirely.
+
+        This threshold aims for a pragmatic multi-room baseline:
+        - at least a few samples
+        - offset stddev on the order of single-digit milliseconds
+        """
+        # variance in us^2; 25e6 -> stddev ~= 5000us (5ms)
+        return self._samples >= 3 and self._p00 < 25e6
 
     @property
     def sync_quality(self) -> str:
@@ -388,4 +398,3 @@ class KalmanClockSync:
         self._ewma_std_us = 0.0
         self._ewma_rtt_us = 0.0
         self._ewma_jitter_us = 0.0
-
