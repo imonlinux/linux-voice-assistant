@@ -38,7 +38,7 @@
     // - null/omit => default microphone
     // - string name => exact device name (soundcard backend)
     // - string number => index into soundcard device list (e.g. "0", "1", ...)
-    "input_device": "reSpeaker XVF3800 4-Mic Array Analog Stereo",
+    "input_device": reSpeaker XVF3800 4-Mic Array Analog Stereo,
 
     // Optional: audio capture block size
     "input_block_size": 1024,
@@ -46,7 +46,7 @@
     // Optional:
     // - null/omit => mpv chooses default output
     // - string => mpv audio-device (e.g. "pulse/alsa_output....")
-    "output_device": "alsa_output.usb-Seeed_Studio_reSpeaker_XVF3800_4-Mic_Array_114993701254500095-00.analog-stereo: reSpeaker XVF3800 4-Mic Array Analog Stereo",
+    "output_device": alsa_output.usb-Seeed_Studio_reSpeaker_XVF3800_4-Mic_Array_114993701254500095-00.analog-stereo: reSpeaker XVF3800 4-Mic Array Analog Stereo,
 
     // Optional: Sync the host OS output volume at startup to match the volume
     // stored in preferences.json (LVA MediaPlayer volume).
@@ -179,7 +179,7 @@
     // the correct service.
     "systemd_service_name": "linux-voice-assistant.service"
   },
-  
+
   // ---------------------------------------------------------------------------
   // Sendspin client configuration (LVA -> Music Assistant)
   //
@@ -250,9 +250,57 @@
       "ping_interval_seconds": 0,
       "ping_timeout_seconds": 0,
 
-      // How often the client sends client/time for clock sync.
-      // 1.0s gives faster convergence; 3–5s reduces network chatter.
-      "time_sync_interval_seconds": 1.0
+      // ---------------------------------------------------------------------
+      // Clock sync (client/time <-> server/time)
+      // ---------------------------------------------------------------------
+
+      // How often the client sends `client/time` for clock sync.
+      //
+      // - If time_sync_adaptive=false: this is the fixed interval.
+      // - If time_sync_adaptive=true: this is the base interval that adaptive logic
+      //   will start from, then adjust within [time_sync_min_interval_seconds,
+      //   time_sync_max_interval_seconds].
+      //
+      // Lower values converge faster but increase network chatter.
+      //
+      // Default: 5.0
+      "time_sync_interval_seconds": 5.0,
+
+      // Enable adaptive time-sync interval based on observed clock / network quality.
+      //
+      // Default: false
+      "time_sync_adaptive": true,
+
+      // Bounds for adaptive polling interval.
+      //
+      // Defaults: min=0.5, max=5.0
+      "time_sync_min_interval_seconds": 0.5,
+      "time_sync_max_interval_seconds": 5.0,
+
+      // Burst probing: send N `client/time` probes in quick succession and use the
+      // best (lowest-RTT) sample to update the clock sync filter.
+      //
+      // This is especially helpful at startup and on stream start to quickly find
+      // a clean RTT sample and avoid initial A/V misalignment.
+      //
+      // Defaults: on_connect=true, on_stream_start=true
+      "time_sync_burst_on_connect": true,
+      "time_sync_burst_on_stream_start": true,
+
+      // - Set to 1 to disable burst probing (legacy behavior).
+      // - Typical: 6–10
+      "time_sync_burst_size": 8,
+
+      // Delay between probes within a burst (seconds).
+      // Typical: 0.05–0.15
+      // Default: 0.1
+      "time_sync_burst_spacing_seconds": 0.1,
+
+      // After the last probe in a burst, wait this long to allow server/time
+      // responses to arrive before selecting the best sample (seconds).
+      //
+      // Default: 1.5
+      "time_sync_burst_grace_seconds": 1.5
     },
 
     // -----------------------------------------------------------------------
@@ -287,17 +335,38 @@
       "sync_target_latency_ms": 250,
 
       // Late frame drop threshold (ms).
-      // If a packet arrives "too late" (its timestamp is already in the past by
-      // more than this window), we drop it rather than playing it late.
-      // Typical: 60–150ms.
-      "sync_late_drop_ms": 100,
+      // If a chunk arrives "too late" (its target playout time is already in the past
+      // by more than this window), it is dropped rather than played late.
+      //
+      // Typical: 60–200ms (LAN is usually fine at 100–150ms).
+      // Default: 150
+      "sync_late_drop_ms": 150,
 
       // Per-device latency compensation (ms).
-      // Use this to align devices that have *fixed* extra delay (DSP, amp, etc.).
-      // - If THIS LVA client plays EARLIER than others, INCREASE this value.
-      // - If THIS LVA client plays LATER than others, DECREASE it (cannot be < 0;
-      //   instead, add delay to the other devices).
+      //
+      // This shifts the *scheduled playout time* used by the jitter buffer.
+      // It does NOT change MPV’s internal buffering directly; it simply makes us
+      // aim earlier or later relative to the server timestamps.
+      //
+      // Important notes:
+      // - Negative values are allowed and are often what you want.
+      //   Many audio stacks (PulseAudio/PipeWire/ALSA) add output buffering; a
+      //   negative value compensates by scheduling earlier.
+      // - If THIS client plays EARLIER than others, make this MORE POSITIVE (add delay).
+      // - If THIS client plays LATER than others, make this MORE NEGATIVE (play earlier).
+      //
+      // Typical: -50 to -300ms depending on hardware/stack; measure and tune.
+      // Default: 0
       "output_latency_ms": 0,
+
+      // Stream clear handling window (ms).
+      //
+      // When the server sends `stream/clear` (e.g., seeking), the client drops
+      // any queued chunks whose timestamps fall within this window ahead of the
+      // clear moment, to avoid briefly playing old audio after a seek.
+      //
+      // Default: 2000
+      "clear_drop_window_ms": 2000,
 
       // Ducking amount while voice is active (if coordination.duck_during_voice is true).
       "duck_volume_percent": 20,
