@@ -67,36 +67,36 @@ class SendspinPlayerPipeline:
         self._sync_target_latency_ms: int = int(self._cfg_get(player_cfg, "sync_target_latency_ms", 250) or 250)
         # Drop PCM chunks if they arrive too late (relative to due time).
         self._sync_late_drop_ms: int = int(self._cfg_get(player_cfg, "sync_late_drop_ms", 150) or 150)
-        # Extra output compensation (if you want to account for known sink delay).
+        # Static output timing adjustment (ms).
+        #
+        # This is the LVA analogue to sendspin-cli's `--static-delay-ms`.
+        # Based on practical testing, values are often *negative* (e.g. -100 or -150)
+        # to compensate for fixed buffering in the audio output stack.
+        #
+        # Convention:
+        #   +N => play later by N ms
+        #   -N => play earlier by N ms
         self._output_latency_ms: int = int(self._cfg_get(player_cfg, "output_latency_ms", 0) or 0)
+
+        # After a stream/clear, we can optionally drop "stale" in-flight audio
+        # for a short window. This helps avoid playing pre-seek tail audio that
+        # arrives late after the server requested a clear.
+        self._clear_drop_window_ms: int = int(self._cfg_get(player_cfg, "clear_drop_window_ms", 200) or 200)
+        self._clear_drop_window_us: int = max(0, self._clear_drop_window_ms * 1000)
+
+        # Clear semantics:
+        # - We implement Option A (drop queued audio only) for stream/clear.
+        # - We maintain an epoch counter that tags queued audio.
+        #   When the epoch changes, the writer/decoder ignore old-epoch items.
+        self._clear_epoch: int = 0
+        self._clear_drop_until_us: int = 0
+        self._clear_cutoff_due_us: int = 0
 
         self._sync_target_latency_us = max(0, self._sync_target_latency_ms * 1000)
         self._sync_late_drop_us = max(0, self._sync_late_drop_ms * 1000)
-        self._output_latency_us = max(0, self._output_latency_ms * 1000)
+        # IMPORTANT: allow negative values (earlier playout) to match sendspin-cli behavior.
+        self._output_latency_us = int(self._output_latency_ms * 1000)
 
-
-        # Drift correction (Stage C)
-        #
-        # Even with timestamp-aware pacing (Stage B), different audio devices can
-        # run slightly fast/slow. Over long playback this causes audible drift
-        # between rooms. We correct it by gently adjusting mpv's playback speed
-        # based on persistent write-backpressure (late writes) vs early writes.
-        drift_cfg = self._cfg_get_section(player_cfg, "drift_correction") if player_cfg is not None else None
-        self._drift_enabled: bool = bool(self._cfg_get(drift_cfg, "enabled", True))
-        self._drift_update_interval_s: float = float(
-            self._cfg_get(drift_cfg, "update_interval_seconds", 0.5) or 0.5
-        )
-        self._drift_kp: float = float(self._cfg_get(drift_cfg, "kp", 0.02) or 0.02)
-        self._drift_ki: float = float(self._cfg_get(drift_cfg, "ki", 0.001) or 0.001)
-        self._drift_min_speed: float = float(self._cfg_get(drift_cfg, "min_speed", 0.995) or 0.995)
-        self._drift_max_speed: float = float(self._cfg_get(drift_cfg, "max_speed", 1.005) or 1.005)
-
-        # Controller state
-        self._mpv_speed: float = 1.0
-        self._drift_i: float = 0.0
-        self._drift_last_update: float = 0.0
-        self._drift_ema_lateness_us: float = 0.0
-        self._drift_ema_alpha: float = 0.08
         # Streaming state (local)
         self._stream_active: bool = False
         self._stream_codec: str = "pcm"
@@ -110,18 +110,19 @@ class SendspinPlayerPipeline:
         self._pcm_stderr_task: Optional[asyncio.Task] = None
         self._pcm_wait_task: Optional[asyncio.Task] = None
 
-        # Queue items are (due_local_us, pcm_bytes)
-        self._pcm_queue: "asyncio.Queue[Tuple[int, bytes]]" = asyncio.Queue(maxsize=500)
+        # Queue items are (epoch, due_local_us, pcm_bytes)
+        self._pcm_queue: "asyncio.Queue[Tuple[int, int, bytes]]" = asyncio.Queue(maxsize=500)
 
         # Decoder / transcoder state (for non-PCM codecs)
         self._decoder_proc: Optional[asyncio.subprocess.Process] = None
         self._decoder_writer_task: Optional[asyncio.Task] = None
         self._decoder_reader_task: Optional[asyncio.Task] = None
         self._decoder_stderr_task: Optional[asyncio.Task] = None
-        self._encoded_queue: "asyncio.Queue[bytes]" = asyncio.Queue(maxsize=400)
+        # Encoded queue items are (epoch, payload_bytes)
+        self._encoded_queue: "asyncio.Queue[Tuple[int, bytes]]" = asyncio.Queue(maxsize=400)
 
-        # Timestamp mapping for ffmpeg decoded output
-        self._encoded_ts_queue: Deque[int] = deque()
+        # Timestamp anchors for ffmpeg decoded output: (epoch, server_ts_us)
+        self._encoded_ts_queue: Deque[Tuple[int, int]] = deque()
         self._decoder_due_us: Optional[float] = None
         self._decoder_due_frac: float = 0.0  # fractional carry
 
@@ -165,9 +166,7 @@ class SendspinPlayerPipeline:
         # Cache decoder availability for codec advertisement and runtime decisions
         try:
             if player_cfg is not None:
-                self._ffmpeg_path = str(
-                    self._cfg_get(player_cfg, "ffmpeg_path", self._ffmpeg_path) or self._ffmpeg_path
-                )
+                self._ffmpeg_path = str(self._cfg_get(player_cfg, "ffmpeg_path", self._ffmpeg_path) or self._ffmpeg_path)
         except Exception:
             pass
 
@@ -239,6 +238,15 @@ class SendspinPlayerPipeline:
         async with self._stream_lock:
             await self._stop_stream(reason=reason)
 
+    async def clear_buffer(self) -> None:
+        """Handle `stream/clear`: drop queued audio without restarting the sink.
+
+        This keeps the mpv process alive (Option A) but clears all queued in-memory
+        audio and resets decoder scheduling anchors.
+        """
+        async with self._stream_lock:
+            await self._clear_buffer_locked()
+
     async def handle_binary_frame(self, frame: bytes) -> None:
         """Handle a binary audio frame from the websocket."""
         if not frame:
@@ -281,6 +289,46 @@ class SendspinPlayerPipeline:
         await self.stop_stream(reason="shutdown")
 
     # ---------------------------------------------------------------------
+    # stream/clear implementation (Option A)
+    # ---------------------------------------------------------------------
+
+    @staticmethod
+    def _drain_queue(q: asyncio.Queue) -> None:
+        """Best-effort drain of an asyncio.Queue without blocking."""
+        try:
+            while True:
+                q.get_nowait()
+        except asyncio.QueueEmpty:
+            return
+
+    async def _clear_buffer_locked(self) -> None:
+        """Clear buffered audio without restarting mpv/decoder.
+
+        Caller must hold `_stream_lock`.
+        """
+        # Advance epoch so any already-dequeued items are ignored by writer/decoder loops.
+        self._clear_epoch += 1
+
+        now_us = _now_us()
+        if self._clear_drop_window_us > 0:
+            self._clear_cutoff_due_us = int(now_us)
+            self._clear_drop_until_us = int(now_us + self._clear_drop_window_us)
+        else:
+            self._clear_cutoff_due_us = 0
+            self._clear_drop_until_us = 0
+
+        # Drain in-memory queues.
+        self._drain_queue(self._pcm_queue)
+        self._drain_queue(self._encoded_queue)
+        self._encoded_ts_queue.clear()
+
+        # Reset decoder scheduling anchors so next decoded bytes re-anchor cleanly.
+        self._decoder_due_us = None
+        self._decoder_due_frac = 0.0
+
+        _LOGGER.debug("Sendspin: stream/clear applied (epoch=%d)", int(self._clear_epoch))
+
+    # ---------------------------------------------------------------------
     # Timestamp extraction / scheduling
     # ---------------------------------------------------------------------
 
@@ -304,24 +352,55 @@ class SendspinPlayerPipeline:
         return ts, payload
 
     def _server_to_local_due_us(self, server_ts_us: int) -> int:
+        """Compute the local monotonic time (us) when this chunk should be played.
+
+        This is where multi-room sync happens.
+
+        Key behavior:
+        - Always applies `sync_target_latency_ms` and `output_latency_ms`, even if
+          clock sync is not yet "perfect". This prevents the "play ASAP when not
+          synced" behavior that can make this client appear ahead/behind others.
+        - Uses the clock sync mapping as soon as it has *any* samples.
+        - Includes a conservative clamp to avoid pathological due-times if a
+          timestamp glitch occurs, but allows multi-second *intentional* offsets.
+        """
         now = _now_us()
 
+        # Even without timestamps or a clock, honor configured latency knobs.
+        fallback_due = now + int(self._sync_target_latency_us) + int(self._output_latency_us)
+
         if server_ts_us <= 0:
-            return now
+            return fallback_due
 
         clk = self._clock
         if clk is None:
-            return now
+            return fallback_due
 
         try:
-            synced = bool(getattr(clk, "is_synced", False))
-            if not synced:
-                return now
+            samples = int(getattr(clk, "samples", 0) or 0)
+            if samples <= 0:
+                return fallback_due
+
             local_base = int(clk.server_to_local(int(server_ts_us)))
-            # constant offsets that preserve relative sync
-            return local_base + self._sync_target_latency_us + self._output_latency_us
+            due = local_base + int(self._sync_target_latency_us) + int(self._output_latency_us)
+
+            # Clamp to keep scheduling sane if the timestamp basis changes or glitches.
+            # Allow multi-second intentional delays (e.g., +5000ms) and typical
+            # negative static delays (e.g., -100..-150ms). Also allow larger
+            # calibrations (seconds) if the local audio pipeline is very buffered.
+            max_future_us = 30_000_000  # 30s into the future
+            max_past_us = 10_000_000    # 10s into the past (lets output_latency_ms tune in seconds)
+
+            if due > now + max_future_us:
+                _LOGGER.debug("Sendspin: due time clamped (too far future, %+dus)", due - now)
+                return now + max_future_us
+            if due < now - max_past_us:
+                _LOGGER.debug("Sendspin: due time clamped (too far past, %+dus)", due - now)
+                return now - max_past_us
+
+            return due
         except Exception:
-            return now
+            return fallback_due
 
     async def _enqueue_pcm(self, pcm: bytes, *, server_ts_us: int) -> None:
         if not pcm:
@@ -329,6 +408,11 @@ class SendspinPlayerPipeline:
 
         due_us = self._server_to_local_due_us(server_ts_us)
         now_us = _now_us()
+
+        # After a stream/clear, drop in-flight chunks that would play "before" the clear.
+        if self._clear_drop_until_us and now_us < self._clear_drop_until_us:
+            if due_us < self._clear_cutoff_due_us:
+                return
 
         # Drop if already too late (helps prevent “catch up” bursts)
         if due_us + self._sync_late_drop_us < now_us:
@@ -349,7 +433,8 @@ class SendspinPlayerPipeline:
             )
 
         try:
-            self._pcm_queue.put_nowait((due_us, pcm))
+            epoch = int(self._clear_epoch)
+            self._pcm_queue.put_nowait((epoch, due_us, pcm))
         except asyncio.QueueFull:
             _LOGGER.debug("Sendspin: PCM queue full; dropping frame (%d bytes)", len(pcm))
 
@@ -409,103 +494,14 @@ class SendspinPlayerPipeline:
 
             await self._mpv_ipc_send({"command": ["set_property", "mute", bool(self._muted)]})
             await self._mpv_ipc_send({"command": ["set_property", "volume", int(self._effective_volume)]})
-            await self._mpv_ipc_send({"command": ["set_property", "speed", float(self._mpv_speed)]})
 
             _LOGGER.debug(
-                "Sendspin: applied mpv audio state (muted=%s eff_vol=%s speed=%.5f)",
+                "Sendspin: applied mpv audio state (muted=%s eff_vol=%s)",
                 self._muted,
                 self._effective_volume,
-                self._mpv_speed,
             )
 
-    
     # ---------------------------------------------------------------------
-    # Drift correction (Stage C)
-    # ---------------------------------------------------------------------
-
-    def _drift_controller_enabled(self) -> bool:
-        if not self._drift_enabled:
-            return False
-        # If we have a clock sync object, require it to be in a "synced" state.
-        clk = self._clock
-        if clk is not None:
-            try:
-                if hasattr(clk, "is_synced") and not bool(clk.is_synced):
-                    return False
-            except Exception:
-                return False
-        return True
-
-    def _drift_update_ema(self, value_us: float) -> None:
-        # Exponential moving average for stability.
-        a = float(self._drift_ema_alpha)
-        self._drift_ema_lateness_us = (1.0 - a) * float(self._drift_ema_lateness_us) + a * float(value_us)
-
-    async def _set_mpv_speed(self, speed: float) -> None:
-        self._mpv_speed = float(speed)
-        if not self._stream_active:
-            return
-
-        async with self._mpv_ipc_lock:
-            if not self._mpv_ipc_path:
-                return
-
-            if not self._mpv_ipc_ready:
-                self._mpv_ipc_ready = await self._wait_for_mpv_ipc(timeout_s=0.5)
-            if not self._mpv_ipc_ready:
-                return
-
-            await self._mpv_ipc_send({"command": ["set_property", "speed", float(self._mpv_speed)]})
-
-    def _drift_controller_step(self, finish_lateness_us: int) -> None:
-        """Update drift controller using how late we were delivering PCM to mpv.
-
-        Positive lateness means we're falling behind our intended schedule (usually
-        because mpv/audio is consuming slower than wall-clock); we speed up a bit.
-        Negative lateness means we're ahead (risking underruns); we slow down a bit.
-        """
-        if not self._drift_controller_enabled():
-            return
-
-        self._drift_update_ema(float(finish_lateness_us))
-
-        now = time.monotonic()
-        if self._drift_last_update <= 0.0:
-            self._drift_last_update = now
-            return
-
-        dt = now - self._drift_last_update
-        if dt < max(0.05, float(self._drift_update_interval_s)):
-            return
-
-        self._drift_last_update = now
-
-        # Clamp error so we never overreact to a single stall.
-        err_us = max(-200_000.0, min(200_000.0, float(self._drift_ema_lateness_us)))
-        err_s = err_us / 1_000_000.0
-
-        # PI controller around speed=1.0.
-        self._drift_i += err_s * dt
-        # Prevent integrator windup.
-        self._drift_i = max(-0.5, min(0.5, float(self._drift_i)))
-
-        speed = 1.0 + (float(self._drift_kp) * err_s) + (float(self._drift_ki) * float(self._drift_i))
-        speed = max(float(self._drift_min_speed), min(float(self._drift_max_speed), float(speed)))
-
-        # Avoid spamming IPC for tiny changes.
-        if abs(speed - float(self._mpv_speed)) < 0.0001:
-            return
-
-        # Fire-and-forget to keep the PCM writer loop responsive.
-        self._loop.create_task(self._set_mpv_speed(speed))
-
-        _LOGGER.debug(
-            "Sendspin: drift correction speed=%.5f (ema_lateness=%.1fms)",
-            speed,
-            float(self._drift_ema_lateness_us) / 1000.0,
-        )
-
-# ---------------------------------------------------------------------
     # Stream start/stop
     # ---------------------------------------------------------------------
 
@@ -532,12 +528,6 @@ class SendspinPlayerPipeline:
         self._pcm_last_frame_at = None
         self._sink_failed = False
 
-        # Reset drift correction state for this stream
-        self._mpv_speed = 1.0
-        self._drift_i = 0.0
-        self._drift_last_update = 0.0
-        self._drift_ema_lateness_us = 0.0
-
         # Reset queues / timestamp mapping
         self._pcm_queue = asyncio.Queue(maxsize=500)
         self._encoded_queue = asyncio.Queue(maxsize=400)
@@ -545,6 +535,11 @@ class SendspinPlayerPipeline:
         self._decoder_due_us = None
         self._decoder_due_frac = 0.0
         self._opus_backend = "none"
+
+        # Reset clear epoch/window for a fresh stream.
+        self._clear_epoch = 0
+        self._clear_drop_until_us = 0
+        self._clear_cutoff_due_us = 0
 
         # mpv IPC socket path
         sock_id = self._sanitize_id(self._client_id)
@@ -575,12 +570,14 @@ class SendspinPlayerPipeline:
         self._loop.create_task(self._apply_mpv_audio_state())
 
         _LOGGER.info(
-            "Sendspin: stream start codec=%s rate=%s ch=%s depth=%s (sync_latency_ms=%d)",
+            "Sendspin: stream start codec=%s rate=%s ch=%s depth=%s (sync_latency_ms=%d output_latency_ms=%d late_drop_ms=%d)",
             self._stream_codec,
             self._stream_rate,
             self._stream_channels,
             self._stream_bit_depth,
             self._sync_target_latency_ms,
+            self._output_latency_ms,
+            self._sync_late_drop_ms,
         )
 
     async def _stop_stream(self, *, reason: str) -> None:
@@ -590,9 +587,6 @@ class SendspinPlayerPipeline:
         _LOGGER.info("Sendspin: stream stop (%s)", reason)
 
         self._stream_active = False
-
-        # Reset drift correction state
-        self._mpv_speed = 1.0
 
         # Stop decoder first (so its stdout reader stops feeding PCM).
         await self._stop_decoder()
@@ -630,7 +624,6 @@ class SendspinPlayerPipeline:
             "--really-quiet",
             "--idle=no",
             "--cache=no",
-            "--audio-pitch-correction=yes",
             "--demuxer=rawaudio",
             f"--demuxer-rawaudio-format={fmt}",
             f"--demuxer-rawaudio-rate={int(sample_rate)}",
@@ -698,8 +691,12 @@ class SendspinPlayerPipeline:
 
         try:
             while not self._stop_event.is_set():
-                due_us, chunk = await self._pcm_queue.get()
+                epoch, due_us, chunk = await self._pcm_queue.get()
                 if not chunk:
+                    continue
+
+                # If a clear occurred after this chunk was queued, drop it.
+                if int(epoch) != int(self._clear_epoch):
                     continue
 
                 # Pacing: wait until due time
@@ -712,11 +709,13 @@ class SendspinPlayerPipeline:
                     if due_us + self._sync_late_drop_us < now2:
                         continue
 
+                # Re-check epoch after sleeping. A clear can happen while we wait.
+                if int(epoch) != int(self._clear_epoch):
+                    continue
+
                 try:
                     proc.stdin.write(chunk)
                     await proc.stdin.drain()
-                    finish_lateness_us = _now_us() - int(due_us)
-                    self._drift_controller_step(finish_lateness_us)
                 except (BrokenPipeError, ConnectionResetError):
                     raise
                 except Exception:
@@ -873,10 +872,18 @@ class SendspinPlayerPipeline:
 
         try:
             while not self._stop_event.is_set() and self._stream_active:
-                chunk = await self._encoded_queue.get()
+                epoch, chunk = await self._encoded_queue.get()
                 if not chunk:
                     continue
+
+                # If a clear occurred after this payload was queued, drop it.
+                if int(epoch) != int(self._clear_epoch):
+                    continue
+
                 try:
+                    # Re-check epoch right before write to reduce race window.
+                    if int(epoch) != int(self._clear_epoch):
+                        continue
                     proc.stdin.write(chunk)
                     await proc.stdin.drain()
                 except (BrokenPipeError, ConnectionResetError):
@@ -911,8 +918,12 @@ class SendspinPlayerPipeline:
 
                 # Establish / advance due time using encoded timestamp anchors
                 if self._decoder_due_us is None:
+                    # Drop stale anchors from previous clear epochs.
+                    while self._encoded_ts_queue and self._encoded_ts_queue[0][0] != int(self._clear_epoch):
+                        self._encoded_ts_queue.popleft()
+
                     if self._encoded_ts_queue:
-                        anchor_server_ts = self._encoded_ts_queue.popleft()
+                        _epoch, anchor_server_ts = self._encoded_ts_queue.popleft()
                         self._decoder_due_us = float(self._server_to_local_due_us(anchor_server_ts))
                         self._decoder_due_frac = 0.0
                     else:
@@ -922,7 +933,8 @@ class SendspinPlayerPipeline:
                 due_us_int = int(self._decoder_due_us)
 
                 try:
-                    self._pcm_queue.put_nowait((due_us_int, chunk))
+                    epoch = int(self._clear_epoch)
+                    self._pcm_queue.put_nowait((epoch, due_us_int, chunk))
                 except asyncio.QueueFull:
                     _LOGGER.debug("Sendspin: PCM queue full (decoder output); dropping")
                     # Still advance timing
@@ -932,8 +944,12 @@ class SendspinPlayerPipeline:
                 self._decoder_due_us = float(self._decoder_due_us) + dur_us
 
                 # If we have additional anchors, and drifted far, snap gently (keeps long FLAC streams aligned)
+                # Drop stale anchors from previous clear epochs.
+                while self._encoded_ts_queue and self._encoded_ts_queue[0][0] != int(self._clear_epoch):
+                    self._encoded_ts_queue.popleft()
+
                 if self._encoded_ts_queue:
-                    next_anchor_server_ts = self._encoded_ts_queue[0]
+                    _epoch2, next_anchor_server_ts = self._encoded_ts_queue[0]
                     next_anchor_local = self._server_to_local_due_us(next_anchor_server_ts)
                     # If our predicted timeline is >200ms away from anchor, snap to anchor.
                     if abs(next_anchor_local - int(self._decoder_due_us)) > 200_000:
@@ -949,11 +965,19 @@ class SendspinPlayerPipeline:
         if not self._decoder_proc:
             return
 
+        # Drop stale in-flight payloads shortly after a clear.
+        if self._clear_drop_until_us and _now_us() < self._clear_drop_until_us and server_ts_us > 0:
+            due_us = self._server_to_local_due_us(server_ts_us)
+            if due_us < self._clear_cutoff_due_us:
+                return
+
+        epoch = int(self._clear_epoch)
+
         if server_ts_us > 0:
-            self._encoded_ts_queue.append(int(server_ts_us))
+            self._encoded_ts_queue.append((epoch, int(server_ts_us)))
 
         try:
-            self._encoded_queue.put_nowait(payload)
+            self._encoded_queue.put_nowait((epoch, payload))
         except asyncio.QueueFull:
             _LOGGER.debug("Sendspin: encoded queue full; dropping %s payload (%d bytes)", codec, len(payload))
 
