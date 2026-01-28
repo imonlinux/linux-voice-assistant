@@ -31,6 +31,11 @@ Clock sync + multi-room timing:
 - Sendspin binary audio frames include a server timestamp (us) for first sample.
 - We maintain a Kalman clock sync to convert server time -> local time.
 - The player uses this mapping to schedule playout for improved multi-room sync.
+
+Time sync robustness (Sendspin CLI-inspired):
+- Optional *burst* probing (N client/time probes spaced by ~50ms) and choose the
+  lowest-RTT sample to update the Kalman model.
+- Optional adaptive polling interval based on estimated offset variance.
 """
 
 from __future__ import annotations
@@ -40,7 +45,7 @@ import copy
 import json
 import logging
 import time
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple, List
 
 import websockets
 from websockets.exceptions import ConnectionClosed
@@ -164,9 +169,46 @@ class SendspinClient:
         self._ping_timeout_s: float = float(
             self._cfg_get(self._cfg_get_section(self._cfg, "connection"), "ping_timeout_seconds", 20.0)
         )
+
+        conn_cfg = self._cfg_get_section(self._cfg, "connection")
+
+        # Base time sync interval (used as fallback when adaptive is disabled)
         self._time_sync_interval_s: float = float(
-            self._cfg_get(self._cfg_get_section(self._cfg, "connection"), "time_sync_interval_seconds", 5.0)
+            self._cfg_get(conn_cfg, "time_sync_interval_seconds", 5.0)
         )
+
+        # Sendspin CLI-inspired robust time sync options (safe defaults)
+        self._time_sync_adaptive: bool = bool(
+            self._cfg_get(conn_cfg, "time_sync_adaptive", True)
+        )
+        self._time_sync_min_interval_s: float = float(
+            self._cfg_get(conn_cfg, "time_sync_min_interval_seconds", 0.5)
+        )
+        self._time_sync_max_interval_s: float = float(
+            self._cfg_get(conn_cfg, "time_sync_max_interval_seconds", 10.0)
+        )
+
+        self._time_sync_burst_size: int = int(
+            self._cfg_get(conn_cfg, "time_sync_burst_size", 8)
+        )
+        # spacing between probes within a burst
+        self._time_sync_burst_spacing_s: float = float(
+            self._cfg_get(conn_cfg, "time_sync_burst_spacing_seconds", 0.05)
+        )
+        # grace period after the last probe to allow responses to arrive
+        self._time_sync_burst_grace_s: float = float(
+            self._cfg_get(conn_cfg, "time_sync_burst_grace_seconds", 0.15)
+        )
+        # Allow disabling burst by setting <= 1
+        if self._time_sync_burst_size < 1:
+            self._time_sync_burst_size = 1
+
+        # Collector for burst samples (protected by lock)
+        self._time_sync_collecting: bool = False
+        self._time_sync_samples: List[Dict[str, int]] = []
+        self._time_sync_lock = asyncio.Lock()
+        # Outstanding t1 values in case server doesn't echo client_transmitted (best-effort)
+        self._time_sync_pending_t1: List[int] = []
 
         # Seed initial player state from sendspin.initial (which __main__.py seeds from preferences.json)
         init_cfg = self._cfg_get_section(self._cfg, "initial")
@@ -499,6 +541,12 @@ class SendspinClient:
         self._clock.reset()
         self._player.set_clock_sync(self._clock)
 
+        # Reset time sync burst state
+        async with self._time_sync_lock:
+            self._time_sync_collecting = False
+            self._time_sync_samples = []
+            self._time_sync_pending_t1 = []
+
         self._state.connection.connected = False
         self._state.connection.endpoint = endpoint
         self._state.connection.server_id = None
@@ -785,17 +833,115 @@ class SendspinClient:
         except Exception:
             _LOGGER.debug("Sendspin: ping loop error", exc_info=True)
 
+    def _compute_time_sync_interval_s(self) -> float:
+        """Choose the next time-sync interval based on sync confidence."""
+        # Baseline: preserve previous behavior if adaptive is disabled.
+        if not self._time_sync_adaptive:
+            return max(0.1, float(self._time_sync_interval_s))
+
+        samples = int(self._clock.samples)
+        var = float(self._clock.variance)
+
+        # Rapid convergence phase
+        if samples < 5:
+            interval = 0.5
+        else:
+            # Map variance bands (us^2) to polling interval tiers.
+            # std < 1ms => 10s
+            if var < 1e6:
+                interval = 10.0
+            # std < 2ms => 5s
+            elif var < 4e6:
+                interval = 5.0
+            # std < 5ms => 2s
+            elif var < 25e6:
+                interval = 2.0
+            else:
+                interval = 1.0
+
+        interval = max(float(self._time_sync_min_interval_s), min(float(self._time_sync_max_interval_s), float(interval)))
+        return max(0.1, interval)
+
     async def _time_sync_loop(self, ws: Any) -> None:
+        """Time sync loop.
+
+        Supports:
+        - Single-shot polling (legacy)
+        - Burst probing (N probes spaced by ~50ms) with best-RTT sample selection
+        - Adaptive polling interval (based on clock variance)
+        """
         try:
             while not self._stop_event.is_set() and not _ws_is_closed(ws):
-                try:
-                    t1 = _now_us()
-                    self._last_time_sync_t1 = int(t1)
-                    msg = self._build_message("client/time", {"client_transmitted": int(t1)})
-                    await ws.send(json.dumps(msg))
-                except Exception:
-                    return
-                await asyncio.sleep(self._time_sync_interval_s)
+                interval_s = self._compute_time_sync_interval_s()
+
+                # Burst mode is enabled when burst_size > 1
+                burst_size = int(self._time_sync_burst_size)
+                burst_size = max(1, burst_size)
+
+                if burst_size == 1:
+                    # Legacy behavior: send one probe and update on receipt
+                    try:
+                        t1 = _now_us()
+                        self._last_time_sync_t1 = int(t1)
+                        msg = self._build_message("client/time", {"client_transmitted": int(t1)})
+                        await ws.send(json.dumps(msg))
+                    except Exception:
+                        return
+
+                    await asyncio.sleep(interval_s)
+                    continue
+
+                # Burst probing
+                async with self._time_sync_lock:
+                    self._time_sync_collecting = True
+                    self._time_sync_samples = []
+                    self._time_sync_pending_t1 = []
+
+                for _ in range(burst_size):
+                    if self._stop_event.is_set() or _ws_is_closed(ws):
+                        return
+                    try:
+                        t1 = _now_us()
+                        self._last_time_sync_t1 = int(t1)
+                        msg = self._build_message("client/time", {"client_transmitted": int(t1)})
+
+                        async with self._time_sync_lock:
+                            self._time_sync_pending_t1.append(int(t1))
+
+                        await ws.send(json.dumps(msg))
+                    except Exception:
+                        return
+
+                    await asyncio.sleep(max(0.0, float(self._time_sync_burst_spacing_s)))
+
+                # Give server/time responses a moment to arrive
+                await asyncio.sleep(max(0.0, float(self._time_sync_burst_grace_s)))
+
+                # Select best (lowest RTT) sample and update clock once
+                best: Optional[Dict[str, int]] = None
+                async with self._time_sync_lock:
+                    samples = list(self._time_sync_samples)
+                    self._time_sync_collecting = False
+                    self._time_sync_samples = []
+                    self._time_sync_pending_t1 = []
+
+                if samples:
+                    best = min(samples, key=lambda s: int(s.get("rtt_us", 1 << 60)))
+
+                if best:
+                    try:
+                        self._clock.update(
+                            client_transmitted_us=int(best["t1"]),
+                            server_received_us=int(best["t2"]),
+                            server_transmitted_us=int(best["t3"]),
+                            client_received_us=int(best["t4"]),
+                        )
+                        self._publish_clock_sync()
+                    except Exception:
+                        _LOGGER.debug("Sendspin: failed to apply burst time-sync sample", exc_info=True)
+
+                await asyncio.sleep(interval_s)
+
         except asyncio.CancelledError:
             return
         except Exception:
@@ -820,6 +966,10 @@ class SendspinClient:
 
         if mtype == "stream/start":
             await self._handle_stream_start(payload)
+            return
+
+        if mtype == "stream/clear":
+            await self._handle_stream_clear(payload)
             return
 
         if mtype in ("stream/stop", "stream/end"):
@@ -879,21 +1029,39 @@ class SendspinClient:
             except Exception:
                 t3 = 0
 
-            # Some servers don't echo client_transmitted; use our last request timestamp.
+            # Some servers don't echo client_transmitted; use FIFO as best effort.
             if t1 <= 0:
-                t1 = int(self._last_time_sync_t1 or 0)
+                async with self._time_sync_lock:
+                    if self._time_sync_pending_t1:
+                        t1 = int(self._time_sync_pending_t1.pop(0))
+                    else:
+                        t1 = int(self._last_time_sync_t1 or 0)
 
             if t1 <= 0 or t2 <= 0 or t3 <= 0:
                 return
 
             t4 = _now_us()
+
+            # If we're collecting a burst, store the sample and return.
+            async with self._time_sync_lock:
+                collecting = bool(self._time_sync_collecting)
+
+            if collecting:
+                rtt = (int(t4) - int(t1)) - (int(t3) - int(t2))
+                rtt = max(0, int(rtt))
+                async with self._time_sync_lock:
+                    self._time_sync_samples.append(
+                        {"t1": int(t1), "t2": int(t2), "t3": int(t3), "t4": int(t4), "rtt_us": int(rtt)}
+                    )
+                return
+
+            # Legacy: apply immediately
             self._clock.update(
-                client_transmitted_us=t1,
-                server_received_us=t2,
-                server_transmitted_us=t3,
+                client_transmitted_us=int(t1),
+                server_received_us=int(t2),
+                server_transmitted_us=int(t3),
                 client_received_us=int(t4),
             )
-            # Emit stats (deduped)
             self._publish_clock_sync()
         except Exception:
             _LOGGER.debug("Sendspin: failed to handle server/time", exc_info=True)
@@ -955,6 +1123,32 @@ class SendspinClient:
         self._apply_audio_state_to_player()
         self._publish_audio_state()
 
+    async def _handle_stream_clear(self, payload: dict) -> None:
+        """Handle server -> client `stream/clear`.
+
+        Spec intent: clear buffers without ending the stream (used for seek).
+        Implementation: Option A (drop queued audio only). We keep mpv alive.
+        """
+        roles = payload.get("roles")
+        if isinstance(roles, str):
+            roles_list = [roles]
+        elif isinstance(roles, list):
+            roles_list = [str(r) for r in roles if isinstance(r, (str, int))]
+        else:
+            roles_list = ["player"]
+
+        # Only clear player buffers if we have the player role enabled.
+        roles_cfg = self._cfg_get_section(self._cfg, "roles")
+        player_enabled = bool(self._cfg_get(roles_cfg, "player", True))
+
+        if player_enabled and "player" in [r.lower() for r in roles_list]:
+            if self._debug_protocol:
+                _LOGGER.debug("Sendspin: stream/clear (roles=%s)", roles_list)
+            try:
+                await self._player.clear_buffer()
+            except Exception:
+                _LOGGER.debug("Sendspin: failed to clear player buffer", exc_info=True)
+
     async def _handle_stream_stop(self, reason: str) -> None:
         # Stop local pipeline first.
         await self._player.stop_stream(reason=reason)
@@ -995,9 +1189,7 @@ class SendspinClient:
             await self._send_client_state_update()
 
     async def _handle_metadata_legacy(self, msg: dict) -> None:
-        md = msg.get("metadata")
+        md = msg.get("metadata") if isinstance(msg.get("metadata"), dict) else msg
         if isinstance(md, dict):
             self._state.metadata = md
-        else:
-            self._state.metadata = {k: v for k, v in msg.items() if k != "type"}
-        self._publish_metadata()
+            self._publish_metadata()
