@@ -438,6 +438,17 @@ def _init_basics() -> Tuple[Config, Dict[str, Any], asyncio.AbstractEventLoop, E
     )
     _LOGGER.info("Loading configuration from: %s", config_path)
 
+    # ---------------------------------------------------------------------
+    # Reduce 3rd-party debug log spam while keeping LVA debug logs useful.
+    #
+    # Example spam:
+    #   DEBUG pymicro_wakeword.microwakeword: Okay Nabu mean prob: 0.0
+    #
+    # Keep LVA at DEBUG (when enabled) but raise pymicro_wakeword to INFO.
+    # ---------------------------------------------------------------------
+    logging.getLogger("pymicro_wakeword").setLevel(logging.INFO)
+    logging.getLogger("pymicro_wakeword.microwakeword").setLevel(logging.INFO)
+
     loop = asyncio.get_running_loop()
     event_bus = EventBus()
 
