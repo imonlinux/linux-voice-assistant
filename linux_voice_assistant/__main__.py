@@ -30,8 +30,11 @@ from .util import get_mac_address, format_mac
 from .zeroconf import HomeAssistantZeroconf
 from .xvf3800_button_controller import XVF3800ButtonController  # NEW
 
-# NEW: Sendspin
-from .sendspin.client import SendspinClient  # type: ignore
+# NEW: Sendspin (optional - websockets may not be installed)
+try:
+    from .sendspin.client import SendspinClient  # type: ignore
+except ImportError:
+    SendspinClient = None  # type: ignore
 
 _LOGGER = logging.getLogger(__name__)
 _MODULE_DIR = Path(__file__).parent
@@ -79,77 +82,21 @@ class MicMuteHandler(EventHandler):
     @subscribe
     def set_mic_mute(self, data: dict):
         """Event handler for mic mute commands."""
-        is_muted = data.get("state", False)
-        if self.state.mic_muted != is_muted:
-            self.state.mic_muted = is_muted
-
-            # Synchronize the threading event for the audio loop
-            if is_muted:
-                self.state.mic_muted_event.clear()  # Pauses audio thread
-            else:
-                self.state.mic_muted_event.set()    # Resumes audio thread
-
-            _LOGGER.debug("Mic muted = %s", is_muted)
-
-            if self.mqtt_controller:
-                self.mqtt_controller.publish_mute_state(is_muted)
-
-            if is_muted:
-                self.event_bus.publish("mic_muted")
-            else:
-                self.event_bus.publish("mic_unmuted")
-
-    @subscribe
-    def set_num_leds(self, data: dict):
-        """Event handler to save num_leds to preferences."""
-        num_leds = data.get("num_leds")
-        if (num_leds is not None) and (self.state.preferences.num_leds != num_leds):
-            self.state.preferences.num_leds = num_leds
-            self.state.save_preferences()
-
-    @subscribe
-    def set_alarm_duration(self, data: dict):
-        """
-        Event handler to save alarm_duration_seconds to preferences.
-
-        Expected payload from MQTT controller:
-            { "alarm_duration_seconds": <int> }
-
-        Semantics:
-            0  -> infinite alarm (only Stop/wake word stops it)
-            >0 -> auto-stop alarm after N seconds (plus Stop wake word support)
-        """
-        duration = data.get("alarm_duration_seconds")
-        if duration is None:
+        muted = data.get("muted")
+        if muted is None:
             return
 
-        try:
-            duration = int(duration)
-        except (TypeError, ValueError):
-            _LOGGER.warning(
-                "Invalid alarm_duration_seconds value received: %r", duration
-            )
-            return
+        self.state.mic_muted = bool(muted)
+        self.state.preferences.mic_muted = bool(muted)
+        self.state.save_preferences()
 
-        if duration < 0:
-            _LOGGER.warning(
-                "Negative alarm_duration_seconds (%d) is not allowed; ignoring",
-                duration,
-            )
-            return
-
-        current = getattr(self.state.preferences, "alarm_duration_seconds", 0)
-        if current != duration:
-            _LOGGER.debug(
-                "Updating alarm_duration_seconds: %s -> %s", current, duration
-            )
-            self.state.preferences.alarm_duration_seconds = duration
-            self.state.save_preferences()
+        if self.mqtt_controller:
+            self.mqtt_controller.publish_mic_mute_state(self.state.mic_muted)
 
 
 class SendspinPreferencesHandler(EventHandler):
     """
-    Persists Sendspin player volume (0-100) into preferences.json.
+    Persists Sendspin volume changes to preferences.json.
 
     Expects SendspinClient to publish:
         event_bus.publish("sendspin_volume_changed", {"volume": <0-100>})
@@ -202,11 +149,14 @@ def _create_sendspin_client(
     sendspin_cfg: Dict[str, Any],
     client_id: str,
     client_name: str,
-) -> SendspinClient:
+) -> Any:
     """
     Create SendspinClient while being resilient to constructor keyword differences
     (cfg vs config) and without passing unsupported kwargs (e.g., preferences).
     """
+    if SendspinClient is None:
+        raise RuntimeError("SendspinClient not available (websockets not installed)")
+
     # Prefer keyword forms first; fall back to positional if needed.
     try:
         return SendspinClient(
@@ -286,10 +236,17 @@ async def main() -> None:
 
     # --- 7b. Start Sendspin (optional) ---
     sendspin_task: Optional[asyncio.Task] = None
-    sendspin_client: Optional[SendspinClient] = None
+    sendspin_client: Optional[Any] = None
     try:
         sendspin_cfg = _get_sendspin_section(raw_config)
         sendspin_enabled = bool(sendspin_cfg.get("enabled", False))
+
+        if sendspin_enabled and SendspinClient is None:
+            _LOGGER.warning(
+                "Sendspin enabled in config but websockets not installed. "
+                "Run 'script/setup --sendspin' to enable Sendspin support."
+            )
+            sendspin_enabled = False
 
         if sendspin_enabled:
             # Seed Sendspin initial volume from preferences (0-100), overriding config initial volume.
@@ -374,72 +331,43 @@ def _init_basics() -> Tuple[Config, Dict[str, Any], asyncio.AbstractEventLoop, E
         "--wake-word-threshold",
         type=float,
         default=None,
-        help="OpenWakeWord activation threshold (0.0-1.0). Overrides wake_word.openwakeword_threshold in config.json",
+        help="OpenWakeWord activation threshold (0.0-1.0). Overrides config.json."
     )
 
     args = parser.parse_args()
 
     if args.list_input_devices:
-        print("Input devices\n" + "=" * 13)
-        try:
-            for idx, mic in enumerate(sc.all_microphones(include_loopback=False)):
-                print(f"[{idx}]", mic.name)
-        except Exception as e:
-            _LOGGER.error(
-                "Error listing input devices (ensure audio backend is working): %s",
-                e,
-            )
+        print("Available input devices:")
+        for i, mic in enumerate(sc.all_microphones(include_loopback=False)):
+            print(f"  [{i}] {mic.name}")
         sys.exit(0)
 
     if args.list_output_devices:
-        print("Output devices\n" + "=" * 14)
-        try:
-            player = MpvMediaPlayer(loop=None)
-            for speaker in player.player.audio_device_list:
-                print(speaker["name"] + ":", speaker["description"])
-        except Exception as e:
-            _LOGGER.error("Failed to list output devices: %s", e)
-            sys.exit(1)
+        print("Available output devices:")
+        for i, spk in enumerate(sc.all_speakers()):
+            print(f"  [{i}] {spk.name}")
         sys.exit(0)
 
-    config_path = args.config
-    if not config_path.is_absolute():
-        config_path = _REPO_DIR / config_path
+    # Load config from JSON and raw config (to pass Sendspin section unchanged)
+    config = load_config_from_json(args.config)
+    with open(args.config, "r", encoding="utf-8") as f:
+        raw_config = json.load(f)
 
-    # Load dataclass config
-    config = load_config_from_json(config_path)
-
-    # ALSO load raw JSON dict (so Sendspin gets its section exactly as authored)
-    try:
-        with open(config_path, "r", encoding="utf-8") as f:
-            raw_config: Dict[str, Any] = json.load(f)
-    except Exception:
-        _LOGGER.exception("Failed to read raw config JSON (required for sendspin section)")
-        raw_config = {}
-
-    if args.debug:
-        config.app.debug = True
-
-    # CLI override for OWW threshold (validated/clamped later by AudioEngine too)
+    # CLI --wake-word-threshold overrides config.json
     if args.wake_word_threshold is not None:
-        try:
-            config.wake_word.openwakeword_threshold = float(args.wake_word_threshold)
-        except Exception:
-            _LOGGER.warning(
-                "Invalid --wake-word-threshold value %r; keeping config value %.2f",
-                args.wake_word_threshold,
-                getattr(config.wake_word, "openwakeword_threshold", 0.5),
-            )
+        config.wake_word.openwakeword_threshold = args.wake_word_threshold
 
+    # Logging setup
+    log_level = logging.DEBUG if args.debug or config.app.debug else logging.INFO
     logging.basicConfig(
-        level=logging.DEBUG if config.app.debug else logging.INFO,
+        level=log_level,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S"
+        datefmt="%Y-%m-%d %H:%M:%S",
     )
-    _LOGGER.info("Loading configuration from: %s", config_path)
 
     # ---------------------------------------------------------------------
-    # Reduce 3rd-party debug log spam while keeping LVA debug logs useful.
+    # pymicro_wakeword emits a steady stream of DEBUG lines *while idle*,
+    # which is extremely noisy when you have --debug enabled.
     #
     # Example spam:
     #   DEBUG pymicro_wakeword.microwakeword: Okay Nabu mean prob: 0.0
