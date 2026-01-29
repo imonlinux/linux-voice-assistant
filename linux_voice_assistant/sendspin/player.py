@@ -28,6 +28,11 @@ _LOGGER = logging.getLogger(__name__)
 
 _BINARY_HEADER_LEN = 9  # 1 byte header + 8 byte server timestamp (us)
 
+# Sendspin binary message type ranges per the spec:
+# Player role: 4-7 (0b000001xx)
+_PLAYER_MSG_TYPE_MIN = 4
+_PLAYER_MSG_TYPE_MAX = 7
+
 
 def _now_us() -> int:
     return int(time.monotonic_ns() // 1_000)
@@ -84,8 +89,7 @@ class SendspinPlayerPipeline:
         self._clear_drop_window_ms: int = int(self._cfg_get(player_cfg, "clear_drop_window_ms", 200) or 200)
         self._clear_drop_window_us: int = max(0, self._clear_drop_window_ms * 1000)
 
-        # Clear semantics:
-        # - We implement Option A (drop queued audio only) for stream/clear.
+        # We track a "clear epoch" to invalidate in-flight audio from previous epochs.
         # - We maintain an epoch counter that tags queued audio.
         #   When the epoch changes, the writer/decoder ignore old-epoch items.
         self._clear_epoch: int = 0
@@ -128,6 +132,9 @@ class SendspinPlayerPipeline:
 
         # Count binary frames received while stream inactive (diagnostics only)
         self._inactive_bin_count: int = 0
+
+        # Count binary frames with invalid message type (diagnostics)
+        self._invalid_msg_type_count: int = 0
 
         # Opus decoder backend selection
         self._opus_backend: str = "none"  # none|opuslib|ffmpeg
@@ -261,7 +268,14 @@ class SendspinPlayerPipeline:
                 )
             return
 
-        server_ts_us, payload_bytes = self._extract_server_ts_and_payload(frame)
+        # Validate and extract server timestamp and payload
+        msg_type, server_ts_us, payload_bytes = self._extract_and_validate_binary_frame(frame)
+
+        # Check if this is a valid player message type
+        if msg_type < 0:
+            # Invalid or non-player message type - already logged in extraction
+            return
+
         if not payload_bytes:
             return
 
@@ -332,9 +346,60 @@ class SendspinPlayerPipeline:
     # Timestamp extraction / scheduling
     # ---------------------------------------------------------------------
 
+    def _extract_and_validate_binary_frame(self, frame: bytes) -> Tuple[int, int, bytes]:
+        """
+        Extract and validate a binary frame according to the Sendspin spec.
+
+        Binary frame header (spec):
+          - Byte 0: message type (uint8)
+            - Player role: 4-7 (0b000001xx)
+            - Artwork role: 8-11
+            - Visualizer role: 16-23
+          - Bytes 1-8: server timestamp (us), big-endian int64
+          - Remaining bytes: codec payload
+
+        Returns:
+            Tuple of (msg_type, server_ts_us, payload_bytes)
+            - msg_type: -1 if invalid/non-player message, otherwise the message type
+            - server_ts_us: 0 if not present or invalid
+            - payload_bytes: empty bytes if invalid
+
+        Per spec: "Binary messages should be rejected if there is no active stream."
+        This check is done in handle_binary_frame before calling this method.
+        """
+        if len(frame) < _BINARY_HEADER_LEN:
+            # Frame too short to contain header
+            return -1, 0, b""
+
+        msg_type = frame[0]
+
+        # Validate message type is in player role range (4-7)
+        # Per spec: Player role uses binary message IDs 4-7 (0b000001xx)
+        if msg_type < _PLAYER_MSG_TYPE_MIN or msg_type > _PLAYER_MSG_TYPE_MAX:
+            self._invalid_msg_type_count += 1
+            if self._invalid_msg_type_count == 1 or (self._invalid_msg_type_count % 100) == 0:
+                _LOGGER.debug(
+                    "Sendspin: ignoring non-player binary message type=%d (count=%d)",
+                    msg_type,
+                    self._invalid_msg_type_count,
+                )
+            return -1, 0, b""
+
+        # Extract timestamp (big-endian signed int64 per spec)
+        try:
+            ts = int.from_bytes(frame[1:9], byteorder="big", signed=True)
+        except Exception:
+            ts = 0
+
+        payload = frame[_BINARY_HEADER_LEN:]
+        return msg_type, ts, payload
+
     @staticmethod
     def _extract_server_ts_and_payload(frame: bytes) -> Tuple[int, bytes]:
         """
+        Legacy extraction method - kept for compatibility.
+        Use _extract_and_validate_binary_frame for new code.
+
         Binary frame header (spec):
           - 1 byte type/flags
           - 8 bytes server timestamp (us), big-endian
@@ -345,7 +410,7 @@ class SendspinPlayerPipeline:
         if len(frame) <= _BINARY_HEADER_LEN:
             return 0, b""
         try:
-            ts = int.from_bytes(frame[1:9], byteorder="big", signed=False)
+            ts = int.from_bytes(frame[1:9], byteorder="big", signed=True)
         except Exception:
             ts = 0
         payload = frame[_BINARY_HEADER_LEN:]
@@ -414,7 +479,7 @@ class SendspinPlayerPipeline:
             if due_us < self._clear_cutoff_due_us:
                 return
 
-        # Drop if already too late (helps prevent “catch up” bursts)
+        # Drop if already too late (helps prevent "catch up" bursts)
         if due_us + self._sync_late_drop_us < now_us:
             _LOGGER.debug("Sendspin: dropping late PCM chunk (late_by=%dus)", now_us - due_us)
             return
@@ -523,6 +588,7 @@ class SendspinPlayerPipeline:
         self._stream_bit_depth = int(bit_depth or 16)
 
         self._inactive_bin_count = 0
+        self._invalid_msg_type_count = 0
         self._pcm_frame_count = 0
         self._pcm_first_frame_at = None
         self._pcm_last_frame_at = None
@@ -714,6 +780,9 @@ class SendspinPlayerPipeline:
                     continue
 
                 try:
+                    # Re-check epoch right before write to reduce race window.
+                    if int(epoch) != int(self._clear_epoch):
+                        continue
                     proc.stdin.write(chunk)
                     await proc.stdin.drain()
                 except (BrokenPipeError, ConnectionResetError):
@@ -721,46 +790,46 @@ class SendspinPlayerPipeline:
                 except Exception:
                     _LOGGER.debug("Sendspin: mpv stdin write error", exc_info=True)
                     raise
-        except asyncio.CancelledError:
-            return
-        except Exception:
-            self._sink_failed = True
-            self._disconnect_event.set()
-            _LOGGER.warning("Sendspin: mpv sink writer failed; triggering reconnect")
 
-    async def _stderr_reader_loop(self, proc: asyncio.subprocess.Process, *, name: str) -> None:
-        if not proc.stderr:
-            return
-        try:
-            while True:
-                line = await proc.stderr.readline()
-                if not line:
-                    break
-                text = line.decode("utf-8", errors="ignore").rstrip()
-                if text:
-                    self._mpv_stderr_tail.append(text)
         except asyncio.CancelledError:
             return
         except Exception:
-            _LOGGER.debug("Sendspin: %s stderr reader error", name, exc_info=True)
+            _LOGGER.warning("Sendspin: PCM writer failed")
+            self._sink_failed = True
 
     async def _pcm_wait_loop(self) -> None:
         proc = self._pcm_proc
         if not proc:
             return
+
         try:
             rc = await proc.wait()
+            if self._stream_active:
+                tail = "".join(list(self._mpv_stderr_tail))
+                _LOGGER.warning("Sendspin: mpv exited unexpectedly rc=%s tail=%s", rc, tail)
+                self._sink_failed = True
         except asyncio.CancelledError:
             return
         except Exception:
-            _LOGGER.debug("Sendspin: mpv wait failed", exc_info=True)
-            return
+            pass
 
-        if self._stream_active and rc not in (0, None):
-            self._sink_failed = True
-            self._disconnect_event.set()
-            tail = " | ".join(list(self._mpv_stderr_tail)[-10:])
-            _LOGGER.warning("Sendspin: mpv exited unexpectedly rc=%s tail=%s", rc, tail)
+    async def _stderr_reader_loop(self, proc: asyncio.subprocess.Process, *, name: str) -> None:
+        if not proc or not proc.stderr:
+            return
+        try:
+            while not self._stop_event.is_set():
+                line = await proc.stderr.readline()
+                if not line:
+                    break
+                txt = line.decode("utf-8", errors="replace").rstrip()
+                if name == "mpv":
+                    self._mpv_stderr_tail.append(txt + "\n")
+                if txt:
+                    _LOGGER.debug("Sendspin: %s stderr: %s", name, txt)
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            pass
 
     # ---------------------------------------------------------------------
     # Decoder helpers (ffmpeg)
@@ -833,6 +902,9 @@ class SendspinPlayerPipeline:
         self._decoder_reader_task = None
         self._decoder_stderr_task = None
 
+        self._opus_decoder = None
+        self._opus_backend = "none"
+
         if not proc:
             return
 
@@ -862,9 +934,6 @@ class SendspinPlayerPipeline:
             except Exception:
                 pass
 
-        self._opus_decoder = None
-        self._opus_backend = "none"
-
     async def _decoder_writer_loop(self) -> None:
         proc = self._decoder_proc
         if not proc or not proc.stdin:
@@ -872,11 +941,10 @@ class SendspinPlayerPipeline:
 
         try:
             while not self._stop_event.is_set() and self._stream_active:
-                epoch, chunk = await self._encoded_queue.get()
-                if not chunk:
+                epoch, payload = await self._encoded_queue.get()
+                if not payload:
                     continue
 
-                # If a clear occurred after this payload was queued, drop it.
                 if int(epoch) != int(self._clear_epoch):
                     continue
 
@@ -884,7 +952,7 @@ class SendspinPlayerPipeline:
                     # Re-check epoch right before write to reduce race window.
                     if int(epoch) != int(self._clear_epoch):
                         continue
-                    proc.stdin.write(chunk)
+                    proc.stdin.write(payload)
                     await proc.stdin.drain()
                 except (BrokenPipeError, ConnectionResetError):
                     raise
