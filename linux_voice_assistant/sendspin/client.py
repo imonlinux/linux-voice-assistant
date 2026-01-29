@@ -70,6 +70,13 @@ for _name in (
     logging.getLogger(_name).setLevel(logging.WARNING)
 
 
+# Valid reasons for client/goodbye per the Sendspin spec
+GOODBYE_REASON_ANOTHER_SERVER = "another_server"
+GOODBYE_REASON_SHUTDOWN = "shutdown"
+GOODBYE_REASON_RESTART = "restart"
+GOODBYE_REASON_USER_REQUEST = "user_request"
+
+
 def _now_us() -> int:
     """Monotonic microseconds for Sendspin timing messages."""
     return int(time.monotonic_ns() // 1000)
@@ -122,55 +129,48 @@ class SendspinClient:
 
     def __init__(
         self,
-        loop: Optional[asyncio.AbstractEventLoop] = None,
-        event_bus: Optional[EventBus] = None,
-        cfg: Any = None,
-        config: Any = None,
-        client_id: str = "lva",
-        client_name: str = "LVA",
+        loop: asyncio.AbstractEventLoop,
+        event_bus: Optional[EventBus],
+        config: Any,
+        client_id: str,
+        client_name: str,
     ) -> None:
-        self._loop = loop or asyncio.get_event_loop()
+        self._loop = loop
         self._event_bus = event_bus
-        self._cfg = config if config is not None else cfg
+        self._cfg = config
         self._client_id = client_id
         self._client_name = client_name
 
+        self._enabled: bool = bool(self._cfg_get(self._cfg, "enabled", False))
+
         self._stop_event = asyncio.Event()
         self._disconnect_event = asyncio.Event()
+        self._ws: Any = None
 
-        # Internal state contract (Milestone 2)
+        self._server_hello: dict = {}
+        self._active_roles: set = set()
+        self._supported_controller_commands: set = set()
+
+        # Internal state model (Milestone 2 contract)
         self._state = SendspinInternalState()
-        self._last_emitted: Dict[str, Any] = {}
 
-        # Audio controls (seeded below from sendspin.initial)
-        self._user_volume: int = 100
-        self._muted: bool = False
+        # Volume / mute / ducking
+        coord_cfg = self._cfg_get_section(self._cfg, "coordination")
+        self._duck_during_voice: bool = bool(self._cfg_get(coord_cfg, "duck_during_voice", True))
+        self._duck_gain: float = float(self._cfg_get(coord_cfg, "duck_gain", 0.3) or 0.3)
         self._ducked: bool = False
 
-        # Session / capability tracking
-        self._ws: Any = None
-        self._server_hello: Dict[str, Any] = {}
-        self._active_roles: set[str] = set()
-        self._supported_controller_commands: set[str] = set()
-
-        # Config knobs
-        self._enabled: bool = bool(self._cfg_get(self._cfg, "enabled", False))
-        self._duck_during_voice: bool = bool(
-            self._cfg_get(self._cfg_get_section(self._cfg, "coordination"), "duck_during_voice", True)
-        )
-        player_cfg = self._cfg_get_section(self._cfg, "player")
-        self._duck_percent: int = int(self._cfg_get(player_cfg, "duck_volume_percent", 20) or 20)
+        # Connection config
+        conn_cfg = self._cfg_get_section(self._cfg, "connection")
         self._hello_timeout_s: float = float(
-            self._cfg_get(self._cfg_get_section(self._cfg, "connection"), "hello_timeout_seconds", 8.0)
+            self._cfg_get(conn_cfg, "hello_timeout_seconds", 8.0) or 8.0
         )
         self._ping_interval_s: float = float(
-            self._cfg_get(self._cfg_get_section(self._cfg, "connection"), "ping_interval_seconds", 20.0)
+            self._cfg_get(self._cfg_get_section(self._cfg, "connection"), "ping_interval_seconds", 0)
         )
         self._ping_timeout_s: float = float(
             self._cfg_get(self._cfg_get_section(self._cfg, "connection"), "ping_timeout_seconds", 20.0)
         )
-
-        conn_cfg = self._cfg_get_section(self._cfg, "connection")
 
         # Base time sync interval (used as fallback when adaptive is disabled)
         self._time_sync_interval_s: float = float(
@@ -265,9 +265,23 @@ class SendspinClient:
         self._stop_event.set()
         self._disconnect_event.set()
 
-    async def disconnect(self, reason: str = "disconnect") -> None:
-        """Async disconnect/shutdown (back-compat)."""
+    async def disconnect(self, reason: str = "shutdown") -> None:
+        """Async disconnect/shutdown (back-compat).
+
+        Per the Sendspin spec, we should send client/goodbye before closing
+        the connection to inform the server why we're disconnecting.
+
+        Args:
+            reason: One of 'shutdown', 'restart', 'user_request', or 'another_server'.
+                    Maps to the Sendspin spec's client/goodbye reason field.
+        """
         _LOGGER.debug("Sendspin: disconnect requested (%s)", reason)
+
+        # Map common reason strings to spec-compliant values
+        goodbye_reason = self._map_disconnect_reason(reason)
+
+        # Send client/goodbye before closing (per spec)
+        await self._send_client_goodbye(goodbye_reason)
 
         self._stop_event.set()
         self._disconnect_event.set()
@@ -323,6 +337,7 @@ class SendspinClient:
     @staticmethod
     def _build_message(mtype: str, payload: dict) -> dict:
         msg: Dict[str, Any] = {"type": mtype, "payload": payload}
+        # Also duplicate payload fields at top level for server compatibility
         for k, v in payload.items():
             if k in ("type", "payload"):
                 continue
@@ -338,6 +353,71 @@ class SendspinClient:
             return mtype, payload
         pl: Dict[str, Any] = {k: v for k, v in msg.items() if k not in ("type", "payload")}
         return mtype, pl
+
+    # ---------------------------------------------------------------------
+    # client/goodbye support (Sendspin spec compliance)
+    # ---------------------------------------------------------------------
+
+    @staticmethod
+    def _map_disconnect_reason(reason: str) -> str:
+        """Map a disconnect reason string to a spec-compliant client/goodbye reason.
+
+        Per the Sendspin spec, valid reasons are:
+        - 'another_server': client is switching to a different Sendspin server
+        - 'shutdown': client is shutting down
+        - 'restart': client is restarting and will reconnect
+        - 'user_request': user explicitly requested to disconnect
+
+        Args:
+            reason: The reason string passed to disconnect()
+
+        Returns:
+            A spec-compliant reason string
+        """
+        reason_lower = str(reason).lower().strip()
+
+        # Direct matches
+        if reason_lower in (GOODBYE_REASON_ANOTHER_SERVER, GOODBYE_REASON_SHUTDOWN,
+                           GOODBYE_REASON_RESTART, GOODBYE_REASON_USER_REQUEST):
+            return reason_lower
+
+        # Common aliases
+        if reason_lower in ("stop", "exit", "quit", "close"):
+            return GOODBYE_REASON_SHUTDOWN
+        if reason_lower in ("reboot", "reconnect"):
+            return GOODBYE_REASON_RESTART
+        if reason_lower in ("user", "manual"):
+            return GOODBYE_REASON_USER_REQUEST
+        if reason_lower in ("switch", "server_switch", "switch_server"):
+            return GOODBYE_REASON_ANOTHER_SERVER
+
+        # Default to shutdown for unknown reasons
+        return GOODBYE_REASON_SHUTDOWN
+
+    async def _send_client_goodbye(self, reason: str) -> None:
+        """Send client/goodbye message before disconnecting.
+
+        Per the Sendspin spec:
+        - Sent by the client before gracefully closing the connection
+        - Allows the client to inform the server why it is disconnecting
+        - Upon receiving this message, the server should initiate the disconnect
+
+        Args:
+            reason: One of 'another_server', 'shutdown', 'restart', 'user_request'
+        """
+        ws = self._ws
+        if ws is None or _ws_is_closed(ws):
+            return
+
+        payload = {"reason": reason}
+        msg = self._build_message("client/goodbye", payload)
+
+        try:
+            await ws.send(json.dumps(msg))
+            if self._debug_protocol:
+                _LOGGER.debug("Sendspin: sent client/goodbye (reason=%s)", reason)
+        except Exception:
+            _LOGGER.debug("Sendspin: failed to send client/goodbye", exc_info=True)
 
     # ---------------------------------------------------------------------
     # External controls (called by EventBus handlers)
@@ -382,94 +462,84 @@ class SendspinClient:
 
         try:
             await self._ws.send(json.dumps(msg))
+            if self._debug_protocol:
+                _LOGGER.debug("Sendspin: sent client/command controller=%s", controller_obj)
         except Exception:
-            _LOGGER.debug("Sendspin: failed to send client/command", exc_info=True)
+            _LOGGER.debug("Sendspin: failed to send controller command", exc_info=True)
 
     # ---------------------------------------------------------------------
-    # Publishable state events (Milestone 2 contract)
-    # ---------------------------------------------------------------------
-
-    def _emit_event_dedup(self, topic: str, payload: dict) -> None:
-        if self._event_bus is None:
-            return
-        last = self._last_emitted.get(topic)
-        if last == payload:
-            return
-        self._last_emitted[topic] = copy.deepcopy(payload)
-        self._event_bus.publish(topic, payload)
-
-    def _publish_connection_state(self) -> None:
-        self._emit_event_dedup(
-            "sendspin_connection_state",
-            {
-                "connected": bool(self._state.connection.connected),
-                "endpoint": self._state.connection.endpoint,
-                "server_id": self._state.connection.server_id,
-                "server_name": self._state.connection.server_name,
-            },
-        )
-
-    def _publish_playback_state(self) -> None:
-        s = self._state.playback.stream
-        self._emit_event_dedup(
-            "sendspin_playback_state",
-            {
-                "playback_state": self._state.playback.playback_state,
-                "codec": s.codec,
-                "sample_rate": s.sample_rate,
-                "channels": s.channels,
-                "bit_depth": s.bit_depth,
-            },
-        )
-
-    def _publish_metadata(self) -> None:
-        self._emit_event_dedup("sendspin_metadata", {"metadata": self._state.metadata or {}})
-
-    def _publish_audio_state(self) -> None:
-        eff = self._effective_volume()
-        self._emit_event_dedup(
-            "sendspin_audio_state",
-            {
-                "volume": int(self._user_volume),
-                "muted": bool(self._muted),
-                "ducked": bool(self._ducked),
-                "duck_percent": int(self._duck_percent),
-                "effective_volume": int(eff),
-            },
-        )
-
-    def _publish_clock_sync(self) -> None:
-        # Lightweight + deduped
-        stats = self._clock.get_stats()
-        self._emit_event_dedup(
-            "sendspin_clock_sync",
-            {
-                "offset_us": float(stats.offset_us),
-                "drift_ppm": float(stats.drift_ppm),
-                "offset_stddev_us": float(stats.offset_stddev_us),
-                "samples": int(stats.samples),
-                "last_rtt_us": int(stats.last_rtt_us),
-                "ewma_rtt_us": float(stats.ewma_rtt_us),
-                "ewma_jitter_us": float(stats.ewma_jitter_us),
-                "synced": bool(stats.synced),
-            },
-        )
-
-    # ---------------------------------------------------------------------
-    # Audio apply
+    # Volume/audio state helpers
     # ---------------------------------------------------------------------
 
     def _effective_volume(self) -> int:
-        vol = max(0, min(100, int(self._user_volume)))
+        """Compute the effective volume considering ducking."""
         if self._ducked:
-            vol = int(round(vol * (max(0, min(100, int(self._duck_percent))) / 100.0)))
-        return max(0, min(100, vol))
+            return max(0, min(100, int(self._user_volume * self._duck_gain)))
+        return self._user_volume
 
     def _apply_audio_state_to_player(self) -> None:
         self._player.set_audio_state(muted=self._muted, effective_volume=self._effective_volume())
 
+    # ---------------------------------------------------------------------
+    # State publishing (EventBus / Milestone 2 contract)
+    # ---------------------------------------------------------------------
+
+    def _publish_connection_state(self) -> None:
+        if self._event_bus is None:
+            return
+        self._event_bus.publish("sendspin_connection_state", {
+            "connected": self._state.connection.connected,
+            "endpoint": self._state.connection.endpoint,
+            "server_id": self._state.connection.server_id,
+            "server_name": self._state.connection.server_name,
+        })
+
+    def _publish_playback_state(self) -> None:
+        if self._event_bus is None:
+            return
+        self._event_bus.publish("sendspin_playback_state", {
+            "playback_state": self._state.playback.playback_state,
+            "codec": self._state.playback.stream.codec,
+            "sample_rate": self._state.playback.stream.sample_rate,
+            "channels": self._state.playback.stream.channels,
+            "bit_depth": self._state.playback.stream.bit_depth,
+        })
+
+    def _publish_metadata(self) -> None:
+        if self._event_bus is None:
+            return
+        self._event_bus.publish("sendspin_metadata", copy.deepcopy(self._state.metadata))
+
+    def _publish_audio_state(self) -> None:
+        if self._event_bus is None:
+            return
+        self._event_bus.publish("sendspin_audio_state", {
+            "volume": self._user_volume,
+            "muted": self._muted,
+            "ducked": self._ducked,
+            "effective_volume": self._effective_volume(),
+        })
+
+    def _publish_clock_sync(self) -> None:
+        if self._event_bus is None:
+            return
+        stats = self._clock.get_stats()
+        self._event_bus.publish("sendspin_clock_sync", {
+            "offset_us": stats.offset_us,
+            "drift_ppm": stats.drift_ppm,
+            "offset_stddev_us": stats.offset_stddev_us,
+            "samples": stats.samples,
+            "last_rtt_us": stats.last_rtt_us,
+            "ewma_rtt_us": stats.ewma_rtt_us,
+            "ewma_jitter_us": stats.ewma_jitter_us,
+            "synced": stats.synced,
+        })
+
+    # ---------------------------------------------------------------------
+    # client/state updates
+    # ---------------------------------------------------------------------
+
     async def _send_client_state_update(self) -> None:
-        """Send `client/state` with current player volume/mute."""
         ws = self._ws
         if ws is None or _ws_is_closed(ws):
             return
@@ -654,65 +724,41 @@ class SendspinClient:
         return self._build_message("client/hello", payload)
 
     def _build_player_support_v1(self) -> dict:
-        """Advertise player capabilities.
-
-        IMPORTANT: MA/Sendspin may choose Opus even if PCM/FLAC is "preferred" as
-        long as Opus is advertised. To make preferred_codec actually take effect,
-        we advertise only the preferred codec (plus PCM as safe fallback when
-        preferred != pcm).
-        """
+        """Advertise player capabilities."""
         player_cfg = self._cfg_get_section(self._cfg, "player")
 
-        preferred = str(self._cfg_get(player_cfg, "preferred_codec", "pcm") or "pcm").lower().strip()
-        supported = self._cfg_get(player_cfg, "supported_codecs", ["pcm"]) or ["pcm"]
-        if isinstance(supported, str):
-            supported = [supported]
-
-        supported_norm: list[str] = []
-        for c in supported:
-            c2 = str(c).lower().strip()
-            if c2 and c2 not in supported_norm:
-                supported_norm.append(c2)
-        if "pcm" not in supported_norm:
-            supported_norm.append("pcm")
-
-        if preferred not in supported_norm:
-            preferred = "pcm"
-
-        # Enforce preferred codec by advertising a minimal set.
-        if preferred == "pcm":
-            advertised = ["pcm"]
-        elif preferred == "flac":
-            advertised = ["flac", "pcm"]
-        elif preferred == "opus":
-            advertised = ["opus", "pcm"]
-        else:
-            advertised = ["pcm"]
-
-        advertised_final: list[str] = []
-        for c in advertised:
-            if c == "pcm" or c in supported_norm:
-                if c not in advertised_final:
-                    advertised_final.append(c)
+        # Supported formats
+        codecs = self._cfg_get(player_cfg, "supported_codecs", ["pcm"])
+        if not isinstance(codecs, list):
+            codecs = ["pcm"]
 
         rate = int(self._cfg_get(player_cfg, "sample_rate", 48000) or 48000)
         ch = int(self._cfg_get(player_cfg, "channels", 2) or 2)
         bd = int(self._cfg_get(player_cfg, "bit_depth", 16) or 16)
 
         formats = []
-        for codec in advertised_final:
-            if codec not in ("pcm", "opus", "flac"):
+        for c in codecs:
+            c2 = str(c).lower().strip()
+            if not c2:
                 continue
-            formats.append({"codec": codec, "channels": ch, "sample_rate": rate, "bit_depth": bd})
+            formats.append({
+                "codec": c2,
+                "channels": ch,
+                "sample_rate": rate,
+                "bit_depth": bd,
+            })
+        if not formats:
+            formats.append({"codec": "pcm", "channels": 2, "sample_rate": 48000, "bit_depth": 16})
 
         buffer_cap = int(self._cfg_get(player_cfg, "buffer_capacity_bytes", 1048576) or 1048576)
-        supported_cmds = self._cfg_get(player_cfg, "supported_commands", ["volume", "mute"]) or ["volume", "mute"]
-        if isinstance(supported_cmds, str):
-            supported_cmds = [supported_cmds]
+
+        supported_cmds = self._cfg_get(player_cfg, "supported_commands", ["volume", "mute"])
+        if not isinstance(supported_cmds, list):
+            supported_cmds = ["volume", "mute"]
         supported_cmds_norm = []
         for c in supported_cmds:
             c2 = str(c).lower().strip()
-            if c2 in ("volume", "mute") and c2 not in supported_cmds_norm:
+            if c2 and c2 not in supported_cmds_norm:
                 supported_cmds_norm.append(c2)
         if not supported_cmds_norm:
             supported_cmds_norm = ["volume", "mute"]
@@ -904,41 +950,32 @@ class SendspinClient:
                         t1 = _now_us()
                         self._last_time_sync_t1 = int(t1)
                         msg = self._build_message("client/time", {"client_transmitted": int(t1)})
-
                         async with self._time_sync_lock:
                             self._time_sync_pending_t1.append(int(t1))
-
                         await ws.send(json.dumps(msg))
                     except Exception:
                         return
+                    await asyncio.sleep(self._time_sync_burst_spacing_s)
 
-                    await asyncio.sleep(max(0.0, float(self._time_sync_burst_spacing_s)))
+                # Wait for responses
+                await asyncio.sleep(self._time_sync_burst_grace_s)
 
-                # Give server/time responses a moment to arrive
-                await asyncio.sleep(max(0.0, float(self._time_sync_burst_grace_s)))
-
-                # Select best (lowest RTT) sample and update clock once
-                best: Optional[Dict[str, int]] = None
+                # Select best sample
                 async with self._time_sync_lock:
-                    samples = list(self._time_sync_samples)
                     self._time_sync_collecting = False
+                    samples = list(self._time_sync_samples)
                     self._time_sync_samples = []
                     self._time_sync_pending_t1 = []
 
                 if samples:
-                    best = min(samples, key=lambda s: int(s.get("rtt_us", 1 << 60)))
-
-                if best:
-                    try:
-                        self._clock.update(
-                            client_transmitted_us=int(best["t1"]),
-                            server_received_us=int(best["t2"]),
-                            server_transmitted_us=int(best["t3"]),
-                            client_received_us=int(best["t4"]),
-                        )
-                        self._publish_clock_sync()
-                    except Exception:
-                        _LOGGER.debug("Sendspin: failed to apply burst time-sync sample", exc_info=True)
+                    best = min(samples, key=lambda s: s.get("rtt_us", float("inf")))
+                    self._clock.update(
+                        client_transmitted_us=int(best["t1"]),
+                        server_received_us=int(best["t2"]),
+                        server_transmitted_us=int(best["t3"]),
+                        client_received_us=int(best["t4"]),
+                    )
+                    self._publish_clock_sync()
 
                 await asyncio.sleep(interval_s)
 
@@ -1154,42 +1191,30 @@ class SendspinClient:
         await self._player.stop_stream(reason=reason)
 
         # Nudge control plane after stream stop/end (M4 regression guard).
-        await self._send_client_state_update()
+        self._state.playback.playback_state = "stopped"
+        self._publish_playback_state()
 
-        if self._state.playback.playback_state != "stopped":
-            self._state.playback.playback_state = "stopped"
-            self._publish_playback_state()
+    # ---------------------------------------------------------------------
+    # Legacy message handlers (older MA versions)
+    # ---------------------------------------------------------------------
 
-    async def _handle_player_state_legacy(self, msg: dict) -> None:
-        vol = msg.get("volume")
-        muted = msg.get("muted")
-
-        changed = False
+    async def _handle_player_state_legacy(self, payload: dict) -> None:
+        """Handle legacy player/state messages from older servers."""
+        vol = payload.get("volume")
         if isinstance(vol, (int, float)):
             new_vol = max(0, min(100, int(vol)))
             if new_vol != self._user_volume:
                 self._user_volume = new_vol
-                changed = True
-                if self._event_bus is not None:
-                    self._event_bus.publish("sendspin_volume_changed", {"volume": self._user_volume})
+                self._publish_audio_state()
+                self._apply_audio_state_to_player()
 
-        if isinstance(muted, bool) and muted != self._muted:
-            self._muted = muted
-            changed = True
-
-        pstate = msg.get("playback_state")
-        if isinstance(pstate, str) and pstate:
-            if pstate != self._state.playback.playback_state:
-                self._state.playback.playback_state = pstate
-                self._publish_playback_state()
-
-        if changed:
+        mute = payload.get("muted") or payload.get("mute")
+        if isinstance(mute, bool) and mute != self._muted:
+            self._muted = mute
             self._publish_audio_state()
             self._apply_audio_state_to_player()
-            await self._send_client_state_update()
 
-    async def _handle_metadata_legacy(self, msg: dict) -> None:
-        md = msg.get("metadata") if isinstance(msg.get("metadata"), dict) else msg
-        if isinstance(md, dict):
-            self._state.metadata = md
-            self._publish_metadata()
+    async def _handle_metadata_legacy(self, payload: dict) -> None:
+        """Handle legacy metadata messages from older servers."""
+        self._state.metadata = payload
+        self._publish_metadata()
