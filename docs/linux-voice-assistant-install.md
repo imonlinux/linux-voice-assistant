@@ -691,33 +691,26 @@ nano ~/linux-voice-assistant/linux_voice_assistant/config.json
 ```bash
   ,
   "sendspin": {
-    "enabled": true,
-    "coordination": { 
-      "duck_during_voice": true },
-    "connection": {
-      "ping_interval_seconds": 0,
-      "ping_timeout_seconds": 0,
-      "mode": "client_initiated",
-      "mdns": true,
-      "server_host": null,
-      "server_port": 8927,
-      "server_path": "/sendspin" },
-    "roles": {
-      "player": true,
-      "metadata": true,
-      "controller": true,
-      "artwork": false,
-      "visualizer": false },
-    "player": {
-      "preferred_codec": "opus",
-      "supported_codecs": ["opus","flac","pcm"],
-      "sample_rate": 48000,
-      "channels": 2,
-      "bit_depth": 16
-    }
+  "enabled": true,
+  "connection": {
+    "time_sync_adaptive": true,
+    "time_sync_interval_seconds": 1.0
+  },
+  "player": {
+    "output_latency_ms": -600,
+    "sync_target_latency_ms": 350,
+    "sync_late_drop_ms": 250
   }
-
+}
 ```
+Due to differences in chipsets and the mpv player pipeline, there may be a consistent lead/lag when compared to other sendspin clients. Especially when they are on other platforms (i.e. ESP32). The best knob for bringing the LVA sendspin client into initial sync (calibrate) is output_latency_ms. My client was a ~1 second behind the other player. The -600 value has closed that to a point that it is hard to hear a difference, but you may need to adjust accordingly based on what your testing shows.
+
+Here is a good rule for tuning:
+
+LVA player 1 second behind other player = "output_latency_ms": -600
+LVA player 1 second ahead other player = "output_latency_ms": 600
+
+Then make adjustments until the two players are synchronized.
 
 > Take a look at ~/linux-voice-assistant/linux_voice_assistant/config.json.example for details on these settings as well as all available options.
 
