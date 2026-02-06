@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import uuid
 from typing import TYPE_CHECKING, List, Optional
 
 import paho.mqtt.client as mqtt
@@ -38,6 +39,10 @@ class MqttController(EventHandler):
         self._device_name = app_name
         self._device_id = slugify_device_id(app_name)
         self._topic_prefix = f"lva/{self._device_id}"
+
+        mac_int = uuid.getnode()
+        self._mac_address = ':'.join(('%012X' % mac_int)[i:i+2] for i in range(0, 12, 2))
+        _LOGGER.debug("Detected System MAC Address: %s", self._mac_address)
 
         self._is_muted = False  # Internal state
         self._connected = False  # Track connection state
@@ -241,7 +246,8 @@ class MqttController(EventHandler):
     def _publish_discovery_configs(self):
         availability_topic = f"{self._topic_prefix}/availability"
         device_info = {
-            "identifiers": [self._device_id],
+            "identifiers": [self._mac_address],
+            "connections": [["mac", self._mac_address]],
             "name": self._device_name,
             "manufacturer": "LVA Project",
         }
