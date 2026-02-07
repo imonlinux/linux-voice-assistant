@@ -1,5 +1,5 @@
 {
   "type": "openWakeWord",
-  "wake_word": "Hey Jarvis",
+  "wake_word": "Hey Jarvis OWW",
   "model": "hey_jarvis_v0.1.tflite"
 }
