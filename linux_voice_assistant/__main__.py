@@ -706,6 +706,7 @@ def _create_server_state(
         download_dir=_REPO_DIR / config.wake_word.download_dir,
         refractory_seconds=config.wake_word.refractory_seconds,
         event_sounds_enabled=config.app.event_sounds_enabled,
+        thinking_sound_loop=config.app.thinking_sound_loop,
     )
 
 def _init_controllers(
