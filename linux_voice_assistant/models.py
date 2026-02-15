@@ -134,6 +134,7 @@ class ServerState:
     active_wake_words: Set[str]
     stop_word: "MicroWakeWord"
     wakeup_sound: str
+    thinking_sound: str
     timer_finished_sound: str
     preferences_path: Path
     download_dir: Path
@@ -145,6 +146,10 @@ class ServerState:
     refractory_seconds: float = 2.0
     mic_muted: bool = False
     shutdown: bool = False
+
+    # Master toggle for event sounds (wakeup + thinking).
+    # The timer alarm is NOT gated by this — it always plays.
+    event_sounds_enabled: bool = True
 
     # Threading event to pause the audio thread efficiently when muted
     # set() = Mic is ON (Audio processing running)
