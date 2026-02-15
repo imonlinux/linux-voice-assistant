@@ -18,8 +18,22 @@
     // Optional: Wake word triggered sound (relative to repo root)
     "wakeup_sound": "sounds/wake_word_triggered.flac",
 
+    // Optional: Sound played when the assistant enters the Thinking state
+    // (after speech-to-text ends and before the TTS response arrives).
+    // Relative to repo root.
+    "thinking_sound": "sounds/nothing.flac",
+
     // Optional: Timer finished sound (relative to repo root)
     "timer_finished_sound": "sounds/timer_finished.flac",
+
+    // Optional: Master toggle for event sounds (wakeup + thinking).
+    //
+    // When false, the wakeup and thinking sounds are suppressed.
+    // The timer alarm is NOT affected — it always plays regardless of this
+    // setting because it is a functional alert, not UX feedback.
+    //
+    // Default: true
+    "event_sounds_enabled": true,
 
     // Optional: Preferences file used to persist state like volume/num_leds
     // (relative to repo root)
@@ -38,7 +52,7 @@
     // - null/omit => default microphone
     // - string name => exact device name (soundcard backend)
     // - string number => index into soundcard device list (e.g. "0", "1", ...)
-    "input_device": reSpeaker XVF3800 4-Mic Array Analog Stereo,
+    "input_device": null,
 
     // Optional: audio capture block size
     "input_block_size": 1024,
@@ -46,7 +60,7 @@
     // Optional:
     // - null/omit => mpv chooses default output
     // - string => mpv audio-device (e.g. "pulse/alsa_output....")
-    "output_device": alsa_output.usb-Seeed_Studio_reSpeaker_XVF3800_4-Mic_Array_114993701254500095-00.analog-stereo: reSpeaker XVF3800 4-Mic Array Analog Stereo,
+    "output_device": null,
 
     // Optional: Sync the host OS output volume at startup to match the volume
     // stored in preferences.json (LVA MediaPlayer volume).
@@ -280,56 +294,33 @@
       // Burst probing: send N `client/time` probes in quick succession and use the
       // best (lowest-RTT) sample to update the clock sync filter.
       //
-      // This is especially helpful at startup and on stream start to quickly find
-      // a clean RTT sample and avoid initial A/V misalignment.
+      // Default: 3
+      "time_sync_burst_count": 3,
+
+      // Delay between burst probes (seconds).
       //
-      // Defaults: on_connect=true, on_stream_start=true
-      "time_sync_burst_on_connect": true,
-      "time_sync_burst_on_stream_start": true,
-
-      // - Set to 1 to disable burst probing (legacy behavior).
-      // - Typical: 6–10
-      "time_sync_burst_size": 8,
-
-      // Delay between probes within a burst (seconds).
-      // Typical: 0.05–0.15
-      // Default: 0.1
-      "time_sync_burst_spacing_seconds": 0.1,
-
-      // After the last probe in a burst, wait this long to allow server/time
-      // responses to arrive before selecting the best sample (seconds).
-      //
-      // Default: 1.5
-      "time_sync_burst_grace_seconds": 1.5
+      // Default: 0.15
+      "time_sync_burst_delay_seconds": 0.15
     },
 
     // -----------------------------------------------------------------------
-    // Player / audio pipeline configuration
+    // Player settings (codec negotiation, buffering, local playback)
     // -----------------------------------------------------------------------
     "player": {
-      // Preferred codec. The client will advertise a minimal set of codecs so
-      // MA is more likely to select your preference.
-      // Valid: "pcm" | "flac" | "opus"
+      // Preferred codec to request from MA/Sendspin.
+      // "pcm" is universally supported; "flac" or "opus" if supported.
       "preferred_codec": "pcm",
 
-      // Which codecs this client *can* accept. Keep "pcm" in the list.
-      // If you include "flac" or "opus", MA may still choose them depending on
-      // server policy (the client will try to honor preferred_codec).
-      "supported_codecs": ["pcm", "flac", "opus"],
+      // All codecs the client can decode.
+      "supported_codecs": ["pcm"],
 
-      // Audio format we request/expect for PCM output
+      // Audio format parameters (negotiated with the server).
       "sample_rate": 48000,
       "channels": 2,
       "bit_depth": 16,
 
-      // Optional: path to ffmpeg (used for FLAC decode and Opus fallback).
-      "ffmpeg_path": "ffmpeg",
-
-      // ---------------------------------------------------------------------
-      // Sync / buffering knobs (Stages A+B)
-      // ---------------------------------------------------------------------
-
-      // Target playout latency (ms) for the timestamp-aware jitter buffer.
+      // Sync / jitter-buffer tuning
+      //
       // Higher = more resilient to Wi-Fi jitter, but more delay.
       // Typical: 150–300ms for LAN, 300–500ms for noisier networks.
       "sync_target_latency_ms": 250,
@@ -345,7 +336,7 @@
       // Per-device latency compensation (ms).
       //
       // This shifts the *scheduled playout time* used by the jitter buffer.
-      // It does NOT change MPV’s internal buffering directly; it simply makes us
+      // It does NOT change MPV's internal buffering directly; it simply makes us
       // aim earlier or later relative to the server timestamps.
       //
       // Important notes:
