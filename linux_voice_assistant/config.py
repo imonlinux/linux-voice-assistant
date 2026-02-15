@@ -86,6 +86,7 @@ class AppConfig:
     name: str
     wakeup_sound: str = "sounds/wake_word_triggered.flac"
     thinking_sound: str = "sounds/nothing.flac"
+    thinking_sound_loop: bool = False
     timer_finished_sound: str = "sounds/timer_finished.flac"
 
     # Master toggle for event sounds (wakeup + thinking).
