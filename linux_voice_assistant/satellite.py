@@ -256,19 +256,17 @@ class VoiceSatelliteProtocol(APIServer):
 
     def _play_thinking_sound(self) -> None:
         """
-        Play the thinking sound in a loop while in the THINKING state.
+        Play the thinking sound while in the THINKING state.
 
-        The loop is controlled by the _thinking_sound_active flag, which is
-        set when entering THINKING and cleared on any state transition out.
-        When TTS begins (RESPONDING state), the flag clears and the next
-        tts_player.play() call for the TTS URL naturally interrupts any
-        in-progress thinking sound playback.
+        When thinking_sound_loop is True, the sound repeats via done_callback
+        until _thinking_sound_active is cleared by a state transition.
+        When False, the sound plays once. Default is False.
         """
         if not self._thinking_sound_active:
             return
         self.state.tts_player.play(
             self.state.thinking_sound,
-            done_callback=self._play_thinking_sound,
+            done_callback=self._play_thinking_sound if self.state.thinking_sound_loop else None,
         )
 
     # -------------------------------------------------------------------------
