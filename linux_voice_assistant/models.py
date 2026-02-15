@@ -150,6 +150,7 @@ class ServerState:
     # Master toggle for event sounds (wakeup + thinking).
     # The timer alarm is NOT gated by this — it always plays.
     event_sounds_enabled: bool = True
+    thinking_sound_loop: bool = False
 
     # Threading event to pause the audio thread efficiently when muted
     # set() = Mic is ON (Audio processing running)
