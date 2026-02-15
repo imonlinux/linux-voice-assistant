@@ -22,6 +22,12 @@
     // (after speech-to-text ends and before the TTS response arrives).
     // Relative to repo root.
     "thinking_sound": "sounds/nothing.flac",
+    
+    // Optional: If true, the thinking sound loops until the assistant
+    // transitions out of the Thinking state. If false, it plays once.
+    //
+    // Default: false
+    "thinking_sound_loop": true,
 
     // Optional: Timer finished sound (relative to repo root)
     "timer_finished_sound": "sounds/timer_finished.flac",
