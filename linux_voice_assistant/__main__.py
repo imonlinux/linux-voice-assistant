@@ -699,11 +699,13 @@ def _create_server_state(
         active_wake_words=wake_word_data.active,
         stop_word=wake_word_data.stop_model,
         wakeup_sound=str(_REPO_DIR / config.app.wakeup_sound),
+        thinking_sound=str(_REPO_DIR / config.app.thinking_sound),
         timer_finished_sound=str(_REPO_DIR / config.app.timer_finished_sound),
         preferences=preferences,
         preferences_path=_REPO_DIR / config.app.preferences_file,
         download_dir=_REPO_DIR / config.wake_word.download_dir,
         refractory_seconds=config.wake_word.refractory_seconds,
+        event_sounds_enabled=config.app.event_sounds_enabled,
     )
 
 def _init_controllers(
