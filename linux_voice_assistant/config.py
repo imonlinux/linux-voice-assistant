@@ -85,7 +85,14 @@ class AppConfig:
     """General application settings."""
     name: str
     wakeup_sound: str = "sounds/wake_word_triggered.flac"
+    thinking_sound: str = "sounds/nothing.flac"
     timer_finished_sound: str = "sounds/timer_finished.flac"
+
+    # Master toggle for event sounds (wakeup + thinking).
+    # The timer alarm is NOT gated by this flag — it is a functional alert
+    # and will always play regardless of this setting.
+    event_sounds_enabled: bool = True
+
     preferences_file: str = "preferences.json"
     debug: bool = False
 
@@ -183,56 +190,42 @@ class ButtonConfig:
     pin: int = 17
 
     # Press duration (in seconds) to be considered a "long press" (gpio mode).
-    long_press_seconds: float = 1.0
+    long_press_seconds: float = 2.0
 
-    # Poll interval used by both GPIO and XVF3800 controllers.
-    poll_interval_seconds: float = 0.01
+
+@dataclass
+class TrayConfig:
+    """Settings for the tray client."""
+    systemd_service_name: str = "linux-voice-assistant.service"
 
 
 # -----------------------------------------------------------------------------
-# Sendspin Configuration Dataclasses
+# Sendspin sub-configs
 # -----------------------------------------------------------------------------
 
 @dataclass
 class SendspinConnectionConfig:
-    """Sendspin connection settings.
-
-    mode:
-      - "client_initiated": LVA discovers Sendspin servers via mDNS and connects.
-      - "server_initiated": LVA advertises itself and accepts server connections.
-    """
-    mode: str = "client_initiated"
-    mdns: bool = True
-    server_host: Optional[str] = None
-    server_port: int = 8927
-    server_path: str = "/sendspin"
-
-    # Optional tuning
-    timeout_seconds: float = 6.0
-    hello_timeout_seconds: float = 8.0
-    ping_interval_seconds: float = 20.0
-    ping_timeout_seconds: float = 20.0
-    time_sync_interval_seconds: float = 5.0
+    """How to find / connect to a Sendspin server."""
+    host: Optional[str] = None
+    port: int = 8888
+    path: str = "/sendspin"
+    use_mdns: bool = True
+    reconnect_delay: float = 5.0
+    connect_timeout: float = 10.0
 
 
 @dataclass
 class SendspinRolesConfig:
-    """Enable/disable Sendspin roles."""
+    """Which Sendspin protocol roles to activate."""
     player: bool = True
-    metadata: bool = True
-    controller: bool = True
-    artwork: bool = False
-    visualizer: bool = False
+    controller: bool = False
 
 
 @dataclass
 class SendspinPlayerConfig:
-    """Player capability preferences for Sendspin.
+    """Player-role settings for codec negotiation, buffering, and mpv.
 
-    Notes:
-    - `supported_codecs` controls what we advertise in `client/hello`.
-    - Actual playback is currently PCM-only; if the server starts a stream with
-      a non-PCM codec, the client will request a PCM format and log a warning.
+    - `preferred_codec` and `supported_codecs` are advertised during handshake.
     - `mpv_*` and `ffmpeg_*` are pass-through knobs for downstream work.
     """
 
