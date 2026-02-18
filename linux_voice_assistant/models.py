@@ -107,7 +107,9 @@ class AvailableWakeWord:
 class Preferences:
     active_wake_words: List[str] = field(default_factory=list)
     volume_level: float = 1.0
-
+    # Persisted MAC address for stable device identity across reboots.
+    # Empty string = not yet persisted (first boot will detect and save).
+    mac_address: str = ""
     # New: last-known Sendspin (MA) player volume (0-100), independent of LVA master volume_level.
     sendspin_volume: int = 100
 
