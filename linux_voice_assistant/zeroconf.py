@@ -19,11 +19,14 @@ MDNS_TARGET_IP = "224.0.0.251"
 
 class HomeAssistantZeroconf:
     def __init__(
-        self, port: int, name: Optional[str] = None, host: Optional[str] = None
+        self, port: int, name: Optional[str] = None, host: Optional[str] = None,
+        mac_address: Optional[str] = None,
     ) -> None:
         self.port = port
-        # Use the stable MAC address
-        self.mac_address = get_mac_address()
+        # Use the stable MAC address (persisted via preferences.json).
+        # Fall back to hardware detection if not provided (shouldn't happen
+        # in normal operation, but keeps the class usable standalone).
+        self.mac_address = mac_address or get_mac_address()
         self.name = name or self.mac_address
 
         if not host:
