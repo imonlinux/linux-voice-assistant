@@ -676,6 +676,34 @@ def _init_media_players(
     )
     return MediaPlayers(music=music_player, tts=tts_player)
 
+def _resolve_mac_address(preferences: Preferences, preferences_path: Path) -> str:
+    """
+    Return a stable MAC address for device identity.
+
+    On first boot, detect the hardware MAC and persist it to preferences.json
+    so that the device identity survives NIC changes, VM re-provisioning, or
+    NetworkManager MAC randomization.
+    """
+    if preferences.mac_address:
+        _LOGGER.info("Using persisted MAC address: %s", format_mac(preferences.mac_address))
+        return preferences.mac_address
+
+    detected = get_mac_address()
+    _LOGGER.info(
+        "First boot — persisting MAC address: %s", format_mac(detected)
+    )
+    preferences.mac_address = detected
+
+    # Save immediately so the identity is locked in even if we crash later.
+    preferences_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(preferences_path, "w", encoding="utf-8") as f:
+        from dataclasses import asdict
+        import json as _json
+        _json.dump(asdict(preferences), f, ensure_ascii=False, indent=4)
+
+    return detected
+
+
 def _create_server_state(
     config: Config,
     loop: asyncio.AbstractEventLoop,
@@ -685,7 +713,8 @@ def _create_server_state(
     media_players: MediaPlayers,
 ) -> ServerState:
     """Creates the global ServerState object."""
-    stable_mac = format_mac(get_mac_address())
+    preferences_path = _REPO_DIR / config.app.preferences_file
+    stable_mac = format_mac(_resolve_mac_address(preferences, preferences_path))
     return ServerState(
         name=config.app.name,
         mac_address=stable_mac,
@@ -702,7 +731,7 @@ def _create_server_state(
         thinking_sound=str(_REPO_DIR / config.app.thinking_sound),
         timer_finished_sound=str(_REPO_DIR / config.app.timer_finished_sound),
         preferences=preferences,
-        preferences_path=_REPO_DIR / config.app.preferences_file,
+        preferences_path=preferences_path,
         download_dir=_REPO_DIR / config.wake_word.download_dir,
         refractory_seconds=config.wake_word.refractory_seconds,
         event_sounds_enabled=config.app.event_sounds_enabled,
@@ -783,7 +812,12 @@ async def _run_server(state: ServerState, config: Config):
         host=config.esphome.host,
         port=config.esphome.port,
     )
-    discovery = HomeAssistantZeroconf(port=config.esphome.port, name=config.app.name)
+    # Strip colons from state.mac_address (format "aa:bb:cc:dd:ee:ff")
+    # because zeroconf expects raw hex ("aabbccddeeff").
+    raw_mac = state.mac_address.replace(":", "")
+    discovery = HomeAssistantZeroconf(
+        port=config.esphome.port, name=config.app.name, mac_address=raw_mac
+    )
     await discovery.register_server()
 
     async with server:
