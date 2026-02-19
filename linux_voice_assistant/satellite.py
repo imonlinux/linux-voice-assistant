@@ -512,7 +512,7 @@ class VoiceSatelliteProtocol(APIServer):
         )
         self._set_state(SatelliteState.LISTENING)
         self._is_streaming_audio = True
-        if self.state.event_sounds_enabled:
+        if self.state.event_sounds_enabled and self.state.wakeup_sound:
             self.state.tts_player.play(self.state.wakeup_sound)
 
     def wakeup(self, wake_word: Union[MicroWakeWord, OpenWakeWord]) -> None:
