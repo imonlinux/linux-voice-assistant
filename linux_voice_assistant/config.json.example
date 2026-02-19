@@ -15,13 +15,16 @@
     // Required: Friendly name for this LVA instance
     "name": "My Linux Voice Assistant",
 
-    // Optional: Wake word triggered sound (relative to repo root)
-    "wakeup_sound": "sounds/wake_word_triggered.flac",
+    // Optional: Wake word triggered sound (relative to repo root).
+    // This is the default used when no MQTT sound selection has been made.
+    // Place additional .flac/.wav/.mp3 files in sounds/wakeup/ to make
+    // them available as options in the Home Assistant MQTT select entity.
+    "wakeup_sound": "sounds/wakeup/wake_word_triggered.flac",
 
     // Optional: Sound played when the assistant enters the Thinking state
     // (after speech-to-text ends and before the TTS response arrives).
-    // Relative to repo root.
-    "thinking_sound": "sounds/nothing.flac",
+    // Relative to repo root. Same subdirectory convention: sounds/thinking/
+    "thinking_sound": "sounds/thinking/nothing.flac",
     
     // Optional: If true, the thinking sound loops until the assistant
     // transitions out of the Thinking state. If false, it plays once.
@@ -29,8 +32,9 @@
     // Default: false
     "thinking_sound_loop": true,
 
-    // Optional: Timer finished sound (relative to repo root)
-    "timer_finished_sound": "sounds/timer_finished.flac",
+    // Optional: Timer finished sound (relative to repo root).
+    // Same subdirectory convention: sounds/timer/
+    "timer_finished_sound": "sounds/timer/timer_finished.flac",
 
     // Optional: Master toggle for event sounds (wakeup + thinking).
     //
