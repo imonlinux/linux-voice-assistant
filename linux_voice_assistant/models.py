@@ -118,7 +118,16 @@ class Preferences:
     # 0 = infinite alarm (only Stop/wake word stops it)
     # >0 = auto-stop alarm after this many seconds
     alarm_duration_seconds: int = 0
-
+    # MQTT sound selection overrides.
+    # Stores the selected filename (e.g. "chime.flac") or "None" to disable.
+    # Empty string = no MQTT override, use config.json / config.py default.
+    selected_wakeup_sound: str = ""
+    selected_thinking_sound: str = ""
+    selected_timer_sound: str = ""
+    # MQTT override for thinking sound loop.
+    # Empty string = no override (use config.json / config.py value).
+    # "ON" / "OFF" = explicit MQTT selection.
+    selected_thinking_sound_loop: str = ""
 
 @dataclass
 class ServerState:
