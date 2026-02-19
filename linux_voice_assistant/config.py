@@ -1,79 +1,34 @@
-"""Configuration models for the application.
-
-This module is intentionally defensive:
-- Unknown keys in JSON config blocks are ignored (with a warning) rather than
-  crashing the app.
-- Certain fields are normalized to the expected types.
-"""
+"""Configuration models for the application."""
 
 from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field, fields as dc_fields
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Type, TypeVar
 
 _LOGGER = logging.getLogger(__name__)
 
+# -----------------------------------------------------------------------------
+# Helper: tolerant dataclass construction (ignore unknown keys)
+# -----------------------------------------------------------------------------
+
 T = TypeVar("T")
 
 
-# -----------------------------------------------------------------------------
-# Helpers
-# -----------------------------------------------------------------------------
-
-def _clamp_0_1(name: str, value: float) -> float:
-    """Clamp a float to [0.0, 1.0], logging a warning if clamped."""
-    try:
-        v = float(value)
-    except Exception:
-        _LOGGER.warning("%s is not a number (%r); using default 0.5", name, value)
-        return 0.5
-
-    if v < 0.0:
-        _LOGGER.warning("%s < 0.0; clamping to 0.0 (was %s)", name, v)
-        return 0.0
-    if v > 1.0:
-        _LOGGER.warning("%s > 1.0; clamping to 1.0 (was %s)", name, v)
-        return 1.0
-    return v
-
-
-def _as_str_list(value: Any, *, default: Optional[List[str]] = None) -> List[str]:
-    """Normalize a config value into List[str]."""
-    if value is None:
-        return list(default) if default is not None else []
-    if isinstance(value, (list, tuple)):
-        out: List[str] = []
-        for item in value:
-            if item is None:
-                continue
-            out.append(str(item))
-        return out
-    # Accept a single string as a 1-item list.
-    return [str(value)]
-
-
-def _dataclass_from_dict(cls: Type[T], raw: Any, *, context: str) -> T:
-    """Create a dataclass instance from a dict, ignoring unknown keys.
-
-    This prevents config.json typos or future/extra keys from crashing startup.
+def _dataclass_from_dict(cls: Type[T], data: Any) -> T:
     """
-    if not isinstance(raw, dict):
-        raw = {}
+    Construct a dataclass instance from a dict, ignoring unknown keys.
 
-    allowed = {f.name for f in fields(cls)}
-    filtered = {k: v for k, v in raw.items() if k in allowed}
-    unknown = sorted({k for k in raw.keys() if k not in allowed})
-    if unknown:
-        _LOGGER.warning("%s: ignoring unknown keys: %s", context, unknown)
-
-    try:
-        return cls(**filtered)  # type: ignore[arg-type]
-    except Exception as e:
-        _LOGGER.warning("%s: failed to parse (%s); using defaults. raw=%r", context, e, raw)
-        return cls()  # type: ignore[call-arg]
+    This prevents config.json additions from crashing older code with:
+      TypeError: __init__() got an unexpected keyword argument '...'
+    """
+    if not isinstance(data, dict):
+        data = {}
+    allowed = {f.name for f in dc_fields(cls)}
+    filtered = {k: v for k, v in data.items() if k in allowed}
+    return cls(**filtered)  # type: ignore[arg-type]
 
 
 # -----------------------------------------------------------------------------
@@ -86,14 +41,14 @@ class AppConfig:
     name: str
     wakeup_sound: str = "sounds/wake_word_triggered.flac"
     thinking_sound: str = "sounds/nothing.flac"
-    thinking_sound_loop: bool = False
+    thinking_sound_loop: bool = False    
     timer_finished_sound: str = "sounds/timer_finished.flac"
-
+    
     # Master toggle for event sounds (wakeup + thinking).
     # The timer alarm is NOT gated by this flag — it is a functional alert
     # and will always play regardless of this setting.
     event_sounds_enabled: bool = True
-
+    
     preferences_file: str = "preferences.json"
     debug: bool = False
 
@@ -191,47 +146,64 @@ class ButtonConfig:
     pin: int = 17
 
     # Press duration (in seconds) to be considered a "long press" (gpio mode).
-    long_press_seconds: float = 2.0
+    long_press_seconds: float = 1.0
 
-
-@dataclass
-class TrayConfig:
-    """Settings for the tray client."""
-    systemd_service_name: str = "linux-voice-assistant.service"
+    # Poll interval used by both GPIO and XVF3800 controllers.
+    poll_interval_seconds: float = 0.01
 
 
 # -----------------------------------------------------------------------------
-# Sendspin sub-configs
+# Sendspin Configuration Dataclasses
 # -----------------------------------------------------------------------------
 
 @dataclass
 class SendspinConnectionConfig:
-    """How to find / connect to a Sendspin server."""
-    host: Optional[str] = None
-    port: int = 8888
-    path: str = "/sendspin"
-    use_mdns: bool = True
-    reconnect_delay: float = 5.0
-    connect_timeout: float = 10.0
+    """
+    Sendspin connection settings.
+
+    mode:
+      - "client_initiated": LVA discovers Sendspin servers via mDNS and connects.
+      - "server_initiated": LVA advertises itself and accepts server connections.
+    """
+    mode: str = "client_initiated"
+    mdns: bool = True
+    server_host: Optional[str] = None
+    server_port: int = 8927
+    server_path: str = "/sendspin"
 
 
 @dataclass
 class SendspinRolesConfig:
-    """Which Sendspin protocol roles to activate."""
+    """Enable/disable Sendspin roles."""
     player: bool = True
-    controller: bool = False
+    metadata: bool = True
+    controller: bool = True
+    artwork: bool = False
+    visualizer: bool = False
 
 
 @dataclass
 class SendspinPlayerConfig:
-    """Player-role settings for codec negotiation, buffering, and mpv.
-
-    - `preferred_codec` and `supported_codecs` are advertised during handshake.
-    - `mpv_*` and `ffmpeg_*` are pass-through knobs for downstream work.
-    """
-
+    """Player capability preferences for Sendspin."""
+    # Codec negotiation
     preferred_codec: str = "pcm"
     supported_codecs: List[str] = field(default_factory=lambda: ["pcm"])
+
+    # Decoder selection for non-PCM formats:
+    # - "mpv"    -> feed containerized bytestream directly to mpv stdin
+    # - "ffmpeg" -> decode with ffmpeg (stdin encoded -> stdout PCM) then feed mpv rawaudio
+    decoder_backend: str = "mpv"
+    ffmpeg_path: str = "ffmpeg"
+    ffmpeg_extra_args: List[str] = field(default_factory=list)
+
+    # Optional mpv output selectors
+    mpv_ao: Optional[str] = None
+    mpv_audio_device: Optional[str] = None
+
+    # Ducking volume percent (0-100) applied when LVA voice is active
+    duck_volume_percent: int = 20
+
+    # Audio format capabilities
     sample_rate: int = 48000
     channels: int = 2
     bit_depth: int = 16
@@ -240,51 +212,28 @@ class SendspinPlayerConfig:
     # This is used by the Sendspin server to choose chunk sizing.
     buffer_capacity_bytes: int = 1048576  # 1 MiB
 
-    # Ducking level applied to mpv volume when voice is active (0-100).
-    duck_volume_percent: int = 20
+    # -------------------------------------------------------------------------
+    # mpv tuning / passthrough stability knobs (optional)
+    #
+    # These exist primarily to help tune Opus passthrough crackle/underruns.
+    # They are safe to include in config.json; unknown keys will be ignored.
+    # -------------------------------------------------------------------------
+    mpv_quiet: bool = True
 
-    # Local playback process configuration
-    mpv_path: str = "mpv"
-    mpv_ao: Optional[str] = None
-    mpv_audio_device: Optional[str] = None
-    mpv_extra_args: List[str] = field(default_factory=list)
+    # rawaudio mode defaults (current behavior)
+    mpv_profile_rawaudio: str = "low-latency"
+    mpv_cache_rawaudio: str = "no"
+    mpv_extra_args_rawaudio: List[str] = field(default_factory=list)
 
-    # Decoder configuration (Milestone 4: wired-through, used in later milestones)
-    decoder_backend: str = "auto"  # auto|ffmpeg|none
-    ffmpeg_path: str = "ffmpeg"
-    ffmpeg_extra_args: List[str] = field(default_factory=list)
-
-    def __post_init__(self) -> None:
-        self.preferred_codec = str(self.preferred_codec or "pcm").lower().strip()
-
-        # Normalize codecs lists
-        codecs = _as_str_list(self.supported_codecs, default=["pcm"])
-        codecs_norm: List[str] = []
-        for c in codecs:
-            c2 = str(c).lower().strip()
-            if not c2:
-                continue
-            if c2 not in codecs_norm:
-                codecs_norm.append(c2)
-        if "pcm" not in codecs_norm:
-            codecs_norm.append("pcm")
-        self.supported_codecs = codecs_norm
-
-        if self.preferred_codec not in self.supported_codecs:
-            _LOGGER.warning(
-                "sendspin.player.preferred_codec=%r not in supported_codecs=%r; falling back to 'pcm'",
-                self.preferred_codec,
-                self.supported_codecs,
-            )
-            self.preferred_codec = "pcm"
-
-        self.mpv_extra_args = _as_str_list(self.mpv_extra_args, default=[])
-        self.ffmpeg_extra_args = _as_str_list(self.ffmpeg_extra_args, default=[])
-
-        self.decoder_backend = str(self.decoder_backend or "auto").lower().strip()
-        if self.decoder_backend not in ("auto", "ffmpeg", "none"):
-            _LOGGER.warning("sendspin.player.decoder_backend=%r invalid; using 'auto'", self.decoder_backend)
-            self.decoder_backend = "auto"
+    # passthrough/container decode mode defaults (aimed at reducing crackle)
+    mpv_profile_passthrough: str = "default"
+    mpv_cache_passthrough: str = "yes"
+    mpv_cache_secs: float = 2.0
+    mpv_demuxer_readahead_secs: float = 2.0
+    mpv_audio_buffer: float = 0.5
+    mpv_force_samplerate: int = 48000
+    mpv_force_channels: str = "stereo"
+    mpv_extra_args_passthrough: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -327,10 +276,26 @@ class Config:
     button: ButtonConfig = field(default_factory=ButtonConfig)
     sendspin: SendspinConfig = field(default_factory=SendspinConfig)
 
+# -----------------------------------------------------------------------------
+# Helper Function
+# -----------------------------------------------------------------------------
 
-# -----------------------------------------------------------------------------
-# Loader
-# -----------------------------------------------------------------------------
+def _clamp_0_1(name: str, value: float) -> float:
+    """Clamp a float to [0.0, 1.0], logging a warning if clamped."""
+    try:
+        v = float(value)
+    except Exception:
+        _LOGGER.warning("%s is not a number (%r); using default 0.5", name, value)
+        return 0.5
+
+    if v < 0.0:
+        _LOGGER.warning("%s < 0.0; clamping to 0.0 (was %s)", name, v)
+        return 0.0
+    if v > 1.0:
+        _LOGGER.warning("%s > 1.0; clamping to 1.0 (was %s)", name, v)
+        return 1.0
+    return v
+
 
 def load_config_from_json(config_path: Path) -> Config:
     """Loads configuration from a JSON file and populates dataclasses."""
@@ -348,36 +313,25 @@ def load_config_from_json(config_path: Path) -> Config:
     if "app" not in raw_data:
         raise ValueError("Configuration file must contain an 'app' section with a 'name'.")
 
-    app_config = _dataclass_from_dict(AppConfig, raw_data.get("app", {}), context="app")
-    audio_config = _dataclass_from_dict(AudioConfig, raw_data.get("audio", {}), context="audio")
-    wake_word_config = _dataclass_from_dict(WakeWordConfig, raw_data.get("wake_word", {}), context="wake_word")
-    esphome_config = _dataclass_from_dict(ESPHomeConfig, raw_data.get("esphome", {}), context="esphome")
-    led_config = _dataclass_from_dict(LedConfig, raw_data.get("led", {}), context="led")
-    mqtt_config = _dataclass_from_dict(MqttConfig, raw_data.get("mqtt", {}), context="mqtt")
-    button_config = _dataclass_from_dict(ButtonConfig, raw_data.get("button", {}), context="button")
+    app_config = AppConfig(**raw_data.get("app", {}))
+    audio_config = AudioConfig(**raw_data.get("audio", {}))
+    wake_word_config = WakeWordConfig(**raw_data.get("wake_word", {}))
+    esphome_config = ESPHomeConfig(**raw_data.get("esphome", {}))
+    led_config = LedConfig(**raw_data.get("led", {}))
+    mqtt_config = MqttConfig(**raw_data.get("mqtt", {}))
+    button_config = ButtonConfig(**raw_data.get("button", {}))
 
     # --- Sendspin (nested dataclasses; keep robust to partial configs) ---
-    sendspin_raw = raw_data.get("sendspin", {})
-    if not isinstance(sendspin_raw, dict):
-        sendspin_raw = {}
+    sendspin_raw = raw_data.get("sendspin", {}) if isinstance(raw_data.get("sendspin", {}), dict) else {}
 
+    # Use tolerant loader for nested dataclasses so new config keys don't crash startup.
     sendspin_cfg = SendspinConfig(
         enabled=bool(sendspin_raw.get("enabled", False)),
-        connection=_dataclass_from_dict(
-            SendspinConnectionConfig, (sendspin_raw.get("connection", {}) or {}), context="sendspin.connection"
-        ),
-        roles=_dataclass_from_dict(
-            SendspinRolesConfig, (sendspin_raw.get("roles", {}) or {}), context="sendspin.roles"
-        ),
-        player=_dataclass_from_dict(
-            SendspinPlayerConfig, (sendspin_raw.get("player", {}) or {}), context="sendspin.player"
-        ),
-        audio_output=_dataclass_from_dict(
-            SendspinAudioOutputConfig, (sendspin_raw.get("audio_output", {}) or {}), context="sendspin.audio_output"
-        ),
-        coordination=_dataclass_from_dict(
-            SendspinCoordinationConfig, (sendspin_raw.get("coordination", {}) or {}), context="sendspin.coordination"
-        ),
+        connection=_dataclass_from_dict(SendspinConnectionConfig, (sendspin_raw.get("connection", {}) or {})),
+        roles=_dataclass_from_dict(SendspinRolesConfig, (sendspin_raw.get("roles", {}) or {})),
+        player=_dataclass_from_dict(SendspinPlayerConfig, (sendspin_raw.get("player", {}) or {})),
+        audio_output=_dataclass_from_dict(SendspinAudioOutputConfig, (sendspin_raw.get("audio_output", {}) or {})),
+        coordination=_dataclass_from_dict(SendspinCoordinationConfig, (sendspin_raw.get("coordination", {}) or {})),
     )
 
     # Normalize / validate wake word threshold
