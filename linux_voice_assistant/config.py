@@ -1,402 +1,415 @@
-{
-  // =============================================================================
-  // Linux Voice Assistant (LVA) — Configuration Example
-  //
-  // Notes:
-  // - This file uses JSON-with-comments (jsonc). Your editor may support it.
-  // - The app loads config via linux_voice_assistant.config.load_config_from_json().
-  // - Some behavior can be overridden by CLI flags (e.g., --debug).
-  // =============================================================================
+"""Configuration models for the application.
 
-  // ---------------------------------------------------------------------------
-  // Required
-  // ---------------------------------------------------------------------------
-  "app": {
-    // Required: Friendly name for this LVA instance
-    "name": "My Linux Voice Assistant",
+This module is intentionally defensive:
+- Unknown keys in JSON config blocks are ignored (with a warning) rather than
+  crashing the app.
+- Certain fields are normalized to the expected types.
+"""
 
-    // Optional: Wake word triggered sound (relative to repo root).
-    // This is the default used when no MQTT sound selection has been made.
-    // Place additional .flac/.wav/.mp3 files in sounds/wakeup/ to make
-    // them available as options in the Home Assistant MQTT select entity.
-    "wakeup_sound": "sounds/wakeup/wake_word_triggered.flac",
+from __future__ import annotations
 
-    // Optional: Sound played when the assistant enters the Thinking state
-    // (after speech-to-text ends and before the TTS response arrives).
-    // Relative to repo root. Same subdirectory convention: sounds/thinking/
-    "thinking_sound": "sounds/thinking/nothing.flac",
-    
-    // Optional: If true, the thinking sound loops until the assistant
-    // transitions out of the Thinking state. If false, it plays once.
-    //
-    // Default: false
-    "thinking_sound_loop": true,
+import json
+import logging
+from dataclasses import dataclass, field, fields
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Type, TypeVar
 
-    // Optional: Timer finished sound (relative to repo root).
-    // Same subdirectory convention: sounds/timer/
-    "timer_finished_sound": "sounds/timer/timer_finished.flac",
+_LOGGER = logging.getLogger(__name__)
 
-    // Optional: Master toggle for event sounds (wakeup + thinking).
-    //
-    // When false, the wakeup and thinking sounds are suppressed.
-    // The timer alarm is NOT affected — it always plays regardless of this
-    // setting because it is a functional alert, not UX feedback.
-    //
-    // Default: true
-    "event_sounds_enabled": true,
+T = TypeVar("T")
 
-    // Optional: Preferences file used to persist state like volume/num_leds
-    // (relative to repo root)
-    "preferences_file": "preferences.json",
 
-    // Optional: Enables debug logging by default
-    // Note: can also be enabled via CLI flag --debug
-    "debug": false
-  },
+# -----------------------------------------------------------------------------
+# Helpers
+# -----------------------------------------------------------------------------
 
-  // ---------------------------------------------------------------------------
-  // Optional: Audio I/O + Output Volume Sync
-  // ---------------------------------------------------------------------------
-  "audio": {
-    // Optional:
-    // - null/omit => default microphone
-    // - string name => exact device name (soundcard backend)
-    // - string number => index into soundcard device list (e.g. "0", "1", ...)
-    "input_device": null,
+def _clamp_0_1(name: str, value: float) -> float:
+    """Clamp a float to [0.0, 1.0], logging a warning if clamped."""
+    try:
+        v = float(value)
+    except Exception:
+        _LOGGER.warning("%s is not a number (%r); using default 0.5", name, value)
+        return 0.5
 
-    // Optional: audio capture block size
-    "input_block_size": 1024,
+    if v < 0.0:
+        _LOGGER.warning("%s < 0.0; clamping to 0.0 (was %s)", name, v)
+        return 0.0
+    if v > 1.0:
+        _LOGGER.warning("%s > 1.0; clamping to 1.0 (was %s)", name, v)
+        return 1.0
+    return v
 
-    // Optional:
-    // - null/omit => mpv chooses default output
-    // - string => mpv audio-device (e.g. "pulse/alsa_output....")
-    "output_device": null,
 
-    // Optional: Sync the host OS output volume at startup to match the volume
-    // stored in preferences.json (LVA MediaPlayer volume).
-    //
-    // When enabled, LVA will attempt (in order): wpctl -> pactl -> amixer.
-    //
-    // Default: false
-    "volume_sync": false,
+def _as_str_list(value: Any, *, default: Optional[List[str]] = None) -> List[str]:
+    """Normalize a config value into List[str]."""
+    if value is None:
+        return list(default) if default is not None else []
+    if isinstance(value, (list, tuple)):
+        out: List[str] = []
+        for item in value:
+            if item is None:
+                continue
+            out.append(str(item))
+        return out
+    # Accept a single string as a 1-item list.
+    return [str(value)]
 
-    // Optional: Maximum output volume percent for the underlying sink.
-    //
-    // Default: 100
-    "max_volume_percent": 100
-  },
 
-  // ---------------------------------------------------------------------------
-  // Optional: Wake word config
-  // ---------------------------------------------------------------------------
-  "wake_word": {
-    // Optional: If omitted/empty, code falls back to defaults:
-    // ["wakewords", "wakewords/openWakeWord"]
-    //
-    // Paths are relative to repo root.
-    "directories": [],
+def _dataclass_from_dict(cls: Type[T], raw: Any, *, context: str) -> T:
+    """Create a dataclass instance from a dict, ignoring unknown keys.
 
-    // Optional: default wake word model id
-    "model": "okay_nabu",
+    This prevents config.json typos or future/extra keys from crashing startup.
+    """
+    if not isinstance(raw, dict):
+        raw = {}
 
-    // Optional: stop model id (micro wake word)
-    "stop_model": "stop",
+    allowed = {f.name for f in fields(cls)}
+    filtered = {k: v for k, v in raw.items() if k in allowed}
+    unknown = sorted({k for k in raw.keys() if k not in allowed})
+    if unknown:
+        _LOGGER.warning("%s: ignoring unknown keys: %s", context, unknown)
 
-    // Optional: debounce/refractory window after wake word triggers
-    "refractory_seconds": 2.0,
+    try:
+        return cls(**filtered)  # type: ignore[arg-type]
+    except Exception as e:
+        _LOGGER.warning("%s: failed to parse (%s); using defaults. raw=%r", context, e, raw)
+        return cls()  # type: ignore[call-arg]
 
-    // Optional: directory for downloaded models (relative to repo root)
-    "download_dir": "local",
 
-    // Optional: OpenWakeWord activation threshold.
-    //
-    // OpenWakeWord triggers if its model probability exceeds this value.
-    // Range: 0.0 - 1.0
-    //
-    // Default: 0.5 (matches previous hardcoded behavior)
-    "openwakeword_threshold": 0.5
-  },
+# -----------------------------------------------------------------------------
+# Configuration Dataclasses
+# -----------------------------------------------------------------------------
 
-  // ---------------------------------------------------------------------------
-  // Optional: ESPHome protocol server settings (the LVA exposes an ESPHome API)
-  // ---------------------------------------------------------------------------
-  "esphome": {
-    // Default: "0.0.0.0" (listen on all interfaces)
-    "host": "0.0.0.0",
+@dataclass
+class AppConfig:
+    """General application settings."""
+    name: str
+    wakeup_sound: str = "sounds/wakeup/wake_word_triggered.flac"
+    thinking_sound: str = "sounds/thinking/thinking.flac"
+    thinking_sound_loop: bool = False    
+    timer_finished_sound: str = "sounds/timer/timer_finished.flac"
 
-    // Default: 6053
-    "port": 6053
-  },
+    # Master toggle for event sounds (wakeup + thinking).
+    # The timer alarm is NOT gated by this flag — it is a functional alert
+    # and will always play regardless of this setting.
+    event_sounds_enabled: bool = True
 
-  // ---------------------------------------------------------------------------
-  // Optional: LEDs
-  // ---------------------------------------------------------------------------
-  "led": {
-    // Optional: if false, LED controller runs in no-op mode
-    "enabled": true,
+    preferences_file: str = "preferences.json"
+    debug: bool = False
 
-    // "dotstar" | "neopixel" | "xvf3800"
-    "led_type": "dotstar",
 
-    // "spi" | "gpio" | "usb"
-    // - dotstar: "spi" or "gpio"
-    // - neopixel: "spi" or "gpio"
-    // - xvf3800: "usb"
-    "interface": "spi",
+@dataclass
+class AudioConfig:
+    """Settings for audio input and output."""
+    input_device: Optional[str] = None
+    input_block_size: int = 1024
+    output_device: Optional[str] = None
 
-    // GPIO pins — used when interface="gpio"
-    // For DotStar GPIO: both clock_pin + data_pin are used
-    // For NeoPixel GPIO: only data_pin is used (clock_pin ignored)
-    // For XVF3800: unused and ignored
-    "clock_pin": 13,
-    "data_pin": 12,
+    # If True, LVA will attempt to set the OS sink volume to match the persisted
+    # volume in preferences.json on startup (PipeWire/PulseAudio/ALSA best-effort).
+    # Default is False to avoid surprising changes on systems where users manage
+    # volume externally.
+    volume_sync: bool = False
 
-    // Default number of LEDs (may be overridden by preferences.json after first run)
-    "num_leds": 3
-  },
+    # Maximum sink volume to map to LVA's 100% volume.
+    #
+    # Example: if max_volume_percent=150 then when LVA's media player reports
+    # 100% (preferences.volume_level == 1.0), the underlying sink will be set
+    # to 150% (or 1.5 for backends that use scalar volume).
+    #
+    # This is useful for devices that need >100% gain on PipeWire/Pulse/ALSA.
+    max_volume_percent: int = 100
 
-  // ---------------------------------------------------------------------------
-  // Optional: MQTT
-  //
-  // IMPORTANT for Tray Client:
-  // - The tray client requires MQTT enabled AND mqtt.host set.
-  // - If mqtt.host is null/empty, tray client will refuse to start.
-  // ---------------------------------------------------------------------------
-  "mqtt": {
-    // If set, mqtt.enabled becomes true automatically
-    "host": null,
 
-    "port": 1883,
-    "username": null,
-    "password": null
-  },
+@dataclass
+class WakeWordConfig:
+    """Settings for wake word detection."""
+    directories: List[str] = field(default_factory=list)
+    model: str = "okay_nabu"
+    stop_model: str = "stop"
+    refractory_seconds: float = 2.0
+    download_dir: str = "local"
 
-  // ---------------------------------------------------------------------------
-  // Optional: Button controller
-  // ---------------------------------------------------------------------------
-  "button": {
-    // Master enable
-    "enabled": false,
+    # OpenWakeWord activation threshold.
+    # A wake word triggers when model probability exceeds this value.
+    # Range: 0.0 - 1.0
+    openwakeword_threshold: float = 0.5
 
-    // "gpio" | "xvf3800"
-    // - gpio: short/long press logic (pin + long_press_seconds)
-    // - xvf3800: uses the XVF3800 built-in mute button as a mute toggle
-    "mode": "gpio",
 
-    // gpio mode only
-    "pin": 17,
-    "long_press_seconds": 1.0,
+@dataclass
+class ESPHomeConfig:
+    """Settings for the ESPHome API server."""
+    host: str = "0.0.0.0"
+    port: int = 6053
 
-    // Polling interval (used by both gpio + xvf3800 button controllers)
-    "poll_interval_seconds": 0.01
-  },
 
-  // ---------------------------------------------------------------------------
-  // Optional: Desktop Tray Client
-  // ---------------------------------------------------------------------------
-  "tray": {
-    // The systemd --user unit name the tray client controls (start/stop/restart).
-    //
-    // The tray client default (if omitted): "linux-voice-assistant.service"
-    //
-    // If you renamed the LVA unit, set it here so the tray menu controls
-    // the correct service.
-    "systemd_service_name": "linux-voice-assistant.service"
-  },
+@dataclass
+class LedConfig:
+    """Settings for LEDs."""
+    enabled: bool = True
 
-  // ---------------------------------------------------------------------------
-  // Sendspin client configuration (LVA -> Music Assistant)
-  //
-  // Notes:
-  // - This file is JSON-with-comments (JSONC). If your JSON loader does NOT
-  //   support comments, remove lines starting with //.
-  // - All times are seconds unless the key name ends with _ms.
-  // ---------------------------------------------------------------------------
+    # Supported values include:
+    # - "dotstar" / "neopixel" for Pi-attached LED strips
+    # - "xvf3800" for the ReSpeaker XVF3800 USB LED ring backend
+    led_type: str = "dotstar"
 
-  "sendspin": {
-    // Enable/disable the Sendspin client feature.
-    "enabled": true,
+    # For dotstar/neopixel: "spi" or "gpio"
+    # For xvf3800: "usb"
+    interface: str = "spi"
 
-    // -----------------------------------------------------------------------
-    // Client identity / capabilities
-    // -----------------------------------------------------------------------
-    "client": {
-      // Name shown in Music Assistant / Sendspin UI.
-      "name": "LVA Sendspin Client",
+    # GPIO pin numbers used when interface="gpio"
+    clock_pin: int = 13
+    data_pin: int = 12
 
-      // Optional extra info that MA may display (safe to omit).
-      "device_info": {
-        "manufacturer": "OHF-Voice",
-        "model": "Linux Voice Assistant",
-        "sw_version": "dev"
-      }
-    },
+    # Note: overridden by 'preferences.json' if it exists
+    num_leds: int = 3
 
-    // Which Sendspin roles this client will advertise. Most installs can leave
-    // these defaults as-is.
-    "roles": {
-      "player": true,
-      "metadata": true,
-      "controller": true
-    },
 
-    // -----------------------------------------------------------------------
-    // Startup state (seeded from preferences.json by LVA __main__.py)
-    // If you don't have preferences.json yet, these values provide defaults.
-    // -----------------------------------------------------------------------
-    "initial": {
-      // User volume (0–100). This is the *saved* volume shown in MA.
-      "volume": 50,
+@dataclass
+class MqttConfig:
+    """Settings for the MQTT client."""
+    enabled: bool = False
+    host: Optional[str] = None
+    port: int = 1883
+    username: Optional[str] = None
+    password: Optional[str] = None
 
-      // Whether the client starts muted.
-      "muted": false
-    },
 
-    // -----------------------------------------------------------------------
-    // Connection / discovery / keepalive / clock sync
-    // -----------------------------------------------------------------------
-    "connection": {
-      // If true, use mDNS discovery to find the MA Sendspin server.
-      // If you set server_host, discovery is bypassed.
-      "mdns": true,
+@dataclass
+class ButtonConfig:
+    """Settings for a hardware momentary button."""
 
-      // Optional static connection (recommended if you want to avoid discovery):
-      // "server_host": "192.168.0.100",
-      // "server_port": 8927,
-      // "server_path": "/sendspin",
+    # Overall enable/disable (default: off)
+    enabled: bool = False
 
-      // Time to wait for server/hello after connecting.
-      "hello_timeout_seconds": 8.0,
+    # mode:
+    #  - "gpio"   -> legacy GPIO button (e.g. ReSpeaker 2-Mic HAT)
+    #  - "xvf3800"-> USB-based mute integration for the ReSpeaker XVF3800
+    mode: str = "gpio"
 
-      // WebSocket protocol keepalive pings.
-      // IMPORTANT: Some MA/Sendspin servers mis-handle protocol pings while idle
-      // (e.g., after stream/end on FLAC). Set either value to 0 to disable pings.
-      "ping_interval_seconds": 0,
-      "ping_timeout_seconds": 0,
+    # BCM GPIO pin number for the button input (gpio mode only).
+    pin: int = 17
 
-      // ---------------------------------------------------------------------
-      // Clock sync (client/time <-> server/time)
-      // ---------------------------------------------------------------------
+    # Press duration (in seconds) to be considered a "long press" (gpio mode).
+    long_press_seconds: float = 2.0
 
-      // How often the client sends `client/time` for clock sync.
-      //
-      // - If time_sync_adaptive=false: this is the fixed interval.
-      // - If time_sync_adaptive=true: this is the base interval that adaptive logic
-      //   will start from, then adjust within [time_sync_min_interval_seconds,
-      //   time_sync_max_interval_seconds].
-      //
-      // Lower values converge faster but increase network chatter.
-      //
-      // Default: 5.0
-      "time_sync_interval_seconds": 5.0,
 
-      // Enable adaptive time-sync interval based on observed clock / network quality.
-      //
-      // Default: false
-      "time_sync_adaptive": true,
+@dataclass
+class TrayConfig:
+    """Settings for the tray client."""
+    systemd_service_name: str = "linux-voice-assistant.service"
 
-      // Bounds for adaptive polling interval.
-      //
-      // Defaults: min=0.5, max=5.0
-      "time_sync_min_interval_seconds": 0.5,
-      "time_sync_max_interval_seconds": 5.0,
 
-      // Burst probing: send N `client/time` probes in quick succession and use the
-      // best (lowest-RTT) sample to update the clock sync filter.
-      //
-      // Default: 3
-      "time_sync_burst_count": 3,
+# -----------------------------------------------------------------------------
+# Sendspin sub-configs
+# -----------------------------------------------------------------------------
 
-      // Delay between burst probes (seconds).
-      //
-      // Default: 0.15
-      "time_sync_burst_delay_seconds": 0.15
-    },
+@dataclass
+class SendspinConnectionConfig:
+    """How to find / connect to a Sendspin server."""
+    host: Optional[str] = None
+    port: int = 8888
+    path: str = "/sendspin"
+    use_mdns: bool = True
+    reconnect_delay: float = 5.0
+    connect_timeout: float = 10.0
 
-    // -----------------------------------------------------------------------
-    // Player settings (codec negotiation, buffering, local playback)
-    // -----------------------------------------------------------------------
-    "player": {
-      // Preferred codec to request from MA/Sendspin.
-      // "pcm" is universally supported; "flac" or "opus" if supported.
-      "preferred_codec": "pcm",
 
-      // All codecs the client can decode.
-      "supported_codecs": ["pcm"],
+@dataclass
+class SendspinRolesConfig:
+    """Which Sendspin protocol roles to activate."""
+    player: bool = True
+    controller: bool = False
 
-      // Audio format parameters (negotiated with the server).
-      "sample_rate": 48000,
-      "channels": 2,
-      "bit_depth": 16,
 
-      // Sync / jitter-buffer tuning
-      //
-      // Higher = more resilient to Wi-Fi jitter, but more delay.
-      // Typical: 150–300ms for LAN, 300–500ms for noisier networks.
-      "sync_target_latency_ms": 250,
+@dataclass
+class SendspinPlayerConfig:
+    """Player-role settings for codec negotiation, buffering, and mpv.
 
-      // Late frame drop threshold (ms).
-      // If a chunk arrives "too late" (its target playout time is already in the past
-      // by more than this window), it is dropped rather than played late.
-      //
-      // Typical: 60–200ms (LAN is usually fine at 100–150ms).
-      // Default: 150
-      "sync_late_drop_ms": 150,
+    - `preferred_codec` and `supported_codecs` are advertised during handshake.
+    - `mpv_*` and `ffmpeg_*` are pass-through knobs for downstream work.
+    """
 
-      // Per-device latency compensation (ms).
-      //
-      // This shifts the *scheduled playout time* used by the jitter buffer.
-      // It does NOT change MPV's internal buffering directly; it simply makes us
-      // aim earlier or later relative to the server timestamps.
-      //
-      // Important notes:
-      // - Negative values are allowed and are often what you want.
-      //   Many audio stacks (PulseAudio/PipeWire/ALSA) add output buffering; a
-      //   negative value compensates by scheduling earlier.
-      // - If THIS client plays EARLIER than others, make this MORE POSITIVE (add delay).
-      // - If THIS client plays LATER than others, make this MORE NEGATIVE (play earlier).
-      //
-      // Typical: -50 to -300ms depending on hardware/stack; measure and tune.
-      // Default: 0
-      "output_latency_ms": 0,
+    preferred_codec: str = "pcm"
+    supported_codecs: List[str] = field(default_factory=lambda: ["pcm"])
+    sample_rate: int = 48000
+    channels: int = 2
+    bit_depth: int = 16
 
-      // Stream clear handling window (ms).
-      //
-      // When the server sends `stream/clear` (e.g., seeking), the client drops
-      // any queued chunks whose timestamps fall within this window ahead of the
-      // clear moment, to avoid briefly playing old audio after a seek.
-      //
-      // Default: 2000
-      "clear_drop_window_ms": 2000,
+    # Approximate stream buffer capacity to advertise (bytes).
+    # This is used by the Sendspin server to choose chunk sizing.
+    buffer_capacity_bytes: int = 1048576  # 1 MiB
 
-      // Ducking amount while voice is active (if coordination.duck_during_voice is true).
-      "duck_volume_percent": 20,
+    # Ducking level applied to mpv volume when voice is active (0-100).
+    duck_volume_percent: int = 20
 
-      // Advertised buffer capacity to MA (bytes). This does not directly change
-      // mpv's internal queue, but helps MA size bursts.
-      "buffer_capacity_bytes": 1048576,
+    # Local playback process configuration
+    mpv_path: str = "mpv"
+    mpv_ao: Optional[str] = None
+    mpv_audio_device: Optional[str] = None
+    mpv_extra_args: List[str] = field(default_factory=list)
 
-      // Player-side commands the client will accept from MA.
-      "supported_commands": ["volume", "mute"]
-    },
+    # Decoder configuration (Milestone 4: wired-through, used in later milestones)
+    decoder_backend: str = "auto"  # auto|ffmpeg|none
+    ffmpeg_path: str = "ffmpeg"
+    ffmpeg_extra_args: List[str] = field(default_factory=list)
 
-    // -----------------------------------------------------------------------
-    // Coordination with voice assistant states (ducking)
-    // -----------------------------------------------------------------------
-    "coordination": {
-      // If true, reduce (duck) Sendspin playback while LVA is speaking/listening.
-      "duck_during_voice": true
-    },
+    def __post_init__(self) -> None:
+        self.preferred_codec = str(self.preferred_codec or "pcm").lower().strip()
 
-    // -----------------------------------------------------------------------
-    // Debug logging toggles
-    // -----------------------------------------------------------------------
-    "logging": {
-      // Log message types (rx/tx).
-      "debug_protocol": false,
+        # Normalize codecs lists
+        codecs = _as_str_list(self.supported_codecs, default=["pcm"])
+        codecs_norm: List[str] = []
+        for c in codecs:
+            c2 = str(c).lower().strip()
+            if not c2:
+                continue
+            if c2 not in codecs_norm:
+                codecs_norm.append(c2)
+        if "pcm" not in codecs_norm:
+            codecs_norm.append("pcm")
+        self.supported_codecs = codecs_norm
 
-      // Log full JSON payloads (verbose).
-      "debug_payloads": false
-    }
-  }
-}
+        if self.preferred_codec not in self.supported_codecs:
+            _LOGGER.warning(
+                "sendspin.player.preferred_codec=%r not in supported_codecs=%r; falling back to 'pcm'",
+                self.preferred_codec,
+                self.supported_codecs,
+            )
+            self.preferred_codec = "pcm"
+
+        self.mpv_extra_args = _as_str_list(self.mpv_extra_args, default=[])
+        self.ffmpeg_extra_args = _as_str_list(self.ffmpeg_extra_args, default=[])
+
+        self.decoder_backend = str(self.decoder_backend or "auto").lower().strip()
+        if self.decoder_backend not in ("auto", "ffmpeg", "none"):
+            _LOGGER.warning("sendspin.player.decoder_backend=%r invalid; using 'auto'", self.decoder_backend)
+            self.decoder_backend = "auto"
+
+
+@dataclass
+class SendspinAudioOutputConfig:
+    """Local audio output settings for Sendspin playback."""
+    backend: str = "soundcard"  # Phase 1: soundcard experiment
+    device: Optional[str] = None  # None -> default output device
+    block_ms: int = 20
+    prebuffer_ms: int = 300
+
+
+@dataclass
+class SendspinCoordinationConfig:
+    """Coordination between voice interaction and Sendspin playback."""
+    duck_during_voice: bool = True
+    duck_gain: float = 0.3  # 0.0-1.0 multiplier applied to PCM samples
+    on_error: str = "mute"  # "mute" | "stop"
+
+
+@dataclass
+class SendspinConfig:
+    """Top-level Sendspin config block."""
+    enabled: bool = False
+    connection: SendspinConnectionConfig = field(default_factory=SendspinConnectionConfig)
+    roles: SendspinRolesConfig = field(default_factory=SendspinRolesConfig)
+    player: SendspinPlayerConfig = field(default_factory=SendspinPlayerConfig)
+    audio_output: SendspinAudioOutputConfig = field(default_factory=SendspinAudioOutputConfig)
+    coordination: SendspinCoordinationConfig = field(default_factory=SendspinCoordinationConfig)
+
+
+@dataclass
+class Config:
+    """Main configuration object."""
+    app: AppConfig
+    audio: AudioConfig = field(default_factory=AudioConfig)
+    wake_word: WakeWordConfig = field(default_factory=WakeWordConfig)
+    esphome: ESPHomeConfig = field(default_factory=ESPHomeConfig)
+    led: LedConfig = field(default_factory=LedConfig)
+    mqtt: MqttConfig = field(default_factory=MqttConfig)
+    button: ButtonConfig = field(default_factory=ButtonConfig)
+    sendspin: SendspinConfig = field(default_factory=SendspinConfig)
+
+
+# -----------------------------------------------------------------------------
+# Loader
+# -----------------------------------------------------------------------------
+
+def load_config_from_json(config_path: Path) -> Config:
+    """Loads configuration from a JSON file and populates dataclasses."""
+
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            raw_data = json.load(f)
+    except FileNotFoundError:
+        _LOGGER.critical("Configuration file not found at: %s", config_path)
+        raise
+    except json.JSONDecodeError as e:
+        _LOGGER.critical("Error parsing configuration file: %s", e)
+        raise
+
+    if "app" not in raw_data:
+        raise ValueError("Configuration file must contain an 'app' section with a 'name'.")
+
+    app_config = _dataclass_from_dict(AppConfig, raw_data.get("app", {}), context="app")
+    audio_config = _dataclass_from_dict(AudioConfig, raw_data.get("audio", {}), context="audio")
+    wake_word_config = _dataclass_from_dict(WakeWordConfig, raw_data.get("wake_word", {}), context="wake_word")
+    esphome_config = _dataclass_from_dict(ESPHomeConfig, raw_data.get("esphome", {}), context="esphome")
+    led_config = _dataclass_from_dict(LedConfig, raw_data.get("led", {}), context="led")
+    mqtt_config = _dataclass_from_dict(MqttConfig, raw_data.get("mqtt", {}), context="mqtt")
+    button_config = _dataclass_from_dict(ButtonConfig, raw_data.get("button", {}), context="button")
+
+    # --- Sendspin (nested dataclasses; keep robust to partial configs) ---
+    sendspin_raw = raw_data.get("sendspin", {})
+    if not isinstance(sendspin_raw, dict):
+        sendspin_raw = {}
+
+    sendspin_cfg = SendspinConfig(
+        enabled=bool(sendspin_raw.get("enabled", False)),
+        connection=_dataclass_from_dict(
+            SendspinConnectionConfig, (sendspin_raw.get("connection", {}) or {}), context="sendspin.connection"
+        ),
+        roles=_dataclass_from_dict(
+            SendspinRolesConfig, (sendspin_raw.get("roles", {}) or {}), context="sendspin.roles"
+        ),
+        player=_dataclass_from_dict(
+            SendspinPlayerConfig, (sendspin_raw.get("player", {}) or {}), context="sendspin.player"
+        ),
+        audio_output=_dataclass_from_dict(
+            SendspinAudioOutputConfig, (sendspin_raw.get("audio_output", {}) or {}), context="sendspin.audio_output"
+        ),
+        coordination=_dataclass_from_dict(
+            SendspinCoordinationConfig, (sendspin_raw.get("coordination", {}) or {}), context="sendspin.coordination"
+        ),
+    )
+
+    # Normalize / validate wake word threshold
+    wake_word_config.openwakeword_threshold = _clamp_0_1(
+        "wake_word.openwakeword_threshold",
+        getattr(wake_word_config, "openwakeword_threshold", 0.5),
+    )
+
+    # Normalize / validate Sendspin duck_gain
+    sendspin_cfg.coordination.duck_gain = _clamp_0_1(
+        "sendspin.coordination.duck_gain",
+        getattr(sendspin_cfg.coordination, "duck_gain", 0.3),
+    )
+
+    # Back-compat: allow top-level "volume_sync" (preferred location is audio.volume_sync)
+    if "volume_sync" in raw_data and "volume_sync" not in raw_data.get("audio", {}):
+        try:
+            audio_config.volume_sync = bool(raw_data.get("volume_sync"))
+        except Exception:
+            pass
+
+    # Set MQTT 'enabled' flag
+    if mqtt_config.host:
+        mqtt_config.enabled = True
+
+    return Config(
+        app=app_config,
+        audio=audio_config,
+        wake_word=wake_word_config,
+        esphome=esphome_config,
+        led=led_config,
+        mqtt=mqtt_config,
+        button=button_config,
+        sendspin=sendspin_cfg,
+    )
