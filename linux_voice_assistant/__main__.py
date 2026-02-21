@@ -8,7 +8,7 @@ import time
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional, Set, Tuple, Union, Any
+from typing import Dict, List, Optional, Set, Tuple, Union, Any
 
 import numpy as np
 import soundcard as sc
