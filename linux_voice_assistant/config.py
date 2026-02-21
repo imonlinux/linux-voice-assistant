@@ -40,6 +40,35 @@ def _clamp_0_1(name: str, value: float) -> float:
     return v
 
 
+def _clamp_min(name: str, value: Any, *, minimum: float) -> float:
+    """Clamp a numeric value to be >= minimum, logging if clamped.
+
+    Returns the numeric value as float.
+    """
+    try:
+        v = float(value)
+    except Exception:
+        _LOGGER.warning("%s is not a number (%r); using %s", name, value, minimum)
+        return float(minimum)
+    if v < float(minimum):
+        _LOGGER.warning("%s < %s; clamping to %s (was %s)", name, minimum, minimum, v)
+        return float(minimum)
+    return v
+
+
+def _clamp_int_min(name: str, value: Any, *, minimum: int) -> int:
+    """Clamp an integer value to be >= minimum, logging if clamped."""
+    try:
+        v = int(value)
+    except Exception:
+        _LOGGER.warning("%s is not an int (%r); using %s", name, value, minimum)
+        return int(minimum)
+    if v < int(minimum):
+        _LOGGER.warning("%s < %s; clamping to %s (was %s)", name, minimum, minimum, v)
+        return int(minimum)
+    return v
+
+
 def _as_str_list(value: Any, *, default: Optional[List[str]] = None) -> List[str]:
     """Normalize a config value into List[str]."""
     if value is None:
@@ -69,20 +98,16 @@ def _dataclass_from_dict(cls: Type[T], raw: Any, *, context: str) -> T:
     if unknown:
         _LOGGER.warning("%s: ignoring unknown keys: %s", context, unknown)
 
-    try:
-        return cls(**filtered)  # type: ignore[arg-type]
-    except Exception as e:
-        _LOGGER.warning("%s: failed to parse (%s); using defaults. raw=%r", context, e, raw)
-        return cls()  # type: ignore[call-arg]
+    return cls(**filtered)  # type: ignore[arg-type]
 
 
 # -----------------------------------------------------------------------------
-# Configuration Dataclasses
+# Core Configuration Dataclasses
 # -----------------------------------------------------------------------------
 
 @dataclass
 class AppConfig:
-    """General application settings."""
+    """Top-level app configuration."""
     name: str
     wakeup_sound: str = "sounds/wakeup/wake_word_triggered.flac"
     thinking_sound: str = "sounds/thinking/thinking.flac"
@@ -93,7 +118,6 @@ class AppConfig:
     # The timer alarm is NOT gated by this flag — it is a functional alert
     # and will always play regardless of this setting.
     event_sounds_enabled: bool = True
-
     preferences_file: str = "preferences.json"
     debug: bool = False
 
@@ -123,28 +147,25 @@ class AudioConfig:
 
 @dataclass
 class WakeWordConfig:
-    """Settings for wake word detection."""
+    """Wake word configuration."""
     directories: List[str] = field(default_factory=list)
     model: str = "okay_nabu"
     stop_model: str = "stop"
     refractory_seconds: float = 2.0
     download_dir: str = "local"
-
-    # OpenWakeWord activation threshold.
-    # A wake word triggers when model probability exceeds this value.
-    # Range: 0.0 - 1.0
     openwakeword_threshold: float = 0.5
 
 
 @dataclass
 class ESPHomeConfig:
-    """Settings for the ESPHome API server."""
+    """Settings for the built-in ESPHome API server."""
     host: str = "0.0.0.0"
     port: int = 6053
 
 
 @dataclass
 class LedConfig:
+    """LED controller configuration."""
     """Settings for LEDs."""
     enabled: bool = True
 
@@ -167,7 +188,7 @@ class LedConfig:
 
 @dataclass
 class MqttConfig:
-    """Settings for the MQTT client."""
+    """MQTT configuration."""
     enabled: bool = False
     host: Optional[str] = None
     port: int = 1883
@@ -193,40 +214,73 @@ class ButtonConfig:
     # Press duration (in seconds) to be considered a "long press" (gpio mode).
     long_press_seconds: float = 2.0
 
-
 @dataclass
 class TrayConfig:
     """Settings for the tray client."""
     systemd_service_name: str = "linux-voice-assistant.service"
 
-
 # -----------------------------------------------------------------------------
-# Sendspin sub-configs
+# Sendspin Configuration Dataclasses
 # -----------------------------------------------------------------------------
 
 @dataclass
 class SendspinConnectionConfig:
-    """How to find / connect to a Sendspin server."""
-    host: Optional[str] = None
-    port: int = 8888
-    path: str = "/sendspin"
-    use_mdns: bool = True
-    reconnect_delay: float = 5.0
-    connect_timeout: float = 10.0
+    """Sendspin connection settings.
+
+    mode:
+      - "client_initiated": LVA discovers Sendspin servers via mDNS and connects.
+      - "server_initiated": LVA advertises itself and accepts server connections.
+    """
+    mode: str = "client_initiated"
+    mdns: bool = True
+    server_host: Optional[str] = None
+    server_port: int = 8927
+    server_path: str = "/sendspin"
+
+    # Optional tuning
+    timeout_seconds: float = 6.0
+    hello_timeout_seconds: float = 8.0
+    ping_interval_seconds: float = 20.0
+    ping_timeout_seconds: float = 20.0
+    time_sync_interval_seconds: float = 5.0
+
+    # Clock sync adaptive scheduling (Sendspin client)
+    # When time_sync_adaptive is enabled, the client will adjust its polling interval
+    # within [time_sync_min_interval_seconds, time_sync_max_interval_seconds].
+    time_sync_adaptive: bool = True
+    time_sync_min_interval_seconds: float = 0.5
+    time_sync_max_interval_seconds: float = 5.0
+
+    # Burst probing parameters (Sendspin client)
+    # Sends time_sync_burst_size probes spaced by time_sync_burst_spacing_seconds,
+    # then waits time_sync_burst_grace_seconds for late responses.
+    time_sync_burst_size: int = 8
+    time_sync_burst_spacing_seconds: float = 0.1
+    time_sync_burst_grace_seconds: float = 1.5
+
+    # Accepted by config to avoid warnings; only has effect if/when implemented in the client.
+    time_sync_burst_on_connect: bool = True
+    time_sync_burst_on_stream_start: bool = True
 
 
 @dataclass
 class SendspinRolesConfig:
-    """Which Sendspin protocol roles to activate."""
+    """Enable/disable Sendspin roles."""
     player: bool = True
-    controller: bool = False
+    metadata: bool = True
+    controller: bool = True
+    artwork: bool = False
+    visualizer: bool = False
 
 
 @dataclass
 class SendspinPlayerConfig:
-    """Player-role settings for codec negotiation, buffering, and mpv.
+    """Player capability preferences for Sendspin.
 
-    - `preferred_codec` and `supported_codecs` are advertised during handshake.
+    Notes:
+    - `supported_codecs` controls what we advertise in `client/hello`.
+    - Actual playback is currently PCM-only; if the server starts a stream with
+      a non-PCM codec, the client will request a PCM format and log a warning.
     - `mpv_*` and `ffmpeg_*` are pass-through knobs for downstream work.
     """
 
@@ -236,11 +290,24 @@ class SendspinPlayerConfig:
     channels: int = 2
     bit_depth: int = 16
 
+    # ---------------------------------------------------------------------
+    # Sync / buffering knobs (timestamp-aware jitter buffer)
+    # ---------------------------------------------------------------------
+    sync_target_latency_ms: int = 250
+    sync_late_drop_ms: int = 150
+    output_latency_ms: int = 0
+    clear_drop_window_ms: int = 2000
+
     # Approximate stream buffer capacity to advertise (bytes).
     # This is used by the Sendspin server to choose chunk sizing.
     buffer_capacity_bytes: int = 1048576  # 1 MiB
 
+    # Player-side commands the client will accept from the server.
+    supported_commands: List[str] = field(default_factory=lambda: ["volume", "mute"])
+
     # Ducking level applied to mpv volume when voice is active (0-100).
+    # NOTE: the Sendspin client currently uses sendspin.coordination.duck_gain.
+    # This value is retained for backwards compatibility and for UI/Docs.
     duck_volume_percent: int = 20
 
     # Local playback process configuration
@@ -269,6 +336,23 @@ class SendspinPlayerConfig:
         if "pcm" not in codecs_norm:
             codecs_norm.append("pcm")
         self.supported_codecs = codecs_norm
+
+        # Normalize supported commands list
+        cmds = _as_str_list(getattr(self, "supported_commands", None), default=["volume", "mute"])
+        cmds_norm: List[str] = []
+        for c in cmds:
+            c2 = str(c).lower().strip()
+            if not c2:
+                continue
+            if c2 not in cmds_norm:
+                cmds_norm.append(c2)
+        self.supported_commands = cmds_norm
+
+        # Normalize ms-based knobs to ints (and basic sanity)
+        self.sync_target_latency_ms = int(self.sync_target_latency_ms)
+        self.sync_late_drop_ms = int(self.sync_late_drop_ms)
+        self.output_latency_ms = int(self.output_latency_ms)
+        self.clear_drop_window_ms = int(self.clear_drop_window_ms)
 
         if self.preferred_codec not in self.supported_codecs:
             _LOGGER.warning(
@@ -390,6 +474,76 @@ def load_config_from_json(config_path: Path) -> Config:
     sendspin_cfg.coordination.duck_gain = _clamp_0_1(
         "sendspin.coordination.duck_gain",
         getattr(sendspin_cfg.coordination, "duck_gain", 0.3),
+    )
+
+    # Normalize / validate Sendspin time sync settings
+    sendspin_cfg.connection.time_sync_interval_seconds = _clamp_min(
+        "sendspin.connection.time_sync_interval_seconds",
+        getattr(sendspin_cfg.connection, "time_sync_interval_seconds", 5.0),
+        minimum=0.0,
+    )
+    sendspin_cfg.connection.time_sync_min_interval_seconds = _clamp_min(
+        "sendspin.connection.time_sync_min_interval_seconds",
+        getattr(sendspin_cfg.connection, "time_sync_min_interval_seconds", 0.5),
+        minimum=0.05,
+    )
+    sendspin_cfg.connection.time_sync_max_interval_seconds = _clamp_min(
+        "sendspin.connection.time_sync_max_interval_seconds",
+        getattr(sendspin_cfg.connection, "time_sync_max_interval_seconds", 5.0),
+        minimum=0.05,
+    )
+    if sendspin_cfg.connection.time_sync_max_interval_seconds < sendspin_cfg.connection.time_sync_min_interval_seconds:
+        _LOGGER.warning(
+            "sendspin.connection.time_sync_max_interval_seconds < time_sync_min_interval_seconds; swapping values (%s < %s)",
+            sendspin_cfg.connection.time_sync_max_interval_seconds,
+            sendspin_cfg.connection.time_sync_min_interval_seconds,
+        )
+        sendspin_cfg.connection.time_sync_min_interval_seconds, sendspin_cfg.connection.time_sync_max_interval_seconds = (
+            sendspin_cfg.connection.time_sync_max_interval_seconds,
+            sendspin_cfg.connection.time_sync_min_interval_seconds,
+        )
+
+    sendspin_cfg.connection.time_sync_burst_size = _clamp_int_min(
+        "sendspin.connection.time_sync_burst_size",
+        getattr(sendspin_cfg.connection, "time_sync_burst_size", 8),
+        minimum=1,
+    )
+    sendspin_cfg.connection.time_sync_burst_spacing_seconds = _clamp_min(
+        "sendspin.connection.time_sync_burst_spacing_seconds",
+        getattr(sendspin_cfg.connection, "time_sync_burst_spacing_seconds", 0.1),
+        minimum=0.0,
+    )
+    sendspin_cfg.connection.time_sync_burst_grace_seconds = _clamp_min(
+        "sendspin.connection.time_sync_burst_grace_seconds",
+        getattr(sendspin_cfg.connection, "time_sync_burst_grace_seconds", 1.5),
+        minimum=0.0,
+    )
+
+    # Normalize / validate Sendspin player sync knobs
+    sendspin_cfg.player.sync_target_latency_ms = _clamp_int_min(
+        "sendspin.player.sync_target_latency_ms",
+        getattr(sendspin_cfg.player, "sync_target_latency_ms", 250),
+        minimum=0,
+    )
+    sendspin_cfg.player.sync_late_drop_ms = _clamp_int_min(
+        "sendspin.player.sync_late_drop_ms",
+        getattr(sendspin_cfg.player, "sync_late_drop_ms", 150),
+        minimum=0,
+    )
+    # output_latency_ms may be negative; don't clamp to 0.
+    try:
+        sendspin_cfg.player.output_latency_ms = int(getattr(sendspin_cfg.player, "output_latency_ms", 0))
+    except Exception:
+        _LOGGER.warning(
+            "sendspin.player.output_latency_ms is not an int (%r); using 0",
+            getattr(sendspin_cfg.player, "output_latency_ms", 0),
+        )
+        sendspin_cfg.player.output_latency_ms = 0
+
+    sendspin_cfg.player.clear_drop_window_ms = _clamp_int_min(
+        "sendspin.player.clear_drop_window_ms",
+        getattr(sendspin_cfg.player, "clear_drop_window_ms", 2000),
+        minimum=0,
     )
 
     # Back-compat: allow top-level "volume_sync" (preferred location is audio.volume_sync)
