@@ -95,7 +95,7 @@ def _scan_sound_files(repo_dir: Path) -> Dict[str, List[str]]:
     Auto-creates subdirectories if they don't exist.
     Returns e.g. {"wakeup_sound": ["chime.flac", "wake_word_triggered.flac"], ...}
     """
-    result: Dict[str, list] = {}
+    result: Dict[str, List[str]] = {}
     for cat_key, cat_info in SOUND_CATEGORIES.items():
         scan_dir = repo_dir / cat_info["scan_dir"]
         if not scan_dir.is_dir():
@@ -160,6 +160,9 @@ def _resolve_sound_path(
         )
 
     # 2. Fall back to config.json / config.py value (full relative path)
+    config_path = repo_dir / config_value
+    if not config_value:
+    return ""
     config_path = repo_dir / config_value
     if config_path.is_file():
         return str(config_path)
