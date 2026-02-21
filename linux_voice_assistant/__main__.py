@@ -368,7 +368,7 @@ class SoundSelectionHandler(EventHandler):
     @subscribe
     def set_thinking_sound_loop(self, data: dict):
         """Event handler for thinking sound loop toggle from MQTT."""
-        payload = data.get("state", "")
+        payload = data.get("state", "").upper()
         if payload not in ("ON", "OFF"):
             return
 
