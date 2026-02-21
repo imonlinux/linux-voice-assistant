@@ -128,6 +128,7 @@ class Preferences:
     # Empty string = no override (use config.json / config.py value).
     # "ON" / "OFF" = explicit MQTT selection.
     selected_thinking_sound_loop: str = ""
+    
 
 @dataclass
 class ServerState:
