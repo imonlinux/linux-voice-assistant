@@ -30,7 +30,7 @@
     // transitions out of the Thinking state. If false, it plays once.
     //
     // Default: false
-    "thinking_sound_loop": true,
+    "thinking_sound_loop": false,
 
     // Optional: Timer finished sound (relative to repo root).
     // Same subdirectory convention: sounds/timer/
