@@ -88,7 +88,7 @@ SOUND_CATEGORIES = {
 }
 
 
-def _scan_sound_files(repo_dir: Path) -> Dict[str, list]:
+def _scan_sound_files(repo_dir: Path) -> Dict[str, List[str]]:
     """
     Scan sound subdirectories and return available filenames per category.
 
@@ -257,6 +257,23 @@ class MicMuteHandler(EventHandler):
             self.state.preferences.alarm_duration_seconds = duration
             self.state.save_preferences()
 
+    @subscribe
+    def set_thinking_sound_loop(self, data: dict):
+        """Event handler for thinking sound loop toggle from MQTT."""
+        payload = data.get("state", "").upper()
+        if payload not in ("ON", "OFF"):
+            return
+
+        new_value = payload == "ON"
+        self.state.thinking_sound_loop = new_value
+        self.state.preferences.selected_thinking_sound_loop = payload
+        self.state.save_preferences()
+
+        if self.mqtt_controller:
+            self.mqtt_controller.publish_thinking_sound_loop_state(new_value)
+
+        _LOGGER.debug("Thinking sound loop set to: %s", new_value)
+
 
 class SendspinPreferencesHandler(EventHandler):
     """
@@ -295,7 +312,7 @@ class SendspinPreferencesHandler(EventHandler):
 
 class SoundSelectionHandler(EventHandler):
     """
-    Handles MQTT sound selection events.
+    Handles MQTT sound file selection events.
 
     Subscribes to set_wakeup_sound, set_thinking_sound, set_timer_sound.
     Updates ServerState sound paths at runtime and persists to preferences.
@@ -330,6 +347,11 @@ class SoundSelectionHandler(EventHandler):
                 return
             resolved_path = ""
         else:
+            if Path(filename).name != filename:
+                _LOGGER.warning(
+                    "Rejecting sound filename with path components: %r", filename
+                )
+                return
             resolved_path = str(
                 self._repo_dir / cat_info["scan_dir"] / filename
             )
@@ -365,22 +387,6 @@ class SoundSelectionHandler(EventHandler):
         """Event handler for timer sound selection from MQTT."""
         self._handle_sound_selection("timer_sound", data)
         
-    @subscribe
-    def set_thinking_sound_loop(self, data: dict):
-        """Event handler for thinking sound loop toggle from MQTT."""
-        payload = data.get("state", "").upper()
-        if payload not in ("ON", "OFF"):
-            return
-
-        new_value = payload == "ON"
-        self.state.thinking_sound_loop = new_value
-        self.state.preferences.selected_thinking_sound_loop = payload
-        self.state.save_preferences()
-
-        if self.mqtt_controller:
-            self.mqtt_controller.publish_thinking_sound_loop_state(new_value)
-
-        _LOGGER.debug("Thinking sound loop set to: %s", new_value)
 # -----------------------------------------------------------------------------
 # Sendspin helpers
 # -----------------------------------------------------------------------------
