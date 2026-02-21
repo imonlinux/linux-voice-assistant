@@ -292,7 +292,7 @@
 
       // Enable adaptive time-sync interval based on observed clock / network quality.
       //
-      // Default: false
+      // Default: true
       "time_sync_adaptive": true,
 
       // Bounds for adaptive polling interval.
@@ -369,9 +369,6 @@
       // Default: 2000
       "clear_drop_window_ms": 2000,
 
-      // Ducking amount while voice is active (if coordination.duck_during_voice is true).
-      "duck_volume_percent": 20,
-
       // Advertised buffer capacity to MA (bytes). This does not directly change
       // mpv's internal queue, but helps MA size bursts.
       "buffer_capacity_bytes": 1048576,
@@ -385,7 +382,9 @@
     // -----------------------------------------------------------------------
     "coordination": {
       // If true, reduce (duck) Sendspin playback while LVA is speaking/listening.
-      "duck_during_voice": true
+      "duck_during_voice": true,
+      // Ducking amount while voice is active (if coordination.duck_during_voice is true) 0.2 = 20% of volume.
+      "duck_gain": 0.2
     },
 
     // -----------------------------------------------------------------------
