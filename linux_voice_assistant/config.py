@@ -110,7 +110,7 @@ class AppConfig:
     """Top-level app configuration."""
     name: str
     wakeup_sound: str = "sounds/wakeup/wake_word_triggered.flac"
-    thinking_sound: str = "sounds/thinking/thinking.flac"
+    thinking_sound: str = "sounds/thinking/nothing.flac"
     thinking_sound_loop: bool = False    
     timer_finished_sound: str = "sounds/timer/timer_finished.flac"
 
