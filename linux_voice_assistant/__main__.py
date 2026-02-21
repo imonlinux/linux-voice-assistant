@@ -160,9 +160,8 @@ def _resolve_sound_path(
         )
 
     # 2. Fall back to config.json / config.py value (full relative path)
-    config_path = repo_dir / config_value
     if not config_value:
-    return ""
+        return ""
     config_path = repo_dir / config_value
     if config_path.is_file():
         return str(config_path)
