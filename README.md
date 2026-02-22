@@ -198,6 +198,16 @@ Community openWakeword models from [home-assistant-wakewords-collection][wakewor
 
 **OpenWakeWord detection threshold is configurable globally via `config.json`, per-model via the model's `.json` file, or via the `--wake-word-threshold` CLI flag.**
 
+Example file:
+`wakewords/openWakeWord/ok_nabu_v0.1.json`
+```bash
+{
+  "type": "openWakeWord",
+  "wake_word": "Okay Nabu",
+  "model": "ok_nabu_v0.1.tflite",
+  "threshold": 0.62
+}
+```
 ---
 
 ## Project Structure
