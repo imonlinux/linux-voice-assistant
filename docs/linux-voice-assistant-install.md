@@ -733,8 +733,9 @@ Due to differences in chipsets and the mpv player pipeline, there may be a consi
 
 Here is a good rule for tuning:
 
-LVA player 1 second behind other player = "output_latency_ms": -600
-LVA player 1 second ahead other player = "output_latency_ms": 600
+`LVA player 1 second behind other player = "output_latency_ms": -600`
+
+`LVA player 1 second ahead other player = "output_latency_ms": 600`
 
 Then make adjustments until the two players are synchronized.
 
