@@ -846,7 +846,7 @@ systemctl --user disable pipewire.service pipewire-pulse.service wireplumber.ser
 
 ## 10. Safely Upgrade from previous version of LVA
 
-***You will need a minimum of 550 GB of free space to use this process.***
+***You will need a minimum of 550 MB of free space to use this process.***
 
 Verify that you have enough free disk space:
 
