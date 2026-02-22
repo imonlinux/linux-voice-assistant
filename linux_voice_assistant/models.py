@@ -107,7 +107,9 @@ class AvailableWakeWord:
 class Preferences:
     active_wake_words: List[str] = field(default_factory=list)
     volume_level: float = 1.0
-
+    # Persisted MAC address for stable device identity across reboots.
+    # Empty string = not yet persisted (first boot will detect and save).
+    mac_address: str = ""
     # New: last-known Sendspin (MA) player volume (0-100), independent of LVA master volume_level.
     sendspin_volume: int = 100
 
@@ -116,6 +118,16 @@ class Preferences:
     # 0 = infinite alarm (only Stop/wake word stops it)
     # >0 = auto-stop alarm after this many seconds
     alarm_duration_seconds: int = 0
+    # MQTT sound selection overrides.
+    # Stores the selected filename (e.g. "chime.flac") or "None" to disable.
+    # Empty string = no MQTT override, use config.json / config.py default.
+    selected_wakeup_sound: str = ""
+    selected_thinking_sound: str = ""
+    selected_timer_sound: str = ""
+    # MQTT override for thinking sound loop.
+    # Empty string = no override (use config.json / config.py value).
+    # "ON" / "OFF" = explicit MQTT selection.
+    selected_thinking_sound_loop: str = ""
 
 
 @dataclass
@@ -134,6 +146,7 @@ class ServerState:
     active_wake_words: Set[str]
     stop_word: "MicroWakeWord"
     wakeup_sound: str
+    thinking_sound: str
     timer_finished_sound: str
     preferences_path: Path
     download_dir: Path
@@ -145,6 +158,11 @@ class ServerState:
     refractory_seconds: float = 2.0
     mic_muted: bool = False
     shutdown: bool = False
+
+    # Master toggle for event sounds (wakeup + thinking).
+    # The timer alarm is NOT gated by this — it always plays.
+    event_sounds_enabled: bool = True
+    thinking_sound_loop: bool = False
 
     # Threading event to pause the audio thread efficiently when muted
     # set() = Mic is ON (Audio processing running)

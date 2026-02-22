@@ -8,7 +8,7 @@ import time
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional, Set, Tuple, Union, Any
+from typing import Dict, List, Optional, Set, Tuple, Union, Any
 
 import numpy as np
 import soundcard as sc
@@ -58,6 +58,116 @@ class MediaPlayers:
     """Dataclass to hold media player instances."""
     music: MpvMediaPlayer
     tts: MpvMediaPlayer
+
+# -----------------------------------------------------------------------------
+# Sound File Scanning
+# -----------------------------------------------------------------------------
+
+SOUND_EXTENSIONS = {".flac", ".wav", ".mp3"}
+
+# category_key -> (scan_subdir, pref_field, state_field, allow_none)
+SOUND_CATEGORIES = {
+    "wakeup_sound": {
+        "scan_dir": "sounds/wakeup",
+        "pref_field": "selected_wakeup_sound",
+        "state_field": "wakeup_sound",
+        "allow_none": True,
+    },
+    "thinking_sound": {
+        "scan_dir": "sounds/thinking",
+        "pref_field": "selected_thinking_sound",
+        "state_field": "thinking_sound",
+        "allow_none": True,
+    },
+    "timer_sound": {
+        "scan_dir": "sounds/timer",
+        "pref_field": "selected_timer_sound",
+        "state_field": "timer_finished_sound",
+        "allow_none": False,
+    },
+}
+
+
+def _scan_sound_files(repo_dir: Path) -> Dict[str, List[str]]:
+    """
+    Scan sound subdirectories and return available filenames per category.
+
+    Auto-creates subdirectories if they don't exist.
+    Returns e.g. {"wakeup_sound": ["chime.flac", "wake_word_triggered.flac"], ...}
+    """
+    result: Dict[str, List[str]] = {}
+    for cat_key, cat_info in SOUND_CATEGORIES.items():
+        scan_dir = repo_dir / cat_info["scan_dir"]
+        if not scan_dir.is_dir():
+            scan_dir.mkdir(parents=True, exist_ok=True)
+            _LOGGER.info(
+                "Created sound directory: %s — add .flac/.wav/.mp3 files here",
+                scan_dir,
+            )
+        files = sorted(
+            f.name
+            for f in scan_dir.iterdir()
+            if f.is_file() and f.suffix.lower() in SOUND_EXTENSIONS
+        )
+        if files:
+            _LOGGER.debug("Sound category '%s': %s", cat_key, files)
+        else:
+            _LOGGER.info("No sound files in %s", scan_dir)
+        result[cat_key] = files
+    return result
+
+def _resolve_thinking_sound_loop(preferences: Preferences, config_value: bool) -> bool:
+    """
+    Resolve thinking_sound_loop setting.
+
+    Precedence: preferences (MQTT) > config.json > config.py default.
+    """
+    pref = preferences.selected_thinking_sound_loop
+    if pref == "ON":
+        return True
+    if pref == "OFF":
+        return False
+    return config_value
+
+def _resolve_sound_path(
+    repo_dir: Path,
+    cat_key: str,
+    pref_value: str,
+    config_value: str,
+) -> str:
+    """
+    Resolve which sound file to use for a category.
+
+    Precedence: preferences (MQTT) > config.json > config.py default.
+    Returns an absolute path string, or empty string if disabled ("None").
+    """
+    cat_info = SOUND_CATEGORIES[cat_key]
+    subdir = cat_info["scan_dir"]
+
+    # 1. Check MQTT/preferences override
+    if pref_value == "None":
+        _LOGGER.debug("Sound '%s' disabled via MQTT selection (None)", cat_key)
+        return ""
+    if pref_value:
+        pref_path = repo_dir / subdir / pref_value
+        if pref_path.is_file():
+            _LOGGER.debug("Sound '%s' using MQTT selection: %s", cat_key, pref_value)
+            return str(pref_path)
+        _LOGGER.warning(
+            "Persisted sound '%s' not found in %s, falling back to config",
+            pref_value,
+            subdir,
+        )
+
+    # 2. Fall back to config.json / config.py value (full relative path)
+    if not config_value:
+        return ""
+    config_path = repo_dir / config_value
+    if config_path.is_file():
+        return str(config_path)
+
+    _LOGGER.warning("Sound file not found: %s", config_path)
+    return ""
 
 # -----------------------------------------------------------------------------
 # Mic Mute / Preferences Handler
@@ -149,6 +259,23 @@ class MicMuteHandler(EventHandler):
             self.state.preferences.alarm_duration_seconds = duration
             self.state.save_preferences()
 
+    @subscribe
+    def set_thinking_sound_loop(self, data: dict):
+        """Event handler for thinking sound loop toggle from MQTT."""
+        payload = data.get("state", "").upper()
+        if payload not in ("ON", "OFF"):
+            return
+
+        new_value = payload == "ON"
+        self.state.thinking_sound_loop = new_value
+        self.state.preferences.selected_thinking_sound_loop = payload
+        self.state.save_preferences()
+
+        if self.mqtt_controller:
+            self.mqtt_controller.publish_thinking_sound_loop_state(new_value)
+
+        _LOGGER.debug("Thinking sound loop set to: %s", new_value)
+
 
 class SendspinPreferencesHandler(EventHandler):
     """
@@ -185,6 +312,83 @@ class SendspinPreferencesHandler(EventHandler):
             self.state.save_preferences()
             _LOGGER.debug("Saved sendspin_volume=%s to preferences.json", v_i)
 
+class SoundSelectionHandler(EventHandler):
+    """
+    Handles MQTT sound file selection events.
+
+    Subscribes to set_wakeup_sound, set_thinking_sound, set_timer_sound.
+    Updates ServerState sound paths at runtime and persists to preferences.
+    """
+    def __init__(
+        self,
+        event_bus: EventBus,
+        state: ServerState,
+        mqtt_controller: Optional[MqttController],
+        repo_dir: Path,
+    ):
+        super().__init__(event_bus)
+        self.state = state
+        self.mqtt_controller = mqtt_controller
+        self._repo_dir = repo_dir
+        self._subscribe_all_methods()
+
+    def _handle_sound_selection(self, cat_key: str, data: dict):
+        """Common handler for all sound selection events."""
+        filename = data.get("filename", "")
+        if not filename:
+            return
+
+        cat_info = SOUND_CATEGORIES[cat_key]
+
+        # Resolve the file path
+        if filename == "None":
+            if not cat_info["allow_none"]:
+                _LOGGER.warning(
+                    "Sound '%s' does not support 'None'; ignoring", cat_key
+                )
+                return
+            resolved_path = ""
+        else:
+            if Path(filename).name != filename:
+                _LOGGER.warning(
+                    "Rejecting sound filename with path components: %r", filename
+                )
+                return
+            resolved_path = str(
+                self._repo_dir / cat_info["scan_dir"] / filename
+            )
+            if not Path(resolved_path).is_file():
+                _LOGGER.warning("Sound file not found: %s", resolved_path)
+                return
+
+        # Update runtime state
+        setattr(self.state, cat_info["state_field"], resolved_path)
+
+        # Persist to preferences
+        setattr(self.state.preferences, cat_info["pref_field"], filename)
+        self.state.save_preferences()
+
+        # Publish state back to MQTT
+        if self.mqtt_controller:
+            self.mqtt_controller.publish_sound_state(cat_key, filename)
+
+        _LOGGER.debug("Sound '%s' set to: %s", cat_key, filename or "(None)")
+
+    @subscribe
+    def set_wakeup_sound(self, data: dict):
+        """Event handler for wakeup sound selection from MQTT."""
+        self._handle_sound_selection("wakeup_sound", data)
+
+    @subscribe
+    def set_thinking_sound(self, data: dict):
+        """Event handler for thinking sound selection from MQTT."""
+        self._handle_sound_selection("thinking_sound", data)
+
+    @subscribe
+    def set_timer_sound(self, data: dict):
+        """Event handler for timer sound selection from MQTT."""
+        self._handle_sound_selection("timer_sound", data)
+        
 # -----------------------------------------------------------------------------
 # Sendspin helpers
 # -----------------------------------------------------------------------------
@@ -676,6 +880,34 @@ def _init_media_players(
     )
     return MediaPlayers(music=music_player, tts=tts_player)
 
+def _resolve_mac_address(preferences: Preferences, preferences_path: Path) -> str:
+    """
+    Return a stable MAC address for device identity.
+
+    On first boot, detect the hardware MAC and persist it to preferences.json
+    so that the device identity survives NIC changes, VM re-provisioning, or
+    NetworkManager MAC randomization.
+    """
+    if preferences.mac_address:
+        _LOGGER.info("Using persisted MAC address: %s", format_mac(preferences.mac_address))
+        return preferences.mac_address
+
+    detected = get_mac_address()
+    _LOGGER.info(
+        "First boot — persisting MAC address: %s", format_mac(detected)
+    )
+    preferences.mac_address = detected
+
+    # Save immediately so the identity is locked in even if we crash later.
+    preferences_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(preferences_path, "w", encoding="utf-8") as f:
+        from dataclasses import asdict
+        import json as _json
+        _json.dump(asdict(preferences), f, ensure_ascii=False, indent=4)
+
+    return detected
+
+
 def _create_server_state(
     config: Config,
     loop: asyncio.AbstractEventLoop,
@@ -685,7 +917,8 @@ def _create_server_state(
     media_players: MediaPlayers,
 ) -> ServerState:
     """Creates the global ServerState object."""
-    stable_mac = format_mac(get_mac_address())
+    preferences_path = _REPO_DIR / config.app.preferences_file
+    stable_mac = format_mac(_resolve_mac_address(preferences, preferences_path))
     return ServerState(
         name=config.app.name,
         mac_address=stable_mac,
@@ -698,12 +931,26 @@ def _create_server_state(
         wake_words=wake_word_data.models,
         active_wake_words=wake_word_data.active,
         stop_word=wake_word_data.stop_model,
-        wakeup_sound=str(_REPO_DIR / config.app.wakeup_sound),
-        timer_finished_sound=str(_REPO_DIR / config.app.timer_finished_sound),
+        wakeup_sound=_resolve_sound_path(
+            _REPO_DIR, "wakeup_sound",
+            preferences.selected_wakeup_sound, config.app.wakeup_sound,
+        ),
+        thinking_sound=_resolve_sound_path(
+            _REPO_DIR, "thinking_sound",
+            preferences.selected_thinking_sound, config.app.thinking_sound,
+        ),
+        timer_finished_sound=_resolve_sound_path(
+            _REPO_DIR, "timer_sound",
+            preferences.selected_timer_sound, config.app.timer_finished_sound,
+        ),
         preferences=preferences,
-        preferences_path=_REPO_DIR / config.app.preferences_file,
+        preferences_path=preferences_path,
         download_dir=_REPO_DIR / config.wake_word.download_dir,
         refractory_seconds=config.wake_word.refractory_seconds,
+        event_sounds_enabled=config.app.event_sounds_enabled,
+        thinking_sound_loop=_resolve_thinking_sound_loop(
+            preferences, config.app.thinking_sound_loop,
+        ),
     )
 
 def _init_controllers(
@@ -721,6 +968,9 @@ def _init_controllers(
         preferences=preferences,
     )
 
+    # Scan sound directories for MQTT select entity options
+    sound_options = _scan_sound_files(_REPO_DIR)
+
     mqtt_controller: Optional[MqttController] = None
     if config.mqtt.enabled:
         mqtt_controller = MqttController(
@@ -730,6 +980,7 @@ def _init_controllers(
             app_name=config.app.name,
             mac_address=state.mac_address,
             preferences=preferences,
+            sound_options=sound_options,
         )
         setattr(state, "mqtt_controller", mqtt_controller)
         mqtt_controller.start()
@@ -744,6 +995,14 @@ def _init_controllers(
     sendspin_prefs_handler = SendspinPreferencesHandler(
         event_bus=event_bus,
         state=state,
+    )
+    
+    # Handle MQTT sound selection events
+    sound_selection_handler = SoundSelectionHandler(
+        event_bus=event_bus,
+        state=state,
+        mqtt_controller=mqtt_controller,
+        repo_dir=_REPO_DIR,
     )
 
     try:
@@ -780,7 +1039,12 @@ async def _run_server(state: ServerState, config: Config):
         host=config.esphome.host,
         port=config.esphome.port,
     )
-    discovery = HomeAssistantZeroconf(port=config.esphome.port, name=config.app.name)
+    # Strip colons from state.mac_address (format "aa:bb:cc:dd:ee:ff")
+    # because zeroconf expects raw hex ("aabbccddeeff").
+    raw_mac = state.mac_address.replace(":", "")
+    discovery = HomeAssistantZeroconf(
+        port=config.esphome.port, name=config.app.name, mac_address=raw_mac
+    )
     await discovery.register_server()
 
     async with server:

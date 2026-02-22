@@ -66,6 +66,7 @@ class MpvMediaPlayer:
             audio_channels="stereo",
             keep_open="no",
             network_timeout=7,
+            ytdl=False,
             msg_level=os.environ.get("LVA_MPV_MSG_LEVEL", "all=warn"),
         )
 

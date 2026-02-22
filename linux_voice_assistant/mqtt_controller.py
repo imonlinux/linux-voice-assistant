@@ -1,7 +1,6 @@
 import asyncio
 import json
 import logging
-import uuid
 from typing import TYPE_CHECKING, List, Optional
 
 import paho.mqtt.client as mqtt
@@ -26,6 +25,7 @@ class MqttController(EventHandler):
         app_name: str,
         mac_address: str,
         preferences: Preferences,
+        sound_options: Optional[dict] = None,
     ):
         super().__init__(event_bus)
         self.loop = loop
@@ -40,9 +40,10 @@ class MqttController(EventHandler):
         self._device_id = slugify_device_id(app_name)
         self._topic_prefix = f"lva/{self._device_id}"
 
-        mac_int = uuid.getnode()
-        self._mac_address = ':'.join(('%012X' % mac_int)[i:i+2] for i in range(0, 12, 2))
-        _LOGGER.debug("Detected System MAC Address: %s", self._mac_address)
+        # Use the stable MAC passed from ServerState (persisted in preferences.json)
+        # instead of calling uuid.getnode() directly, which can change across reboots.
+        self._mac_address = mac_address
+        _LOGGER.debug("Using MAC Address: %s", self._mac_address)
 
         self._is_muted = False  # Internal state
         self._connected = False  # Track connection state
@@ -78,9 +79,40 @@ class MqttController(EventHandler):
                 "light_state": f"{self._topic_prefix}/{state_name}_light/state",
             }
 
+        # Sound selection topics and options
+        self._sound_options = sound_options or {}
+        self._sound_categories = {
+            "wakeup_sound": {
+                "label": "Sound Wakeup",
+                "icon": "mdi:bell-ring",
+                "pref_field": "selected_wakeup_sound",
+                "allow_none": True,
+            },
+            "thinking_sound": {
+                "label": "Sound Thinking",
+                "icon": "mdi:head-cog",
+                "pref_field": "selected_thinking_sound",
+                "allow_none": True,
+            },
+            "timer_sound": {
+                "label": "Sound Timer",
+                "icon": "mdi:timer-alert",
+                "pref_field": "selected_timer_sound",
+                "allow_none": False,
+            },
+        }
+        for cat_key in self._sound_categories:
+            self.topics[cat_key] = {
+                "command": f"{self._topic_prefix}/{cat_key}/set",
+                "state": f"{self._topic_prefix}/{cat_key}/state",
+            }
+
+        self.topics["thinking_sound_loop"] = {
+            "command": f"{self._topic_prefix}/thinking_sound_loop/set",
+            "state": f"{self._topic_prefix}/thinking_sound_loop/state",
+        }        
         self._bootstrap_state_sync = True
         self._bootstrap_ends_at: Optional[float] = None
-
         self._client = mqtt.Client()
         self._client.on_connect = self._on_connect
         self._client.on_message = self._on_message
@@ -208,6 +240,16 @@ class MqttController(EventHandler):
             except ValueError:
                 _LOGGER.warning("Invalid alarm_duration payload received: %r", payload)
 
+        # Sound selection commands
+        for cat_key in self._sound_categories:
+            if topic == self.topics[cat_key]["command"]:
+                self.event_bus.publish(f"set_{cat_key}", {"filename": payload})
+                break
+
+        # Thinking sound loop toggle
+        if topic == self.topics["thinking_sound_loop"]["command"]:
+            self.event_bus.publish("set_thinking_sound_loop", {"state": payload.upper()})
+        
         for state_name in self.CONFIGURABLE_STATES:
             state_topics = self.topics[state_name]
             if topic == state_topics["effect_command"]:
@@ -279,7 +321,7 @@ class MqttController(EventHandler):
         )
 
         num_leds_cfg = {
-            "name": "Number of LEDs",
+            "name": "LED Count",
             "unique_id": f"{self._device_id}_num_leds",
             "command_topic": self.topics["num_leds"]["command"],
             "state_topic": self.topics["num_leds"]["state"],
@@ -323,7 +365,7 @@ class MqttController(EventHandler):
             capital_name = state_name.title()
 
             select_cfg = {
-                "name": f"{capital_name} Effect",
+                "name": f"LED {capital_name} Effect",
                 "unique_id": f"{self._device_id}_{state_name}_effect",
                 "command_topic": self.topics[state_name]["effect_command"],
                 "state_topic": self.topics[state_name]["effect_state"],
@@ -340,7 +382,7 @@ class MqttController(EventHandler):
             )
 
             light_cfg = {
-                "name": f"{capital_name} Color",
+                "name": f"LED {capital_name} Color",
                 "unique_id": f"{self._device_id}_{state_name}_color",
                 "schema": "json",
                 "command_topic": self.topics[state_name]["light_command"],
@@ -358,12 +400,67 @@ class MqttController(EventHandler):
                 retain=True,
             )
 
+        # Sound selection select entities
+        for cat_key, cat_info in self._sound_categories.items():
+            file_options = self._sound_options.get(cat_key, [])
+            if not file_options:
+                continue  # No files found — skip this entity
+
+            options = list(file_options)  # copy
+            if cat_info["allow_none"]:
+                options.insert(0, "None")
+
+            select_cfg = {
+                "name": cat_info["label"],
+                "unique_id": f"{self._device_id}_{cat_key}",
+                "command_topic": self.topics[cat_key]["command"],
+                "state_topic": self.topics[cat_key]["state"],
+                "availability_topic": availability_topic,
+                "options": options,
+                "icon": cat_info["icon"],
+                "device": device_info,
+                "entity_category": "config",
+            }
+            self._client.publish(
+                f"homeassistant/select/{self._device_id}_{cat_key}/config",
+                json.dumps(select_cfg),
+                retain=True,
+            )
+        
+        # Thinking sound loop switch
+        thinking_loop_cfg = {
+            "name": "Sound Thinking Loop",
+            "unique_id": f"{self._device_id}_thinking_sound_loop",
+            "command_topic": self.topics["thinking_sound_loop"]["command"],
+            "state_topic": self.topics["thinking_sound_loop"]["state"],
+            "availability_topic": availability_topic,
+            "icon": "mdi:repeat",
+            "device": device_info,
+            "entity_category": "config",
+        }
+        self._client.publish(
+            f"homeassistant/switch/{self._device_id}_thinking_sound_loop/config",
+            json.dumps(thinking_loop_cfg),
+            retain=True,
+        )
+        
         _LOGGER.debug("Published all MQTT discovery configs")
         self._client.publish(availability_topic, "online", retain=True)
 
         self.publish_mute_state(self._is_muted)
         self.publish_num_leds_state(self.preferences.num_leds)
         self.publish_alarm_duration_state(getattr(self.preferences, "alarm_duration_seconds", 0))
+
+        # Publish current sound selections
+        for cat_key, cat_info in self._sound_categories.items():
+            current = getattr(self.preferences, cat_info["pref_field"], "")
+            if current:
+                self.publish_sound_state(cat_key, current)
+
+        # Publish thinking sound loop state
+        loop_pref = getattr(self.preferences, "selected_thinking_sound_loop", "")
+        if loop_pref in ("ON", "OFF"):
+            self.publish_thinking_sound_loop_state(loop_pref == "ON")
 
     def publish_mute_state(self, is_muted: bool):
         self._is_muted = is_muted
@@ -379,6 +476,21 @@ class MqttController(EventHandler):
     def publish_alarm_duration_state(self, duration_seconds: int):
         self._client.publish(self.topics["alarm_duration"]["state"], str(int(duration_seconds)), retain=True)
 
+    def publish_thinking_sound_loop_state(self, is_looping: bool):
+        """Publish the current thinking sound loop state."""
+        self._client.publish(
+            self.topics["thinking_sound_loop"]["state"],
+            "ON" if is_looping else "OFF",
+            retain=True,
+        )
+    
+    def publish_sound_state(self, cat_key: str, filename: str):
+        """Publish the current sound selection for a category."""
+        if cat_key in self.topics:
+            self._client.publish(
+                self.topics[cat_key]["state"], filename, retain=True
+            )
+    
     @subscribe
     def publish_state_to_mqtt(self, data: dict):
         state_name = data.get("state_name")

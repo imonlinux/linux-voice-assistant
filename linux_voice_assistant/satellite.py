@@ -116,8 +116,8 @@ class VoiceSatelliteProtocol(APIServer):
         # External wake words announced by Home Assistant
         self._external_wake_words: Dict[str, VoiceAssistantExternalWakeWord] = {}
 
-        # Timer alarm auto-stop handle
-        self._timer_auto_stop_handle: Optional[asyncio.TimerHandle] = None
+        # Thinking sound loop flag
+        self._thinking_sound_active: bool = False
 
     # -------------------------------------------------------------------------
     # State machine helpers
@@ -128,6 +128,14 @@ class VoiceSatelliteProtocol(APIServer):
             return
 
         _LOGGER.debug("State transition: %s -> %s", self._state, new_state)
+
+        # Stop thinking sound loop when leaving THINKING.
+        # We only clear the flag here — we do NOT call tts_player.stop()
+        # because the next state (typically RESPONDING) will play TTS through
+        # the same player, which naturally interrupts the thinking sound.
+        if self._thinking_sound_active:
+            self._thinking_sound_active = False
+
         self._state = new_state
 
         if new_state == SatelliteState.IDLE:
@@ -139,6 +147,9 @@ class VoiceSatelliteProtocol(APIServer):
             self.state.event_bus.publish("voice_listen")
         elif new_state == SatelliteState.THINKING:
             self.state.event_bus.publish("voice_thinking")
+            if self.state.event_sounds_enabled and self.state.thinking_sound:
+                self._thinking_sound_active = True
+                self._play_thinking_sound()
         elif new_state == SatelliteState.RESPONDING:
             self.state.active_wake_words.add(self.state.stop_word.id)
             self.state.event_bus.publish("voice_responding")
@@ -242,6 +253,21 @@ class VoiceSatelliteProtocol(APIServer):
                     self._timer_auto_stop_handle = self.state.loop.call_later(
                         duration, self._auto_stop_timer_alarm
                     )
+
+    def _play_thinking_sound(self) -> None:
+        """
+        Play the thinking sound while in the THINKING state.
+
+        When thinking_sound_loop is True, the sound repeats via done_callback
+        until _thinking_sound_active is cleared by a state transition.
+        When False, the sound plays once. Default is False.
+        """
+        if not self._thinking_sound_active:
+            return
+        self.state.tts_player.play(
+            self.state.thinking_sound,
+            done_callback=self._play_thinking_sound if self.state.thinking_sound_loop else None,
+        )
 
     # -------------------------------------------------------------------------
     # Main message handler (called by APIServer)
@@ -486,7 +512,8 @@ class VoiceSatelliteProtocol(APIServer):
         )
         self._set_state(SatelliteState.LISTENING)
         self._is_streaming_audio = True
-        self.state.tts_player.play(self.state.wakeup_sound)
+        if self.state.event_sounds_enabled and self.state.wakeup_sound:
+            self.state.tts_player.play(self.state.wakeup_sound)
 
     def wakeup(self, wake_word: Union[MicroWakeWord, OpenWakeWord]) -> None:
         if self._state not in (SatelliteState.IDLE, SatelliteState.STARTING):
