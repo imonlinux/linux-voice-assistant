@@ -107,7 +107,7 @@ class VoiceSatelliteProtocol(APIServer):
         self._tts_url: Optional[str] = None
         self._continue_conversation: bool = False
         self._timer_finished: bool = False
-
+        self._timer_auto_stop_handle: Optional[asyncio.TimerHandle] = None
         self._run_end_received: bool = False
         self._tts_end_received: bool = False
         # Track if current audio is an announcement
