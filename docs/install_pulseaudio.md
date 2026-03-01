@@ -62,15 +62,21 @@ Test mpv can ouput to PA with current configs:
 mpv --ao=pulse --audio-device=default --audio-samplerate=44100 /usr/share/sounds/alsa/Front_Center.wav
 ```
 
-If volume is low, set it to 100%.
+If volume is low, set it to 100% for the ReSpeaker 2-Mic HAT v1 and at least 200% for the v2.
+
+ReSpeaker 2-Mic HAT v1:
 
 ```sh
 pactl set-sink-volume alsa_output.platform-soc_sound.stereo-fallback 100%
 ```
 
+ReSpeaker 2-Mic HAT v2 (apparently low audio output is a known issue):
+
+```bash
+pactl set-sink-volume alsa_output.platform-soc_sound.stereo-fallback 200%
+```
 
 ### 8. Done! Return to the tutorial to continue the Linux Voice Assistant install.
-
 
 
 
