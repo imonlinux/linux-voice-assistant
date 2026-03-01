@@ -43,7 +43,7 @@ Sound select options are populated by scanning `sounds/wakeup/`, `sounds/thinkin
 
 ### Hardware Integrations *(See Section 5 of [the tutorial](docs/linux-voice-assistant-install.md))*
 
-- **ReSpeaker 2-Mic Pi HAT** — GPIO button (mute toggle, short/long press) and SPI LEDs
+- **ReSpeaker 2-Mic Pi HAT v1 or v2** — GPIO button (mute toggle, short/long press) and SPI LEDs
 - **ReSpeaker XVF3800 4-Mic USB Array** — Hardware mute button, red mute LED sync, USB LED ring, and 4-mic input with AEC support. No vendor binaries required — LVA communicates directly via USB control transfers.
 
 ### LED Support
