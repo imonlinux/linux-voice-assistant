@@ -89,11 +89,17 @@ cd ~/seeed-linux-dtoverlays/
 make overlays/rpi/respeaker-2mic-v2_0-overlay.dtbo
 ```
 
-**Install the DTB Overlay:**
+**Install the DTB Overlay and Reboot:**
 
 ```bash
 sudo cp overlays/rpi/respeaker-2mic-v2_0-overlay.dtbo /boot/firmware/overlays/respeaker-2mic-v2_0.dtbo
 echo "dtoverlay=respeaker-2mic-v2_0" | sudo tee -a /boot/firmware/config.txt
+```
+
+**Reboot:**
+
+```bash
+sudo reboot
 ```
 
 **Enable SPI for the onboard LED's:**
@@ -102,7 +108,7 @@ echo "dtoverlay=respeaker-2mic-v2_0" | sudo tee -a /boot/firmware/config.txt
 sudo raspi-config nonint do_spi 0
 ```
 
-**Reboot:**
+**Reboot: (may not be needed)**
 
 ```bash
 sudo reboot
