@@ -1,4 +1,4 @@
-Linux Voice Assistant on Raspberry Pi — Installation & Configuration Guide
+## Linux Voice Assistant on Raspberry Pi — Installation & Configuration Guide
 
 > Created using ChatGPT 5 with the following prompt:
 
@@ -34,7 +34,7 @@ sudo reboot
 
 ## 2. (Optional) ReSpeaker 2‑Mic HAT drivers or ReSpeaker XVF3800 support
 
-Instructions for the install (or re-install) of the ReSpeaker 2-Mic Hat or the ReSpeaker XVF3800 USB 4-Mic Array have been moved to Section 5.
+Instructions for the install (or re-install) of the ReSpeaker 2-Mic Hat (**version 1 and version 2**) or the ReSpeaker XVF3800 USB 4-Mic Array have been moved to Section 5.
 
 ## 3. Get the code
 
@@ -60,17 +60,55 @@ Pick **one** of the following install paths. Expand a section to see the exact s
 > Tip: All services run in *user* mode (requires `loginctl enable-linger`);
 
 <details>
-<summary><strong>Optional (ReSpeaker 2‑Mic HAT drivers)</strong></summary>
+<summary><strong>Optional (ReSpeaker 2‑Mic HAT drivers v1 or v2)</strong></summary>
 
-If you are using the **ReSpeaker 2‑Mic HAT** (seeed-2mic-voicecard), install the vendor driver + overlay using the project helper script:
+If you are using the **ReSpeaker 2‑Mic HAT v1** (seeed-2mic-voicecard), install the vendor driver + overlay using the project helper script:
 *Instructions to reinstall after a kernel upgrade below*
+
 ```bash
 chmod +x ~/linux-voice-assistant/respeaker2mic/install-respeaker-drivers.sh
 sudo ~/linux-voice-assistant/respeaker2mic/install-respeaker-drivers.sh
 sudo reboot
 ```
 
-After reboot, you can sanity-check the device is present:
+If you are using the **ReSpeaker 2-Mic HAT v2** (seeed2micvoicec), install the following packages and the device tree overlay from Seeed Studio.
+
+**Packages:**
+
+```bash
+sudo apt update
+sudo apt install git device-tree-compiler make
+```
+
+**Get the DTB Overlay:**
+
+```bash
+cd ~
+git clone https://github.com/Seeed-Studio/seeed-linux-dtoverlays.git
+cd ~/seeed-linux-dtoverlays/
+make overlays/rpi/respeaker-2mic-v2_0-overlay.dtbo
+```
+
+**Install the DTB Overlay:**
+
+```bash
+sudo cp overlays/rpi/respeaker-2mic-v2_0-overlay.dtbo /boot/firmware/overlays/respeaker-2mic-v2_0.dtbo
+echo "dtoverlay=respeaker-2mic-v2_0" | sudo tee -a /boot/firmware/config.txt
+```
+
+**Enable SPI for the onboard LED's:**
+
+```bash
+sudo raspi-config nonint do_spi 0
+```
+
+**Reboot:**
+
+```bash
+sudo reboot
+```
+
+**After reboot, you can sanity-check the device is present:**
 
 ```bash
 arecord -l
@@ -151,13 +189,18 @@ systemctl --user restart linux-voice-assistant.service
 ```bash
 systemctl --user status linux-voice-assistant --no-pager -l
 ```
-### Reinstall the reSpeaker 2Mic driver after a kernel upgrade (only if the upgrade breakes the driver)
+
+### Reinstall the reSpeaker 2Mic v1 driver after a kernel upgrade (only if the upgrade breakes the driver)
+
 Remove the existing DKMS entries for the driver:
+
 ```bash
 sudo rm -rf /var/lib/dkms/seeed-voicecard/0.3
 sudo rm -rf /usr/src/seeed-voicecard-0.3
 ```
+
 Reinstall the driver:
+
 ```bash
 sudo ./install-respeaker-drivers.sh 
 sudo reboot
@@ -317,6 +360,7 @@ systemctl --user enable --now linux-voice-assistant.service
 ```bash
 systemctl --user status linux-voice-assistant --no-pager -l
 ```
+
 </details>
 
 <details>
@@ -386,17 +430,17 @@ For each distinct LVA state (Idle, Listening, Thinking, Responding, Error), a `s
 
 The following effects can be selected via the `[State Name] Effect` (select) entities:
 
-| Effect Name | Description |
-| --- | --- |
-| **Off** | All LEDs are turned off. |
-| **Solid** | All LEDs display a single, constant color. |
-| **Slow Pulse** | LEDs slowly fade in and out. |
-| **Medium Pulse** | LEDs fade in and out at a moderate speed. |
-| **Fast Pulse** | LEDs rapidly fade in and out. |
-| **Slow Blink** | LEDs turn on and off slowly. |
-| **Medium Blink** | LEDs turn on and off at a moderate speed. |
-| **Fast Blink** | LEDs rapidly turn on and off. |
-| **Spin** | A single LED "spins" around the strip. |
+| Effect Name      | Description                                |
+| ---------------- | ------------------------------------------ |
+| **Off**          | All LEDs are turned off.                   |
+| **Solid**        | All LEDs display a single, constant color. |
+| **Slow Pulse**   | LEDs slowly fade in and out.               |
+| **Medium Pulse** | LEDs fade in and out at a moderate speed.  |
+| **Fast Pulse**   | LEDs rapidly fade in and out.              |
+| **Slow Blink**   | LEDs turn on and off slowly.               |
+| **Medium Blink** | LEDs turn on and off at a moderate speed.  |
+| **Fast Blink**   | LEDs rapidly turn on and off.              |
+| **Spin**         | A single LED "spins" around the strip.     |
 
 **Edit LVA config.json file:**
 
@@ -451,12 +495,12 @@ systemctl --user status linux-voice-assistant --no-pager -l
 
 This optional configuration support the use of the ReSpeaker 2Mic Grove Port with APA102 LEDs.
 
-| Grove Pigtail | Function (on ReSpeaker Hat) | Solder to LED Strip |
-| --- | --- | --- |
-| ⚫ **Black Wire** | Ground (GND) | **GND** (Ground) |
-| 🔴 **Red Wire** | Power (VCC) | **VCC / 5V** (Power) |
-| 🟡 **Yellow Wire** | GPIO12 (Signal 1) | **DI** (Data Input) |
-| ⚪ **White Wire** | GPIO13 (Signal 2) | **CI** (Clock Input) |
+| Grove Pigtail      | Function (on ReSpeaker Hat) | Solder to LED Strip  |
+| ------------------ | --------------------------- | -------------------- |
+| ⚫ **Black Wire**   | Ground (GND)                | **GND** (Ground)     |
+| 🔴 **Red Wire**    | Power (VCC)                 | **VCC / 5V** (Power) |
+| 🟡 **Yellow Wire** | GPIO12 (Signal 1)           | **DI** (Data Input)  |
+| ⚪ **White Wire**   | GPIO13 (Signal 2)           | **CI** (Clock Input) |
 
 **Edit LVA config.json file:**
 
@@ -644,15 +688,15 @@ pactl unload-module 536870916
 
 AEP tuning settings:
 
-| Setting | Allowed Values | Typical Value | What It Does | When To Change |
-| --- | --- | --- | --- | --- |
-| `analog_gain_control` | `0` or `1` | `0` | Lets WebRTC AEC “ride” the hardware/analog mic gain. | Leave `0` when you already tuned mic gain in ALSA/Pulse. Use `1` only if your mic is too quiet and you want auto-leveling at the expense of some consistency. |
-| `digital_gain_control` | `0` or `1` | `1` | Software AGC on the captured signal (after the ADC). | Keep `1` for voice assistants so wake-word and STT get a stable level. Turn `0` if you already run separate AGC or notice pumping/breathing. |
-| `noise_suppression` | `0` or `1` | `1` | Enables WebRTC noise reduction on the mic signal. | Keep `1` in most cases (fans, room noise). Try `0` if audio sounds “underwater” or dull and your environment is already very quiet. |
-| `extended_filter`* | `0` or `1` | `1` (often) | Uses a more robust AEC filter that handles tricky echo paths / long delays. | Use `1` for speaker-in-room setups (like LVA) unless CPU is extremely constrained. |
-| `delay_agnostic`* | `0` or `1` | `1` (often) | Makes AEC less sensitive to exact playback/capture latency. | Keep `1` if devices/paths change or Bluetooth is involved. Set `0` only if you know latency is rock-stable and want to shave a bit of CPU. |
-| `drift_compensation`* | `0` or `1` | `1` (often) | Compensates for clock drift between capture and playback devices. | Use `1` if mic and speakers are on different hardware (USB mic + HDMI/Bluetooth out). `0` is OK when both share the same clock (onboard codec only). |
-| `voice_detection`* | `0` or `1` | `0` or `1` | Simple VAD that can help AEC and noise suppression focus on speech segments. | Try `1` if you see good wake-word hits but noisy STT. Use `0` if it seems to cut off very quiet speech or initial phonemes. |
+| Setting                | Allowed Values | Typical Value | What It Does                                                                 | When To Change                                                                                                                                                |
+| ---------------------- | -------------- | ------------- | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `analog_gain_control`  | `0` or `1`     | `0`           | Lets WebRTC AEC “ride” the hardware/analog mic gain.                         | Leave `0` when you already tuned mic gain in ALSA/Pulse. Use `1` only if your mic is too quiet and you want auto-leveling at the expense of some consistency. |
+| `digital_gain_control` | `0` or `1`     | `1`           | Software AGC on the captured signal (after the ADC).                         | Keep `1` for voice assistants so wake-word and STT get a stable level. Turn `0` if you already run separate AGC or notice pumping/breathing.                  |
+| `noise_suppression`    | `0` or `1`     | `1`           | Enables WebRTC noise reduction on the mic signal.                            | Keep `1` in most cases (fans, room noise). Try `0` if audio sounds “underwater” or dull and your environment is already very quiet.                           |
+| `extended_filter`*     | `0` or `1`     | `1` (often)   | Uses a more robust AEC filter that handles tricky echo paths / long delays.  | Use `1` for speaker-in-room setups (like LVA) unless CPU is extremely constrained.                                                                            |
+| `delay_agnostic`*      | `0` or `1`     | `1` (often)   | Makes AEC less sensitive to exact playback/capture latency.                  | Keep `1` if devices/paths change or Bluetooth is involved. Set `0` only if you know latency is rock-stable and want to shave a bit of CPU.                    |
+| `drift_compensation`*  | `0` or `1`     | `1` (often)   | Compensates for clock drift between capture and playback devices.            | Use `1` if mic and speakers are on different hardware (USB mic + HDMI/Bluetooth out). `0` is OK when both share the same clock (onboard codec only).          |
+| `voice_detection`*     | `0` or `1`     | `0` or `1`    | Simple VAD that can help AEC and noise suppression focus on speech segments. | Try `1` if you see good wake-word hits but noisy STT. Use `0` if it seems to cut off very quiet speech or initial phonemes.                                   |
 
 **Enable & start:**
 
@@ -773,10 +817,10 @@ systemctl --user status linux-voice-assistant --no-pager -l
   - Expect logs like `Connected to Home Assistant`
   - Look for `[OWW] Detection: name=...` followed by re-arming/cycling
   - Ask: *“What time is it?”* and confirm TTS reply
+
 - If you do not get a voice response, check the Voice Assistant that you choose during registration has a voice assigned to it.
   
   ### Settings -> Voice assistants -> Assist (the assistant you configured) -> Text-to-speech -> Voice
-  
 
 ## 8. Change OWW detection model
 
