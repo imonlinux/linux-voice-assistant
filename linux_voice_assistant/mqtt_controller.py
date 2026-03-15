@@ -48,6 +48,9 @@ class MqttController(EventHandler):
         self._is_muted = False  # Internal state
         self._connected = False  # Track connection state
 
+        # Handle for the bootstrap-end call_later, so it can be cancelled on reconnect
+        self._bootstrap_end_handle: Optional[asyncio.TimerHandle] = None
+
         self.CONFIGURABLE_STATES: List[str] = [
             SatelliteState.IDLE.value,
             SatelliteState.LISTENING.value,
@@ -110,7 +113,7 @@ class MqttController(EventHandler):
         self.topics["thinking_sound_loop"] = {
             "command": f"{self._topic_prefix}/thinking_sound_loop/set",
             "state": f"{self._topic_prefix}/thinking_sound_loop/state",
-        }        
+        }
         self._bootstrap_state_sync = True
         self._bootstrap_ends_at: Optional[float] = None
         self._client = mqtt.Client()
@@ -133,6 +136,11 @@ class MqttController(EventHandler):
 
             if self._username:
                 self._client.username_pw_set(self._username, self._password)
+
+            # Configure reconnect backoff: start at 1s, cap at 60s.
+            # This ensures paho keeps retrying through extended mesh network
+            # optimization events without giving up or hammering the broker.
+            self._client.reconnect_delay_set(min_delay=1, max_delay=60)
 
             _LOGGER.debug("Connecting to MQTT broker at %s:%s", self._host, self._port)
             self._client.connect(self._host, self._port, 60)
@@ -160,6 +168,11 @@ class MqttController(EventHandler):
 
         _LOGGER.info("Stopping MQTT Controller...")
 
+        # Cancel any pending bootstrap-end timer
+        if self._bootstrap_end_handle is not None:
+            self._bootstrap_end_handle.cancel()
+            self._bootstrap_end_handle = None
+
         # 1. Publish Offline Status (Blocking wait)
         if self._connected:
             _LOGGER.info("Publishing availability: offline")
@@ -175,12 +188,24 @@ class MqttController(EventHandler):
         if rc == 0:
             _LOGGER.info("Connected to MQTT broker")
             self._connected = True
+
+            # --- Bug 1 & 2 fix ---
+            # Always reset bootstrap state sync on every (re)connect so that
+            # retained messages flooding in after reconnect are handled correctly.
+            # Cancel any previous bootstrap-end timer that may still be pending
+            # from a disconnect that happened within the prior bootstrap window.
+            if self._bootstrap_end_handle is not None:
+                self._bootstrap_end_handle.cancel()
+                self._bootstrap_end_handle = None
+
+            self._bootstrap_state_sync = True
+            self._bootstrap_ends_at = self.loop.time() + 5.0
+            self._bootstrap_end_handle = self.loop.call_later(
+                5.0, self._end_bootstrap_state_sync
+            )
+
             client.subscribe(f"{self._topic_prefix}/+/set")
             client.subscribe(f"{self._topic_prefix}/+/state")
-
-            # Increased bootstrap time to ensure retained messages are captured
-            self._bootstrap_ends_at = self.loop.time() + 5.0
-            self.loop.call_later(5.0, self._end_bootstrap_state_sync)
 
             self._publish_discovery_configs()
         else:
@@ -189,11 +214,14 @@ class MqttController(EventHandler):
     def _on_disconnect(self, client, userdata, rc):
         self._connected = False
         if rc != 0:
-            _LOGGER.warning("Unexpected MQTT disconnection (rc=%s)", rc)
+            _LOGGER.warning(
+                "Unexpected MQTT disconnection (rc=%s); paho will retry with backoff", rc
+            )
         else:
             _LOGGER.debug("MQTT client disconnected cleanly")
 
     def _end_bootstrap_state_sync(self):
+        self._bootstrap_end_handle = None
         self._bootstrap_state_sync = False
         try:
             self._client.unsubscribe(f"{self._topic_prefix}/+/state")
@@ -249,7 +277,7 @@ class MqttController(EventHandler):
         # Thinking sound loop toggle
         if topic == self.topics["thinking_sound_loop"]["command"]:
             self.event_bus.publish("set_thinking_sound_loop", {"state": payload.upper()})
-        
+
         for state_name in self.CONFIGURABLE_STATES:
             state_topics = self.topics[state_name]
             if topic == state_topics["effect_command"]:
@@ -426,7 +454,7 @@ class MqttController(EventHandler):
                 json.dumps(select_cfg),
                 retain=True,
             )
-        
+
         # Thinking sound loop switch
         thinking_loop_cfg = {
             "name": "Sound Thinking Loop",
@@ -443,7 +471,7 @@ class MqttController(EventHandler):
             json.dumps(thinking_loop_cfg),
             retain=True,
         )
-        
+
         _LOGGER.debug("Published all MQTT discovery configs")
         self._client.publish(availability_topic, "online", retain=True)
 
@@ -483,14 +511,14 @@ class MqttController(EventHandler):
             "ON" if is_looping else "OFF",
             retain=True,
         )
-    
+
     def publish_sound_state(self, cat_key: str, filename: str):
         """Publish the current sound selection for a category."""
         if cat_key in self.topics:
             self._client.publish(
                 self.topics[cat_key]["state"], filename, retain=True
             )
-    
+
     @subscribe
     def publish_state_to_mqtt(self, data: dict):
         state_name = data.get("state_name")
