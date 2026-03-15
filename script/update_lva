@@ -1,0 +1,42 @@
+#!/bin/bash
+# This script automates the refresh of the Linux Voice Assistant
+# from https://github.com/imonlinux/linux-voice-assistant while
+# maintaining current configuration and preferences.
+# You must pass the extra setup flags that you require.
+# Usage: bash ~/linux-voice-assistant/script/update_lva.sh --sendspin
+
+set -e  # Exit immediately if any command fails
+
+# Resolve the directory containing this script, then derive the
+# project root and its parent — works regardless of install location.
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+PARENT_DIR="$(cd "$PROJECT_DIR/.." && pwd)"
+PROJECT_NAME="$(basename "$PROJECT_DIR")"
+
+SAVE_DIR="${PARENT_DIR}/${PROJECT_NAME}_save"
+REPO_URL="https://github.com/imonlinux/linux-voice-assistant.git"
+
+echo "Project root : $PROJECT_DIR"
+echo "Save location: $SAVE_DIR"
+
+# Stop the running LVA service
+systemctl --user stop linux-voice-assistant.service
+
+# Save the current version (just in case)
+rm -rf "$SAVE_DIR"
+mv "$PROJECT_DIR" "$SAVE_DIR"
+
+# Clone current version from repo into the original location
+git clone "$REPO_URL" "$PROJECT_DIR"
+
+# Restore configuration and preferences
+cp "$SAVE_DIR/preferences.json" "$PROJECT_DIR/"
+cp "$SAVE_DIR/linux_voice_assistant/config.json" "$PROJECT_DIR/linux_voice_assistant/"
+
+# Run setup with passed flags (e.g. --sendspin --tray)
+cd "$PROJECT_DIR"
+script/setup "$@"
+
+# Start the LVA service
+systemctl --user start linux-voice-assistant.service
