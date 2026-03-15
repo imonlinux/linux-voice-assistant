@@ -920,6 +920,14 @@ tmpfs           198M  8.0K  198M   1% /run/user/1000
 tmpfs           1.0M     0  1.0M   0% /run/credentials/getty@tty1.service
 tmpfs           1.0M     0  1.0M   0% /run/credentials/serial-getty@ttyS0.service
 ```
+Update LVA via included script:
+*Be sure to include any needed extra setup flags (i.e. --sendspin --tray)*
+
+```bash
+bash ~/linux-voice-assistant/script/update_lva --sendspin
+```
+
+Or manually update using the same process as the script.
 
 Stop any running LVA systemd unit files:
 
