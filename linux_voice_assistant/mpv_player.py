@@ -50,9 +50,9 @@ class MpvMediaPlayer:
                      May be None in one-off utility contexts (e.g. listing devices).
         :param device: Optional mpv audio device name (e.g.
                        "pipewire/alsa_output.pci-0000_00_1f.3.analog-stereo").
-        :param initial_volume: Initial volume as a float 0.0–1.0. This is now
-                               treated as the *master* OS output volume. mpv's
-                               internal volume is set to 100% for normal playback.
+        :param initial_volume: Initial volume as a float 0.0–1.0, applied directly
+                               to mpv's internal volume on startup to restore
+                               persisted volume across reboots.
         """
         self.loop = loop
         self.device = device
@@ -115,8 +115,9 @@ class MpvMediaPlayer:
         except Exception:
             _LOGGER.exception("Failed to query mpv audio properties")
 
-        # Keep mpv at 100% for normal playback. Master volume is handled at the OS level.
-        self.set_volume(100)
+        # Apply the initial (persisted) volume to mpv on startup.
+        # Falls back to 100% if initial_volume=1.0 (default/fresh install).
+        self.set_volume(int(self.initial_volume * 100))
 
         self.is_playing: bool = False
         self._done_callback: Optional[Callable[[], None]] = None
