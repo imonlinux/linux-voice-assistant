@@ -868,15 +868,20 @@ def _init_media_players(
     preferences: Preferences,
 ) -> MediaPlayers:
     """Initializes the music and TTS media players."""
+    # If volume_sync is enabled, OS sink handles volume restoration at startup,
+    # so mpv should stay at 100% to avoid double-attenuation.
+    # If volume_sync is disabled, mpv must apply the persisted volume itself.
+    initial_vol = 1.0 if getattr(config.audio, "volume_sync", False) else preferences.volume_level
+
     music_player = MpvMediaPlayer(
         loop=loop,
         device=config.audio.output_device,
-        initial_volume=preferences.volume_level,
+        initial_volume=initial_vol,
     )
     tts_player = MpvMediaPlayer(
         loop=loop,
         device=config.audio.output_device,
-        initial_volume=preferences.volume_level,
+        initial_volume=initial_vol,
     )
     return MediaPlayers(music=music_player, tts=tts_player)
 
