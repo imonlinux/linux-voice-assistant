@@ -40,6 +40,7 @@ When MQTT is enabled, *(See Section 5 of [the tutorial](docs/linux-voice-assista
 Sound select options are populated by scanning `sounds/wakeup/`, `sounds/thinking/`, and `sounds/timer/` at startup. Drop `.flac`, `.wav`, or `.mp3` files into any subdirectory and restart LVA to make them available in Home Assistant.
 
 *LED states: Idle, Listening, Thinking, Responding, Error. Available effects: Off, Solid, Slow/Medium/Fast Pulse, Slow/Medium/Fast Blink, Spin*
+
 <img width="507" height="962" alt="Screenshot From 2026-03-18 11-12-37" src="https://github.com/user-attachments/assets/03181ca9-3011-4ead-aecb-e19af0eed4c7" />
 
 ### Hardware Integrations *(See Section 5 of [the tutorial](docs/linux-voice-assistant-install.md))*
