@@ -1,16 +1,51 @@
+"""ESPHome entities for the Linux Voice Assistant.
+
+This module defines the entity classes that expose LVA controls on the
+Home Assistant device page via the ESPHome native API — no MQTT required.
+
+Architecture notes (Phase 1 — entity system foundation):
+  - ``ESPHomeEntity`` is the abstract base class.  It keeps the ``state``
+    parameter for backward compatibility with ``MediaPlayerEntity`` which
+    accesses ``ServerState`` broadly.
+  - New entities added in later phases (MuteSwitchEntity, SoundSelectEntity,
+    etc.) should follow upstream's *callback* pattern instead: accept
+    getter/setter callables in their constructor so they don't need a
+    direct ``ServerState`` reference.
+  - The protobuf imports below cover switch, select, and number entity
+    types.  They are unused in Phase 1 but are required infrastructure
+    for Phase 2+ entity classes.
+"""
+
 from abc import abstractmethod
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Callable, List, Optional, Union
 
 # pylint: disable=no-name-in-module
 from aioesphomeapi.api_pb2 import (  # type: ignore[attr-defined]
+    # --- Media player (existing) ---
     ListEntitiesMediaPlayerResponse,
     ListEntitiesRequest,
     MediaPlayerCommandRequest,
     MediaPlayerStateResponse,
     SubscribeHomeAssistantStatesRequest,
+    # --- Switch entities (Phase 2: mute, thinking sound, event sounds) ---
+    ListEntitiesSwitchResponse,
+    SwitchCommandRequest,
+    SwitchStateResponse,
+    # --- Select entities (Phase 3/4: sound selection, wake word sensitivity) ---
+    ListEntitiesSelectResponse,
+    SelectCommandRequest,
+    SelectStateResponse,
+    # --- Number entities (Phase 3: alarm duration) ---
+    ListEntitiesNumberResponse,
+    NumberCommandRequest,
+    NumberStateResponse,
 )
-from aioesphomeapi.model import MediaPlayerCommand, MediaPlayerState
+from aioesphomeapi.model import (
+    EntityCategory,
+    MediaPlayerCommand,
+    MediaPlayerState,
+)
 from google.protobuf import message
 
 from .api_server import APIServer
@@ -21,15 +56,29 @@ if TYPE_CHECKING:
     from .models import ServerState
 
 
+# ---------------------------------------------------------------------------
+# Base class
+# ---------------------------------------------------------------------------
+
 class ESPHomeEntity:
+    """Abstract base for all ESPHome entities.
+
+    Subclasses must implement ``handle_message`` which receives every
+    routed protobuf message and yields zero or more response messages.
+    """
+
     def __init__(self, server: APIServer, state: "ServerState") -> None:
         self.server = server
         self.state = state
 
     @abstractmethod
     def handle_message(self, msg: message.Message) -> Iterable[message.Message]:
-        pass
+        """Process *msg* and yield any response messages."""
 
+
+# ---------------------------------------------------------------------------
+# Media Player entity (existing — unchanged)
+# ---------------------------------------------------------------------------
 
 class MediaPlayerEntity(ESPHomeEntity):
     def __init__(
