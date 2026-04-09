@@ -128,6 +128,17 @@ def _resolve_thinking_sound_loop(preferences: Preferences, config_value: bool) -
     if pref == "OFF":
         return False
     return config_value
+    
+def _resolve_event_sounds_enabled(preferences: Preferences, config_value: bool) -> bool:
+    """
+    Resolve event_sounds_enabled setting.
+
+    Precedence: preferences (ESPHome entity) > config.json > config.py default.
+    """
+    pref = getattr(preferences, "event_sounds_enabled", None)
+    if pref is not None:
+        return bool(pref)
+    return config_value
 
 def _resolve_sound_path(
     repo_dir: Path,
@@ -502,6 +513,8 @@ async def main() -> None:
         config, loop, event_bus, preferences,
         wake_word_data, media_players
     )
+    
+    state.sound_options = _scan_sound_files(_REPO_DIR)
 
     # --- 7. Initialize Controllers ---
     _init_controllers(loop, event_bus, state, config, preferences)
@@ -964,7 +977,9 @@ def _create_server_state(
         preferences_path=preferences_path,
         download_dir=_REPO_DIR / config.wake_word.download_dir,
         refractory_seconds=config.wake_word.refractory_seconds,
-        event_sounds_enabled=config.app.event_sounds_enabled,
+        event_sounds_enabled=_resolve_event_sounds_enabled(
+            preferences, config.app.event_sounds_enabled,
+        ),
         thinking_sound_loop=_resolve_thinking_sound_loop(
             preferences, config.app.thinking_sound_loop,
         ),
