@@ -3,21 +3,20 @@
 This module defines the entity classes that expose LVA controls on the
 Home Assistant device page via the ESPHome native API — no MQTT required.
 
-Architecture notes (Phase 1 — entity system foundation):
+Architecture notes:
   - ``ESPHomeEntity`` is the abstract base class.  It keeps the ``state``
     parameter for backward compatibility with ``MediaPlayerEntity`` which
     accesses ``ServerState`` broadly.
-  - New entities added in later phases (MuteSwitchEntity, SoundSelectEntity,
-    etc.) should follow upstream's *callback* pattern instead: accept
-    getter/setter callables in their constructor so they don't need a
-    direct ``ServerState`` reference.
+  - New entities (MuteSwitchEntity, ThinkingSoundSwitchEntity, etc.) follow
+    upstream's *callback* pattern: they accept getter/setter callables in
+    their constructor so they don't need a direct ``ServerState`` reference.
   - The protobuf imports below cover switch, select, and number entity
-    types.  They are unused in Phase 1 but are required infrastructure
-    for Phase 2+ entity classes.
+    types for current and future entity classes.
 """
 
 from abc import abstractmethod
 from collections.abc import Iterable
+import logging
 from typing import TYPE_CHECKING, Callable, List, Optional, Union
 
 # pylint: disable=no-name-in-module
@@ -28,15 +27,15 @@ from aioesphomeapi.api_pb2 import (  # type: ignore[attr-defined]
     MediaPlayerCommandRequest,
     MediaPlayerStateResponse,
     SubscribeHomeAssistantStatesRequest,
-    # --- Switch entities (Phase 2: mute, thinking sound, event sounds) ---
+    # --- Switch entities (mute, thinking sound loop, event sounds) ---
     ListEntitiesSwitchResponse,
     SwitchCommandRequest,
     SwitchStateResponse,
-    # --- Select entities (Phase 3/4: sound selection, wake word sensitivity) ---
+    # --- Select entities (sound selection, wake word sensitivity) ---
     ListEntitiesSelectResponse,
     SelectCommandRequest,
     SelectStateResponse,
-    # --- Number entities (Phase 3: alarm duration) ---
+    # --- Number entities (alarm duration) ---
     ListEntitiesNumberResponse,
     NumberCommandRequest,
     NumberStateResponse,
@@ -54,6 +53,8 @@ from .util import call_all
 
 if TYPE_CHECKING:
     from .models import ServerState
+
+_LOGGER = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -197,3 +198,124 @@ class MediaPlayerEntity(ESPHomeEntity):
             volume=self.volume,
             muted=self.muted,
         )
+
+
+# ---------------------------------------------------------------------------
+# Mute Switch entity (Phase 2 — ported from upstream)
+# ---------------------------------------------------------------------------
+
+class MuteSwitchEntity(ESPHomeEntity):
+    """ESPHome switch entity for microphone mute.
+
+    Uses the callback pattern: getter/setter callables are provided by
+    the satellite at construction time so this entity has no direct
+    dependency on ``ServerState`` fields.
+
+    When HA toggles the switch, the setter callback fires the EventBus
+    ``set_mic_mute`` event so ``MicMuteHandler`` remains the single
+    writer to ``ServerState.mic_muted``.
+    """
+
+    def __init__(
+        self,
+        server: APIServer,
+        state: "ServerState",
+        key: int,
+        name: str,
+        object_id: str,
+        get_muted: Callable[[], bool],
+        set_muted: Callable[[bool], None],
+    ) -> None:
+        super().__init__(server, state)
+
+        self.key = key
+        self.name = name
+        self.object_id = object_id
+        self._get_muted = get_muted
+        self._set_muted = set_muted
+
+    @property
+    def _switch_state(self) -> bool:
+        return self._get_muted()
+
+    def sync_state_to_ha(self) -> None:
+        """Push the current mute state to HA.
+
+        Called by ``MicMuteHandler`` after mute changes from non-ESPHome
+        sources (hardware button, XVF3800, MQTT) so HA stays in sync.
+        """
+        self.server.send_messages(
+            [SwitchStateResponse(key=self.key, state=self._switch_state)]
+        )
+
+    def handle_message(self, msg: message.Message) -> Iterable[message.Message]:
+        if isinstance(msg, SwitchCommandRequest) and (msg.key == self.key):
+            self._set_muted(msg.state)
+            yield SwitchStateResponse(key=self.key, state=self._switch_state)
+
+        elif isinstance(msg, ListEntitiesRequest):
+            yield ListEntitiesSwitchResponse(
+                object_id=self.object_id,
+                key=self.key,
+                name=self.name,
+                icon="mdi:microphone-off",
+            )
+
+        elif isinstance(msg, SubscribeHomeAssistantStatesRequest):
+            yield SwitchStateResponse(key=self.key, state=self._switch_state)
+
+
+# ---------------------------------------------------------------------------
+# Thinking Sound Loop switch entity (Phase 2 — adapted from upstream)
+# ---------------------------------------------------------------------------
+
+class ThinkingSoundSwitchEntity(ESPHomeEntity):
+    """ESPHome switch entity for the thinking sound loop toggle.
+
+    Upstream's ``ThinkingSoundEntity`` toggles ``thinking_sound_enabled``
+    (a simple on/off for the thinking sound).  This fork's equivalent
+    controls ``thinking_sound_loop`` — whether the thinking sound repeats
+    during the THINKING state.  The semantics are slightly different but
+    the ESPHome entity pattern is identical.
+
+    Uses the callback pattern for state access.
+    """
+
+    def __init__(
+        self,
+        server: APIServer,
+        state: "ServerState",
+        key: int,
+        name: str,
+        object_id: str,
+        get_enabled: Callable[[], bool],
+        set_enabled: Callable[[bool], None],
+    ) -> None:
+        super().__init__(server, state)
+
+        self.key = key
+        self.name = name
+        self.object_id = object_id
+        self._get_enabled = get_enabled
+        self._set_enabled = set_enabled
+
+    @property
+    def _switch_state(self) -> bool:
+        return self._get_enabled()
+
+    def handle_message(self, msg: message.Message) -> Iterable[message.Message]:
+        if isinstance(msg, SwitchCommandRequest) and (msg.key == self.key):
+            self._set_enabled(msg.state)
+            yield SwitchStateResponse(key=self.key, state=self._switch_state)
+
+        elif isinstance(msg, ListEntitiesRequest):
+            yield ListEntitiesSwitchResponse(
+                object_id=self.object_id,
+                key=self.key,
+                name=self.name,
+                icon="mdi:thought-bubble-outline",
+                entity_category=EntityCategory.CONFIG,
+            )
+
+        elif isinstance(msg, SubscribeHomeAssistantStatesRequest):
+            yield SwitchStateResponse(key=self.key, state=self._switch_state)
