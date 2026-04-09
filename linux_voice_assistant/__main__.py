@@ -207,6 +207,18 @@ class MicMuteHandler(EventHandler):
             if self.mqtt_controller:
                 self.mqtt_controller.publish_mute_state(is_muted)
 
+            # Sync ESPHome mute switch entity so HA reflects changes
+            # from non-ESPHome sources (hardware button, XVF3800, MQTT)
+            if (
+                self.state.satellite is not None
+                and hasattr(self.state.satellite, "mute_switch_entity")
+                and self.state.satellite.mute_switch_entity is not None
+            ):
+                try:
+                    self.state.satellite.mute_switch_entity.sync_state_to_ha()
+                except Exception:
+                    _LOGGER.debug("Failed to sync mute state to ESPHome", exc_info=True)
+
             if is_muted:
                 self.event_bus.publish("mic_muted")
             else:
