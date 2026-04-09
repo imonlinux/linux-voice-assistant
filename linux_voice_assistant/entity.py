@@ -518,3 +518,73 @@ class AlarmDurationNumberEntity(ESPHomeEntity):
             yield NumberStateResponse(
                 key=self.key, state=self._current_value, missing_state=False,
             )
+            
+# ---------------------------------------------------------------------------
+# Wake Word Sensitivity select entity (Phase 4 — ported from upstream PR #207)
+# ---------------------------------------------------------------------------
+
+class WakeWordSensitivityEntity(ESPHomeEntity):
+    """ESPHome select entity for wake word sensitivity preset.
+
+    Exposes a dropdown on the HA device page with three sensitivity
+    levels.  When changed, the satellite adjusts MWW probability_cutoff
+    and OWW global threshold accordingly.
+
+    Per-model OWW thresholds (from the model JSON) are unaffected —
+    they take precedence over the global threshold via the existing
+    ``getattr(wake_word, "threshold", self.oww_threshold)`` fallback
+    in AudioEngine.
+
+    Uses the callback pattern for state access.
+    """
+
+    def __init__(
+        self,
+        server: APIServer,
+        state: "ServerState",
+        key: int,
+        name: str,
+        object_id: str,
+        options: List[str],
+        get_sensitivity: Callable[[], str],
+        set_sensitivity: Callable[[str], None],
+    ) -> None:
+        super().__init__(server, state)
+
+        self.key = key
+        self.name = name
+        self.object_id = object_id
+        self.options = options
+        self._get_sensitivity = get_sensitivity
+        self._set_sensitivity = set_sensitivity
+
+    @property
+    def _current_state(self) -> str:
+        return self._get_sensitivity()
+
+    def handle_message(self, msg: message.Message) -> Iterable[message.Message]:
+        if isinstance(msg, SelectCommandRequest) and (msg.key == self.key):
+            if msg.state in self.options:
+                self._set_sensitivity(msg.state)
+            else:
+                _LOGGER.warning(
+                    "WakeWordSensitivityEntity: unknown option '%s'", msg.state,
+                )
+            yield SelectStateResponse(
+                key=self.key, state=self._current_state, missing_state=False,
+            )
+
+        elif isinstance(msg, ListEntitiesRequest):
+            yield ListEntitiesSelectResponse(
+                object_id=self.object_id,
+                key=self.key,
+                name=self.name,
+                options=self.options,
+                entity_category=EntityCategory.CONFIG,
+                icon="mdi:microphone-settings",
+            )
+
+        elif isinstance(msg, SubscribeHomeAssistantStatesRequest):
+            yield SelectStateResponse(
+                key=self.key, state=self._current_state, missing_state=False,
+            )
