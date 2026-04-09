@@ -1,5 +1,18 @@
 # Linux Voice Assistant
+
 > Forked from [OHF-Voice/linux-voice-assistant][ohf-voice] Release v1.0.0.
+> 
+> Upstream concepts incorporated since the fork point:
+> 
+>     - `soundcard` audio library replacing `sounddevice` (upstream alignment)
+> 
+>     - `pymicro-wakeword` and `pyopen-wakeword` pip packages replacing local wake word code
+> 
+>     - Timer alarm auto-stop ([upstream PR #261](https://github.com/OHF-Voice/linux-voice-assistant/pull/261)) — extended with runtime HA control
+> 
+>     - Wake word sensitivity presets ([upstream PR #207](https://github.com/OHF-Voice/linux-voice-assistant/pull/207)) — integrated with fork's per-model threshold system
+> 
+>     - Mute switch and thinking sound toggle as ESPHome entities (upstream pattern)
 
 A Linux-based voice satellite for [Home Assistant][homeassistant] that speaks the [ESPHome][esphome] protocol via [aioesphomeapi][aioesphomeapi]. It turns any Linux device — from a Raspberry Pi Zero 2 W to a full desktop — into a capable voice assistant with wake word detection, speech-to-text, TTS playback, timers, LED feedback, and optional multiroom audio via Sendspin.
 
@@ -16,10 +29,12 @@ See [the tutorial](docs/linux-voice-assistant-install.md) for complete instructi
 ### Voice Assistant Core
 
 - **Dual wake word engines** — MicroWakeWord and OpenWakeWord models can run simultaneously. Wake words are selectable from the Home Assistant UI and persisted across reboots.
+- **Wake word sensitivity** — Adjustable detection sensitivity (Slightly/Moderately/Very sensitive) controllable from the Home Assistant device page. Per-model OpenWakeWord thresholds from `.json` files take precedence over the global preset. (More details in the Wake Word Models section below)
 - **Conversational flow** — Supports announcements, start/continue conversation, and timers with configurable alarm duration and auto-stop.
-- **Configurable event sounds** — Wakeup, thinking, and timer sounds with a master toggle (`event_sounds_enabled`). Thinking sound supports optional looping. Timer alarm is a functional alert and always plays regardless of the toggle.
+- **Configurable event sounds** — Wakeup, thinking, and timer sounds selectable from the Home Assistant device page, with a master toggle (`Event Sounds`). Thinking sound supports optional looping. Timer alarm is a functional alert and always plays regardless of the toggle.
 - **Acoustic Echo Cancellation** — WebRTC-based AEC via PipeWire filter chains for clean wake word detection during TTS playback.
 - **Stop word** — A dedicated MicroWakeWord model can interrupt TTS playback or silence a ringing timer alarm.
+- **Alarm Duration** — Set the time in seconds for the alarm to play (0 = play until interrupted by the Stop wake word). Configurable from the Home Assistant device page.
 
 ### MQTT Device Controls
 
@@ -27,21 +42,16 @@ When MQTT is enabled, *(See Section 5 of [the tutorial](docs/linux-voice-assista
 
 | Entity | Type | Description |
 | --- | --- | --- |
-| Mute Microphone | `switch` | Toggle mic mute (LEDs show dim red when muted) |
 | LED Count | `number` | Set the number of addressable LEDs |
 | LED \<State\> Effect | `select` | Choose an LED animation per voice state |
 | LED \<State\> Color | `light` | Set color and brightness per voice state |
-| Sound Wakeup | `select` | Choose the wake word triggered sound |
-| Sound Thinking | `select` | Choose the thinking state sound |
-| Sound Thinking Loop | `switch` | Toggle looping for the thinking sound |
-| Sound Timer | `select` | Choose the timer alarm sound |
-| Alarm Duration | `number` | Set alarm auto-stop duration (0 = infinite) |
-
-Sound select options are populated by scanning `sounds/wakeup/`, `sounds/thinking/`, and `sounds/timer/` at startup. Drop `.flac`, `.wav`, or `.mp3` files into any subdirectory and restart LVA to make them available in Home Assistant.
 
 *LED states: Idle, Listening, Thinking, Responding, Error. Available effects: Off, Solid, Slow/Medium/Fast Pulse, Slow/Medium/Fast Blink, Spin*
 
-<img width="507" height="962" alt="Screenshot From 2026-03-18 11-12-37" src="https://github.com/user-attachments/assets/03181ca9-3011-4ead-aecb-e19af0eed4c7" />
+> **Note:** Mute, sound selection, thinking sound loop, alarm duration, event sounds, and wake word sensitivity are now controlled via the ESPHome device page in Home Assistant — no MQTT required. MQTT is only needed for LED controls. The tray client continues to use MQTT for mute state mirroring but the entity is not published in HA.
+
+<img width="515" height="1033" alt="image" src="https://github.com/user-attachments/assets/cfc9e462-b301-4323-a3d8-5bab0322a548" />
+
 
 ### Hardware Integrations *(See Section 5 of [the tutorial](docs/linux-voice-assistant-install.md))*
 
@@ -198,10 +208,11 @@ Built-in models (in `wakewords/`):
 
 Community openWakeword models from [home-assistant-wakewords-collection][wakewords-collection] can be added by placing the `.tflite` and corresponding `.json` file in `wakewords/openWakeWord/`.
 
-**OpenWakeWord detection threshold is configurable globally via `config.json`, per-model via the model's `.json` file, or via the `--wake-word-threshold` CLI flag.**
+> **Wake word detection threshold is configurable via the Home Assistant ESPHome entity (MWW and OWW), globally via `config.json` `wake_word.openwakeword_threshold` (OWW only), or per-model via the model's `.json` file (OWW only). The ESPHome entity applies sensitivity presets that adjust all models simultaneously. Per-model OWW thresholds from `.json` files take precedence over both the ESPHome preset and the global `config.json` value.**
 
 Example file:
 `wakewords/openWakeWord/ok_nabu_v0.1.json`
+
 ```bash
 {
   "type": "openWakeWord",
@@ -210,60 +221,61 @@ Example file:
   "threshold": 0.62
 }
 ```
+
 ---
 
 ## Project Structure
 
 ```
 linux-voice-assistant/
-├── docs					                    # Installation and setup guides
-│   ├── install_pipewire.md			            # PipeWire setup notes
-│   ├── install_pulseaudio.md			        # PulseAudio setup notes
-│   ├── linux-voice-assistant-2mic-install.md	# Raspberry Pi + ReSpeaker 2-Mic HAT focused guide
-│   ├── linux-voice-assistant-install.md	    # Complete setup including AEC, MQTT, LEDs, Sendspin, and XVF3800
-│   ├── linux-voice-assistant-xvf3800.md	    # ReSpeaker XVF3800 4-Mic USB Array configuration
-│   ├── linux-voice-assistant-xvf3800-mute.md	# Hardware mute button and LED sync details
-│   ├── lva-desktop.md				            # Running LVA on a Linux desktop with the tray client
-│   └── xvf3800_legacy_led_effects_mapping.md	# LED functions when running firmware older than 2.0.7
+├── docs                                        # Installation and setup guides
+│   ├── install_pipewire.md                        # PipeWire setup notes
+│   ├── install_pulseaudio.md                    # PulseAudio setup notes
+│   ├── linux-voice-assistant-2mic-install.md    # Raspberry Pi + ReSpeaker 2-Mic HAT focused guide
+│   ├── linux-voice-assistant-install.md        # Complete setup including AEC, MQTT, LEDs, Sendspin, and XVF3800
+│   ├── linux-voice-assistant-xvf3800.md        # ReSpeaker XVF3800 4-Mic USB Array configuration
+│   ├── linux-voice-assistant-xvf3800-mute.md    # Hardware mute button and LED sync details
+│   ├── lva-desktop.md                            # Running LVA on a Linux desktop with the tray client
+│   └── xvf3800_legacy_led_effects_mapping.md    # LED functions when running firmware older than 2.0.7
 ├── linux_voice_assistant
-│   ├── api_server.py				            # ESPHome API server
-│   ├── audio_engine.py				            # Mic capture and wake word detection
-│   ├── audio_volume.py				            # OS volume control (wpctl/pactl/amixer)
-│   ├── button_controller.py			        # GPIO button handler
-│   ├── config.json				                # LVA configuration file
-│   ├── config.json.example			            # Annotated configuration reference
-│   ├── config.py				                # Configuration dataclasses
-│   ├── entity.py				                # ESPHome media player entity
-│   ├── event_bus.py				            # Publish/subscribe event system
+│   ├── api_server.py                            # ESPHome API server
+│   ├── audio_engine.py                            # Mic capture and wake word detection
+│   ├── audio_volume.py                            # OS volume control (wpctl/pactl/amixer)
+│   ├── button_controller.py                    # GPIO button handler
+│   ├── config.json                                # LVA configuration file
+│   ├── config.json.example                        # Annotated configuration reference
+│   ├── config.py                                # Configuration dataclasses
+│   ├── entity.py                                # ESPHome media player entity
+│   ├── event_bus.py                            # Publish/subscribe event system
 │   ├── __init__.py
-│   ├── led_controller.py			            # LED effects and state mapping
-│   ├── __main__.py				                # Application entry point
-│   ├── models.py				                # Shared state and data models
-│   ├── mpv_player.py				            # Media playback via mpv
-│   ├── mqtt_controller.py			            # MQTT discovery and entity management
-│   ├── satellite.py				            # ESPHome voice assistant protocol
-│   ├── sendspin				                # Sendspin client subsystem
-│   │   ├── client.py				            # WebSocket connection and protocol
-│   │   ├── clock_sync.py			            # Kalman filter time synchronization
-│   │   ├── controller.py			            # EventBus handlers for ducking/commands
-│   │   ├── discovery.py			            # mDNS server discovery
+│   ├── led_controller.py                        # LED effects and state mapping
+│   ├── __main__.py                                # Application entry point
+│   ├── models.py                                # Shared state and data models
+│   ├── mpv_player.py                            # Media playback via mpv
+│   ├── mqtt_controller.py                        # MQTT discovery and entity management
+│   ├── satellite.py                            # ESPHome voice assistant protocol
+│   ├── sendspin                                # Sendspin client subsystem
+│   │   ├── client.py                            # WebSocket connection and protocol
+│   │   ├── clock_sync.py                        # Kalman filter time synchronization
+│   │   ├── controller.py                        # EventBus handlers for ducking/commands
+│   │   ├── discovery.py                        # mDNS server discovery
 │   │   ├── __init__.py
-│   │   ├── models.py				            # Sendspin internal state
-│   │   └── player.py				            # PCM sink and decoder pipeline
-│   ├── tray_client				                # Desktop tray client
-│   │   ├── client.py				            # PyQt5 system tray application
+│   │   ├── models.py                            # Sendspin internal state
+│   │   └── player.py                            # PCM sink and decoder pipeline
+│   ├── tray_client                                # Desktop tray client
+│   │   ├── client.py                            # PyQt5 system tray application
 │   │   ├── __init__.py
-│   │   └── __main__.py				            # Tray client entry point
-│   ├── util.py					                # MAC address, slugify, helpers
-│   ├── xvf3800_button_controller.py		    # XVF3800 USB mute integration
-│   ├── xvf3800_led_backend.py			        # XVF3800 USB LED ring driver
-│   └── zeroconf.py				                # mDNS discovery advertisement
+│   │   └── __main__.py                            # Tray client entry point
+│   ├── util.py                                    # MAC address, slugify, helpers
+│   ├── xvf3800_button_controller.py            # XVF3800 USB mute integration
+│   ├── xvf3800_led_backend.py                    # XVF3800 USB LED ring driver
+│   └── zeroconf.py                                # mDNS discovery advertisement
 ├── mypy.ini
 ├── pylintrc
 ├── pyproject.toml
 ├── README.md
-├── respeaker2mic				                # reSpeaker 2mic hat driver installers
-│   └── install-respeaker-drivers.sh		    # verion 1.0 hardware driver installer
+├── respeaker2mic                                # reSpeaker 2mic hat driver installers
+│   └── install-respeaker-drivers.sh            # verion 1.0 hardware driver installer
 ├── script
 │   ├── format
 │   ├── lint
@@ -271,24 +283,24 @@ linux-voice-assistant/
 │   ├── setup
 │   ├── test
 │   └── tray
-├── service					                    # systemd unit files
-│   ├── aec-module-load.service			        # Audio Echo Cancellation unit file
-│   ├── linux-voice-assistant.service		    # LVA unit file
-│   ├── linux-voice-assistant-tray.service	    # Tray Client unit file
-│   └── linux-voice-assistant_xvf3800.service	# LVA unit file with pipewire depends
+├── service                                        # systemd unit files
+│   ├── aec-module-load.service                    # Audio Echo Cancellation unit file
+│   ├── linux-voice-assistant.service            # LVA unit file
+│   ├── linux-voice-assistant-tray.service        # Tray Client unit file
+│   └── linux-voice-assistant_xvf3800.service    # LVA unit file with pipewire depends
 ├── setup.cfg
 ├── sounds
 │   ├── LICENSE.md
-│   ├── thinking				                # Thinking state sounds
+│   ├── thinking                                # Thinking state sounds
 │   │   ├── nothing.flac
 │   │   ├── processing.flac
 │   │   ├── thinking_modem.flac
 │   │   ├── thinking_music_2.flac
 │   │   ├── thinking_music_3.flac
 │   │   └── thinking_music.flac
-│   ├── timer					                # Timer alarm sounds
+│   ├── timer                                    # Timer alarm sounds
 │   │   └── timer_finished.flac
-│   └── wakeup					                # Wake word triggered sounds
+│   └── wakeup                                    # Wake word triggered sounds
 │       └── wake_word_triggered.flac
 ├── tests
 │   ├── lva_mic_capture.py
@@ -297,7 +309,7 @@ linux-voice-assistant/
 │   ├── test_openwakeword.py
 │   ├── xvf3800_hid_mute_probe.py
 │   └── xvf3800_probe.py
-├── wakewords					                # Wake word models
+├── wakewords                                    # Wake word models
 │   ├── alexa.json
 │   ├── alexa.tflite
 │   ├── choo_choo_homie.json
@@ -342,8 +354,7 @@ linux-voice-assistant/
 │   ├── stop.json
 │   └── stop.tflite
 └── XVF3800
-    └── 99-respeaker-xvf3800.rules		        # XVF3800 USB permissions and disable power suspend UDEV rule
-
+    └── 99-respeaker-xvf3800.rules                # XVF3800 USB permissions and disable power suspend UDEV rule
 ```
 
 ---
