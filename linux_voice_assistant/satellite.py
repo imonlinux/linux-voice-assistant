@@ -45,7 +45,14 @@ from pymicro_wakeword import MicroWakeWord
 from pyopen_wakeword import OpenWakeWord
 
 from .api_server import APIServer
-from .entity import MediaPlayerEntity, MuteSwitchEntity, ThinkingSoundSwitchEntity
+from .entity import (
+    AlarmDurationNumberEntity,
+    EventSoundsSwitchEntity,
+    MediaPlayerEntity,
+    MuteSwitchEntity,
+    SoundSelectEntity,
+    ThinkingSoundSwitchEntity,
+)
 from .models import AvailableWakeWord, ServerState, SatelliteState, WakeWordType
 from .util import call_all
 
@@ -103,6 +110,98 @@ class VoiceSatelliteProtocol(APIServer):
             ),
         )
 
+        # --- Event Sounds switch entity (key=3) ---
+        self.event_sounds_entity = self._setup_entity(
+            entity_type=EventSoundsSwitchEntity,
+            factory=lambda: EventSoundsSwitchEntity(
+                server=self,
+                state=state,
+                key=3,
+                name="Event Sounds",
+                object_id="event_sounds_enabled",
+                get_enabled=lambda: self.state.event_sounds_enabled,
+                set_enabled=self._set_event_sounds_enabled,
+            ),
+        )
+
+        # --- Sound Select entities (keys 5-7) ---
+        # Key 4 is reserved for WakeWordSensitivityEntity (Phase 4)
+        sound_opts = getattr(self.state, "sound_options", {})
+
+        wakeup_options = list(sound_opts.get("wakeup_sound", []))
+        if wakeup_options:
+            wakeup_options.insert(0, "None")
+        self.sound_wakeup_entity = self._setup_entity_by_id(
+            entity_type=SoundSelectEntity,
+            instance_id="wakeup_sound",
+            factory=lambda: SoundSelectEntity(
+                server=self,
+                state=state,
+                key=5,
+                name="Sound Wakeup",
+                object_id="sound_wakeup",
+                icon="mdi:bell-ring",
+                instance_id="wakeup_sound",
+                options=wakeup_options,
+                get_selection=lambda: self._get_sound_selection("wakeup_sound"),
+                set_selection=lambda v: self._set_sound_selection("wakeup_sound", v),
+            ),
+        ) if wakeup_options else None
+
+        thinking_options = list(sound_opts.get("thinking_sound", []))
+        if thinking_options:
+            thinking_options.insert(0, "None")
+        self.sound_thinking_entity = self._setup_entity_by_id(
+            entity_type=SoundSelectEntity,
+            instance_id="thinking_sound",
+            factory=lambda: SoundSelectEntity(
+                server=self,
+                state=state,
+                key=6,
+                name="Sound Thinking",
+                object_id="sound_thinking",
+                icon="mdi:head-cog",
+                instance_id="thinking_sound",
+                options=thinking_options,
+                get_selection=lambda: self._get_sound_selection("thinking_sound"),
+                set_selection=lambda v: self._set_sound_selection("thinking_sound", v),
+            ),
+        ) if thinking_options else None
+
+        timer_options = list(sound_opts.get("timer_sound", []))
+        self.sound_timer_entity = self._setup_entity_by_id(
+            entity_type=SoundSelectEntity,
+            instance_id="timer_sound",
+            factory=lambda: SoundSelectEntity(
+                server=self,
+                state=state,
+                key=7,
+                name="Sound Timer",
+                object_id="sound_timer",
+                icon="mdi:timer-alert",
+                instance_id="timer_sound",
+                options=timer_options,
+                get_selection=lambda: self._get_sound_selection("timer_sound"),
+                set_selection=lambda v: self._set_sound_selection("timer_sound", v),
+            ),
+        ) if timer_options else None
+
+        # --- Alarm Duration number entity (key=8) ---
+        self.alarm_duration_entity = self._setup_entity(
+            entity_type=AlarmDurationNumberEntity,
+            factory=lambda: AlarmDurationNumberEntity(
+                server=self,
+                state=state,
+                key=8,
+                name="Alarm Duration",
+                object_id="alarm_duration",
+                get_value=lambda: float(
+                    getattr(self.state.preferences, "alarm_duration_seconds", 0)
+                ),
+                set_value=self._set_alarm_duration,
+            ),
+        )
+
         # State machine
         self._state: SatelliteState = SatelliteState.STARTING
         self._is_streaming_audio: bool = False
@@ -155,6 +254,56 @@ class VoiceSatelliteProtocol(APIServer):
         self.state.preferences.selected_thinking_sound_loop = "ON" if enabled else "OFF"
         self.state.save_preferences()
         _LOGGER.info("Thinking sound loop set to: %s", enabled)
+
+    def _set_event_sounds_enabled(self, enabled: bool) -> None:
+        """Callback for EventSoundsSwitchEntity — update state and persist."""
+        self.state.event_sounds_enabled = enabled
+        self.state.preferences.event_sounds_enabled = enabled
+        self.state.save_preferences()
+        _LOGGER.info("Event sounds set to: %s", enabled)
+
+    def _get_sound_selection(self, cat_key: str) -> str:
+        """Get the current sound selection filename for a category."""
+        from . import __main__ as main_mod
+        cat_info = main_mod.SOUND_CATEGORIES.get(cat_key, {})
+        pref_field = cat_info.get("pref_field", "")
+        if pref_field:
+            value = getattr(self.state.preferences, pref_field, "")
+            if value:
+                return value
+        # No preference set — return the first option or empty
+        return ""
+
+    def _set_sound_selection(self, cat_key: str, filename: str) -> None:
+        """Set a sound selection, updating state and persisting."""
+        self.state.event_bus.publish(f"set_{cat_key}", {"filename": filename})
+
+    def _set_alarm_duration(self, value: float) -> None:
+        """Callback for AlarmDurationNumberEntity — update and persist."""
+        duration = int(value)
+        if duration < 0:
+            duration = 0
+        self.state.preferences.alarm_duration_seconds = duration
+        self.state.save_preferences()
+        _LOGGER.info("Alarm duration set to: %d seconds", duration)
+
+    def _setup_entity_by_id(self, entity_type, instance_id: str, factory):
+        """Find or create an entity matching both type and instance_id.
+
+        Like ``_setup_entity`` but for entity types that have multiple
+        instances (e.g. three SoundSelectEntity instances).  Matches on
+        ``entity.instance_id`` when the type matches.
+        """
+        for entity in self.state.entities:
+            if isinstance(entity, entity_type):
+                if hasattr(entity, "instance_id") and entity.instance_id == instance_id:
+                    entity.server = self
+                    return entity
+
+        # Not found — create via factory and register
+        entity = factory()
+        self.state.entities.append(entity)
+        return entity
 
     # -------------------------------------------------------------------------
     # State machine helpers
