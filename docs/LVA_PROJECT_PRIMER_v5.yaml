@@ -1,0 +1,1014 @@
+# LVA Project Primer (YAML)
+# Purpose: Efficiently onboard a GenAI/LLM to the Linux Voice Assistant (LVA) codebase.
+# Notes:
+# - Keep this file copy/paste friendly.
+# - Prefer explicit facts over guesses. When unsure, ask for the current file/log.
+#
+# I am not a python developer. I can read the code and understand what is happening, but I am not the author.
+# I have directed the code development using several different GenAI tools. My typical approach is to introduce
+# the current codebase to a different GenAI than the one that I worked with to get to a "final" version of the code.
+#
+# As we work together, I am going to need entire files updated with any changes so that I do not introduce
+# indentation errors when attempting to cut and paste in sections of code. I am not looking to be flattered
+# while working through developing the project. If I have a bad idea, I want to be told that it is bad and why.
+
+project:
+  name: "Linux Voice Assistant (LVA)"
+  repo: "imonlinux/linux-voice-assistant"
+  summary: >
+    A Linux-based voice satellite that exposes an ESPHome Voice Assistant API endpoint to Home Assistant.
+    It supports wake-word detection, streaming mic audio to HA for STT/intent handling, TTS playback,
+    timers, MQTT discovery/entities, and LED/button integrations (including Seeed ReSpeaker XVF3800 USB 4‑Mic Array).
+
+file_structure:
+    linux-voice-assistant
+    ├── CHANGELOG.md
+    ├── docs
+    │   ├── install_pipewire.md
+    │   ├── install_pulseaudio.md
+    │   ├── linux-voice-assistant-2mic-install.md
+    │   ├── linux-voice-assistant-xvf3800.md
+    │   ├── linux-voice-assistant-xvf3800-mute.md
+    │   ├── lva-desktop.md
+    │   └── xvf3800_legacy_led_effects_mapping.md
+    ├── LICENSE.md
+    ├── linux_voice_assistant
+    │   ├── api_server.py
+    │   ├── audio_engine.py
+    │   ├── audio_volume.py
+    │   ├── button_controller.py
+    │   ├── config.json
+    │   ├── config.json.example
+    │   ├── config.py
+    │   ├── entity.py
+    │   ├── event_bus.py
+    │   ├── __init__.py
+    │   ├── led_controller.py
+    │   ├── __main__.py
+    │   ├── models.py
+    │   ├── mpv_player.py
+    │   ├── mqtt_controller.py
+    │   ├── satellite.py
+    │   ├── tray_client
+    │   │   ├── client.py
+    │   │   ├── __init__.py
+    │   │   └── __main__.py
+    │   ├── util.py
+    │   ├── xvf3800_button_controller.py
+    │   ├── xvf3800_led_backend.py
+    │   └── zeroconf.py
+    ├── mypy.ini
+    ├── pylintrc
+    ├── pyproject.toml
+    ├── README.md
+    ├── respeaker2mic
+    │   └── install-respeaker-drivers.sh
+    ├── script
+    │   ├── format
+    │   ├── lint
+    │   ├── run
+    │   ├── setup
+    │   ├── test
+    │   └── tray
+    ├── service
+    │   ├── aec-module-load.service
+    │   ├── linux-voice-assistant.service
+    │   ├── linux-voice-assistant-tray.service
+    │   └── linux-voice-assistant_xvf3800.service
+    ├── setup.cfg
+    ├── sounds
+    │   ├── LICENSE.md
+    │   ├── timer_finished.flac
+    │   └── wake_word_triggered.flac
+    ├── tests
+    │   ├── lva_mic_capture.py
+    │   ├── ok_nabu.wav
+    │   ├── test_microwakeword.py
+    │   ├── test_openwakeword.py
+    │   ├── xvf3800_hid_mute_probe.py
+    │   └── xvf3800_probe.py
+    ├── wakewords
+    │   ├── alexa.json
+    │   ├── alexa.tflite
+    │   ├── choo_choo_homie.json
+    │   ├── choo_choo_homie.tflite
+    │   ├── hey_home_assistant.json
+    │   ├── hey_home_assistant.tflite
+    │   ├── hey_jarvis.json
+    │   ├── hey_jarvis.tflite
+    │   ├── hey_luna.json
+    │   ├── hey_luna.tflite
+    │   ├── hey_mycroft.json
+    │   ├── hey_mycroft.tflite
+    │   ├── okay_computer.json
+    │   ├── okay_computer.tflite
+    │   ├── okay_nabu.json
+    │   ├── okay_nabu.tflite
+    │   ├── openWakeWord
+    │   │   ├── alexa_v0.1.json
+    │   │   ├── alexa_v0.1.tflite
+    │   │   ├── hal_v2.json
+    │   │   ├── hal_v2.tflite
+    │   │   ├── hey_jarvis_v0.1.json
+    │   │   ├── hey_jarvis_v0.1.tflite
+    │   │   ├── hey_mycroft_v0.1.json
+    │   │   ├── hey_mycroft_v0.1.tflite
+    │   │   ├── hey_rhasspy_v0.1.json
+    │   │   ├── hey_rhasspy_v0.1.tflite
+    │   │   ├── marvin_v2.json
+    │   │   ├── marvin_v2.tflite
+    │   │   ├── ok_nabu_v0.1.json
+    │   │   └── ok_nabu_v0.1.tflite
+    │   ├── stop.json
+    │   └── stop.tflite
+    └── XVF3800
+        └── 99-respeaker-xvf3800.rules
+
+    12 directories, 90 files
+
+core_concepts:
+  satellite_role: >
+    LVA behaves like an ESPHome "voice satellite": Home Assistant initiates and coordinates a run,
+    while LVA handles wake words, audio streaming, and local playback/UX (LEDs, sounds, mute).
+  primary_protocol: "ESPHome API (aioesphomeapi)"
+  primary_audio_stack: "PipeWire or PulseAudio via python 'soundcard' (PulseAudio compat)."
+
+runtime_architecture:
+  main_components:
+    - name: "ServerState"
+      role: "Holds preferences, players, wake words, active state, event bus, entities, etc."
+    - name: "VoiceSatelliteProtocol (satellite.py)"
+      role: "Implements ESPHome Voice Assistant messages and state machine; routes audio + media control."
+    - name: "AudioEngine (audio_engine.py)"
+      role: "Captures mic audio, runs wake word models, forwards audio chunks to satellite."
+    - name: "MpvMediaPlayer (mpv_player.py)"
+      role: "Local playback for music + TTS via mpv; supports duck/unduck and done callbacks."
+    - name: "MQTTController"
+      role: "MQTT discovery + control topics for mute, effects, LED colors, and preferences controls."
+    - name: "LEDController"
+      role: "Backend-agnostic LED effects + per-state mapping (idle/listening/thinking/responding/error)."
+    - name: "Tray Client (desktop GUI)"
+      role: >
+        Optional PyQt5 system tray icon + menu for desktops.
+        Subscribes to MQTT state/light topics to mirror LVA state/colors and can toggle mute.
+        Can start/stop/restart the LVA systemd --user service.
+
+  threads_and_loops:
+    asyncio_loop: "Main thread runs asyncio; ESPHome server uses asyncio create_server."
+    audio_thread: "AudioEngine runs in a background thread and schedules work on asyncio loop with call_soon_threadsafe."
+
+configuration:
+  file: "linux_voice_assistant/config.json"
+  parsing: "linux_voice_assistant/config.py (load_config_from_json -> Config dataclasses)"
+  key_sections:
+    app:
+      required: ["name"]
+      optional:
+        wakeup_sound: "Path/URL played when wake word triggers"
+        timer_finished_sound: "Sound played when timer finishes"
+        preferences_file: "Preferences JSON (default preferences.json)"
+        debug: "Enable extra logging"
+    audio:
+      input_device: "null | exact device name | numeric index string (soundcard device list)"
+      input_block_size: "Capture block size (default 1024)"
+      output_device: "null | mpv audio-device string (e.g., pulse/alsa_output...)"
+      volume_sync:
+        description: >
+          When true, LVA will align the system output volume with the stored LVA volume on startup.
+          Implemented as a best-effort chain: wpctl -> pactl -> amixer.
+        default: false
+      max_volume_percent:
+        description: >
+          Upper bound for volume sync (some devices need >100%, e.g. 150%).
+          Used only when volume_sync is true.
+        default: 100
+    wake_word:
+      directories: "Wake-word model directories; defaults to [wakewords, wakewords/openWakeWord]"
+      model: "Default wake word model id (e.g., okay_nabu)"
+      stop_model: "Stop model id (micro wake word)"
+      refractory_seconds: "Debounce window after wake word triggers"
+      download_dir: "Directory for downloaded models (relative to repo)"
+    esphome:([Past chat][1])([Past chat][1])([Past chat][1])([Past chat][1])([Past chat][1])
+
+## Sendspin Client in LVA: Complete and What’s Next (Phase Evaluation)
+
+This evaluates **your current Sendspin client implementation (as pasted)** against the **design/roadmap you provided**, and lays out the **next phase** work in a concrete, prioritized way.
+
+---
+
+# 1) Current State Snapshot
+
+### What you have now (confirmed in the pasted `sendspin/client.py`)
+
+**Control plane (core)**
+
+* ✅ mDNS discovery (`_sendspin-server._tcp.local.`) with “first discovered” selection
+* ✅ WebSocket connect
+* ✅ Spec-critical ordering:
+
+  * `client/hello` is first
+  * waits for `server/hello` before sending anything else
+* ✅ Sends `client/state` initial + heartbeat
+* ✅ Sends `client/time` periodically (monotonic microseconds)
+* ✅ Receives and tolerates: `server/state`, `server/command`, `group/update`, `server/time`
+
+**Data plane (minimal player playback)**
+
+* ✅ Handles `stream/start` -> spawns **mpv in raw PCM mode** reading stdin
+* ✅ Binary frames -> strips **9-byte header** -> forwards PCM to mpv stdin
+* ✅ Handles `stream/stop` and teardown on disconnect / recv loop end
+* ✅ Keeps latency bounded with a queue and drop-on-full behavior
+* ✅ You already **muted noisy binary chunk logging** (websockets loggers set to WARNING)
+
+**Protocol/roles**
+
+* ✅ Advertises: `player@v1`, `controller@v1`, `metadata@v1` (default)
+* ✅ Uses `player@v1_support` (non-deprecated) and restricts supported commands to `volume`, `mute` (good for early stages)
+
+---
+
+# 2) Design Document Alignment
+
+Below is a “roadmap section → current status” mapping.
+
+## 2.1 Goals / non-goals
+
+* ✅ “player + metadata + controller first”: **partially implemented**
+
+  * player: ✅
+  * metadata: ✅ received/logged, but **not stored/emitted**
+  * controller: ✅ receives commands, but **does not actually apply to sink**
+
+## 2.2 High-level architecture / separation
+
+* ✅ Sendspin is logically separate from voice pipeline
+* ⚠️ EventBus coordination is present as a dependency (`event_bus` passed in) but **not used** in this file yet
+
+## 2.3 Protocol requirements
+
+* ✅ handshake ordering
+* ✅ time sync messages exist
+* ⚠️ stream lifecycle: you handle `stream/start`, `stream/stop`, and detect end by disconnect / loop end.
+
+  * You’ve also seen `stream/end` in logs earlier; current code handles only `stream/stop`. (Not a blocker, but should be addressed.)
+* ⚠️ “type 4 timestamp scheduling / sync”: currently **not implemented**
+
+  * you’re playing “as received” rather than scheduling against server timestamps
+
+## 2.4 Configuration design
+
+* ✅ You have config hooks for connection and mpv output selection
+* ❌ Not yet implemented: the richer config structure (roles/coordination/logging toggles) in a dataclass/config parsing layer (unless it exists elsewhere already)
+
+## 2.5 Component/file plan
+
+* ⚠️ Right now most concerns live in **one file**:
+
+  * connection + protocol + streaming + sink are co-located
+* Your roadmap proposes separation (`time_sync.py`, `player.py`, `audio_sink_soundcard.py`, `metadata.py`, `controller.py`, `models.py`).
+
+  * **None of that modular split is present yet** (except the existence of `models.py` / `discovery.py` in your list, but they weren’t included in the paste).
+
+## 2.6 EventBus integration contract
+
+* ❌ Not implemented yet:
+
+  * no `voice/interaction_start` / `end` subscriptions
+  * no sendspin events published (`sendspin/playback_state`, `sendspin/metadata`, etc.)
+
+## 2.7 Playback pipeline: SoundCard-first
+
+* ❌ Not aligned right now:
+
+  * your current sink is **mpv**, not SoundCard
+  * there is no jitter buffer keyed by timestamps
+  * no underrun metrics / silence insertion / drift estimation
+
+## 2.8 Controller + Metadata
+
+* **Controller**
+
+  * ✅ MA sends `server/command volume`, your client updates `_volume`
+  * ❌ Volume does not affect actual output sink (mpv), so “works” only on paper
+* **Metadata**
+
+  * ✅ You’re receiving metadata in `server/state`
+  * ❌ Not maintained as state; not exposed to HA; no progress estimation
+
+## 2.9 HA entity strategy (separate entity)
+
+* ❌ Not implemented yet in code you shared
+
+  * no new HA entity `media_player.<device_id>_sendspin_music`
+  * no mapping of HA commands to Sendspin `client/command`
+
+---
+
+# 3) “Complete” Assessment (What’s Done Enough to Call Phase 1 Successful)
+
+Based on your roadmap’s Phase 1 “Foundation” definition:
+
+### ✅ Completed (Phase 1 foundation, “smoke test” level)
+
+* Stable discovery + connection + correct handshake ordering
+* Player registers in MA and is targetable
+* PCM playback works reliably for at least a session (you confirmed “Perfect audio playback!”)
+* Binary logging noise is reduced enough to continue development
+
+### ⚠️ Partially complete (still Phase 1, but needed before moving on cleanly)
+
+* Stream lifecycle completeness (`stream/end` / `stream/clear`) handling
+* Basic player state handling beyond “playing audio” (track state, active stream tracking, stop/cleanup)
+* A minimal internal “Sendspin state model” (connected/playing/stopped, volume/mute, metadata)
+
+### ❌ Not complete (but explicitly part of later phases in your roadmap)
+
+* SoundCard sink + timestamp scheduling/jitter buffer
+* Voice coordination (duck/pause)
+* HA entity (separate media_player)
+* Controller send path (HA → Sendspin `client/command`)
+* Real multi-device sync validation
+
+---
+
+# 4) “What’s Next” (Next Phase Plan)
+
+You asked for “next phase of development.” Given where you are, the best next phase is:
+
+## Next Phase = “Make it a Real Player”
+
+Meaning:
+
+1. **Apply controller changes locally** (volume/mute/transport)
+2. **Track and publish state** (metadata/progress/playback state)
+3. **Prepare for HA entity + voice coordination** by defining event contracts now
+
+### 4.1 Must-fix: Volume and mute actually affect playback
+
+Right now MA volume commands update `_volume`, but mpv output doesn’t change.
+
+**Target outcome**
+
+* MA volume slider changes real audio output immediately
+* mute toggles audio output immediately
+* state you report back matches what you applied
+
+**Implementation options (choose one; recommend A)**
+
+A) **mpv IPC (recommended for your current mpv sink)**
+
+* start mpv with `--input-ipc-server=/tmp/lva_sendspin_mpv.sock` (or per-client unique path)
+* on volume/mute commands:
+
+  * send JSON IPC commands: `{"command":["set_property","volume", <0-100>]}`
+  * `{"command":["set_property","mute", true/false]}`
+* keep `_volume/_muted` in sync with mpv (optional: query property back)
+
+B) restart mpv when volume changes (not recommended)
+
+* audible glitching; heavy; error-prone
+
+C) implement a software volume scaler on PCM before mpv (possible, but wastes CPU and complicates mute)
+
+**Definition of done**
+
+* With a playing stream, moving MA slider produces a perceptible change within ~250ms.
+
+---
+
+### 4.2 Playback state model + metadata retention
+
+You already receive:
+
+* `group/update` with `playback_state`
+* `server/state.metadata` with title/artist/progress
+
+**Target outcome**
+
+* Keep an internal state object:
+
+  * connection_state: connected/disconnected
+  * playback_state: playing/paused/stopped
+  * volume/muted
+  * metadata: title/artist/album/duration/position
+* Emit **EventBus events** (even if no HA entity yet)
+
+**Definition of done**
+
+* Logs show “state changed” summaries rather than dumping raw payloads
+* Another subsystem (future HA entity) can subscribe and update UI
+
+---
+
+### 4.3 Stream lifecycle robustness
+
+Observed message types across your logs include:
+
+* `stream/start`
+* `stream/end` (seen earlier)
+* maybe `stream/clear` (per spec)
+
+**Target outcome**
+
+* treat `stream/end` and `stream/stop` equivalently: stop sink + clear queue
+* `stream/clear`: clear buffered audio immediately but keep sink alive if appropriate
+
+**Definition of done**
+
+* Starting and stopping tracks repeatedly never leaves mpv wedged or leaking processes
+* No “stuck playing silence” states
+
+---
+
+### 4.4 Controller “send path” scaffolding (for Phase 3)
+
+Right now you only **receive** `server/command`.
+Your roadmap wants HA → Sendspin via `client/command.controller`.
+
+**Target outcome**
+
+* Add a method like `send_controller_command(cmd, **kwargs)`
+* Don’t wire HA yet, just make it callable (and optionally test from a debug hook)
+
+**Definition of done**
+
+* You can programmatically trigger play/pause/next/prev/mute/volume and see MA react
+
+---
+
+### 4.5 Logging controls (match your roadmap)
+
+You already quieted websockets. Next is making Sendspin logs “operator friendly”.
+
+**Target outcome**
+
+* Config toggles:
+
+  * `debug_protocol` (log message types but not payloads)
+  * `debug_timing` (buffer stats, underruns, offsets later)
+* Replace raw payload dumps with compact summaries:
+
+  * metadata: `"title - artist (pos/dur)"`
+  * controller: `"volume=42 muted=false"`
+  * stream: `"start pcm 48k/2/16"`
+
+---
+
+# 5) Suggested Work Breakdown (Practical Ordering)
+
+**Milestone 1 — “Volume works”**
+
+* mpv IPC socket + apply volume/mute on commands
+* verify with MA slider + mute toggle during playback
+
+**Milestone 2 — “State is publishable”**
+
+* internal state dataclass
+* EventBus emits: `sendspin/connection_state`, `sendspin/playback_state`, `sendspin/metadata`, `sendspin/volume`
+
+**Milestone 3 — “Stream lifecycle solid”**
+
+* handle `stream/end` / `stream/clear`
+* ensure teardown correctness and no process leaks
+
+**Milestone 4 — “Command send path exists”**
+
+* implement `client/command.controller`
+* manual smoke test (even without HA integration)
+
+After these, you’re ready to start **Phase 2 (voice coordination)** and **Phase 3 (HA entity)** cleanly.
+
+---
+
+# 6) Key Gaps vs Your Roadmap (Explicit)
+
+These are the deltas you should be aware of:
+
+1. **Sink choice mismatch**
+
+* Roadmap says “Option A SoundCard first”
+* Implementation is “mpv sink first”
+* That’s not necessarily wrong — you’ve already proven feasibility.
+  But if you still want the SoundCard experiment for sync, that becomes a later pivot or parallel track.
+
+2. **No timestamp-based scheduling**
+
+* Multi-device sync claims in the roadmap depend on using the timestamp header and time sync offset.
+* Current implementation ignores timestamps.
+
+3. **No separate HA entity yet**
+
+* That’s fine; you’re not ready until state + controller send-path are stable.
+
+---
+
+# 7) What I Need From You for the Next Phase Document to Become “Actionable PR Tasks”
+
+You offered to paste all files. For the next phase (volume + state + stream lifecycle), the only additional code context I need is:
+
+* `linux_voice_assistant/sendspin/models.py`
+* `linux_voice_assistant/sendspin/__init__.py`
+* `linux_voice_assistant/sendspin/discovery.py` (if it exists and is used)
+* Where `SendspinClient` is instantiated/wired (likely `__main__.py` or a subsystem loader)
+* Any existing mpv wrapper module in LVA you want reused (if you prefer not to spawn raw `mpv` directly)
+
+If you paste those, I can produce a **single “next-phase evaluation doc” as PR-ready tasks** (file-by-file changes, event names, and acceptance tests) without guessing about your repo wiring.
+
+[1]: https://chatgpt.com/c/696c3114-a9f0-8326-af81-bc271fc2036a "Sendspin Protocol Integration"
+
+      host: "Bind host for ESPHome API server (default 0.0.0.0)"
+      port: "Bind port (default 6053)"
+    led:
+      enabled: "If false, LED controller is no-op"
+      led_type: "dotstar | neopixel | xvf3800"
+      interface: "spi | gpio | usb (xvf3800 uses usb)"
+      clock_pin: "GPIO clock (GPIO interface only)"
+      data_pin: "GPIO data (GPIO interface only)"
+      num_leds: "Default LEDs (preference may override after first run)"
+    button:
+      enabled: "Enable button controller"
+      mode: "gpio | xvf3800"
+      pin: "GPIO pin (gpio mode)"
+      long_press_seconds: "GPIO mode long press"
+      poll_interval_seconds: "Polling interval for gpio/xvf3800 button backends"
+    mqtt:
+      host: "If set, MQTT is enabled"
+      port: 1883
+      username: "Optional"
+      password: "Optional"
+    tray:
+      systemd_service_name:
+        description: >
+          The systemd --user unit name that the Tray Client start/stop/restart menu controls.
+          Defaults to "linux-voice-assistant.service".
+        default: "linux-voice-assistant.service"
+
+mqtt_and_entities:
+  mqtt_discovery:
+    notes: >
+      LVA publishes Home Assistant MQTT Discovery entities when MQTT is enabled.
+      Includes mute, number of LEDs, alarm duration, and per-state LED effect & color controls.
+  device_id:
+    generation: >
+      LVA uses a shared helper to convert the configured app.name into a stable MQTT device_id
+      (see linux_voice_assistant/util.py slugify_device_([Past chat][1])([Past chat][1])([Past chat][1])([Past chat][1])([Past chat][1])
+
+## Sendspin Client in LVA: Complete and What’s Next (Phase Evaluation)
+
+This evaluates **your current Sendspin client implementation (as pasted)** against the **design/roadmap you provided**, and lays out the **next phase** work in a concrete, prioritized way.
+
+---
+
+# 1) Current State Snapshot
+
+### What you have now (confirmed in the pasted `sendspin/client.py`)
+
+**Control plane (core)**
+
+* ✅ mDNS discovery (`_sendspin-server._tcp.local.`) with “first discovered” selection
+* ✅ WebSocket connect
+* ✅ Spec-critical ordering:
+
+  * `client/hello` is first
+  * waits for `server/hello` before sending anything else
+* ✅ Sends `client/state` initial + heartbeat
+* ✅ Sends `client/time` periodically (monotonic microseconds)
+* ✅ Receives and tolerates: `server/state`, `server/command`, `group/update`, `server/time`
+
+**Data plane (minimal player playback)**
+
+* ✅ Handles `stream/start` -> spawns **mpv in raw PCM mode** reading stdin
+* ✅ Binary frames -> strips **9-byte header** -> forwards PCM to mpv stdin
+* ✅ Handles `stream/stop` and teardown on disconnect / recv loop end
+* ✅ Keeps latency bounded with a queue and drop-on-full behavior
+* ✅ You already **muted noisy binary chunk logging** (websockets loggers set to WARNING)
+
+**Protocol/roles**
+
+* ✅ Advertises: `player@v1`, `controller@v1`, `metadata@v1` (default)
+* ✅ Uses `player@v1_support` (non-deprecated) and restricts supported commands to `volume`, `mute` (good for early stages)
+
+---
+
+# 2) Design Document Alignment
+
+Below is a “roadmap section → current status” mapping.
+
+## 2.1 Goals / non-goals
+
+* ✅ “player + metadata + controller first”: **partially implemented**
+
+  * player: ✅
+  * metadata: ✅ received/logged, but **not stored/emitted**
+  * controller: ✅ receives commands, but **does not actually apply to sink**
+
+## 2.2 High-level architecture / separation
+
+* ✅ Sendspin is logically separate from voice pipeline
+* ⚠️ EventBus coordination is present as a dependency (`event_bus` passed in) but **not used** in this file yet
+
+## 2.3 Protocol requirements
+
+* ✅ handshake ordering
+* ✅ time sync messages exist
+* ⚠️ stream lifecycle: you handle `stream/start`, `stream/stop`, and detect end by disconnect / loop end.
+
+  * You’ve also seen `stream/end` in logs earlier; current code handles only `stream/stop`. (Not a blocker, but should be addressed.)
+* ⚠️ “type 4 timestamp scheduling / sync”: currently **not implemented**
+
+  * you’re playing “as received” rather than scheduling against server timestamps
+
+## 2.4 Configuration design
+
+* ✅ You have config hooks for connection and mpv output selection
+* ❌ Not yet implemented: the richer config structure (roles/coordination/logging toggles) in a dataclass/config parsing layer (unless it exists elsewhere already)
+
+## 2.5 Component/file plan
+
+* ⚠️ Right now most concerns live in **one file**:
+
+  * connection + protocol + streaming + sink are co-located
+* Your roadmap proposes separation (`time_sync.py`, `player.py`, `audio_sink_soundcard.py`, `metadata.py`, `controller.py`, `models.py`).
+
+  * **None of that modular split is present yet** (except the existence of `models.py` / `discovery.py` in your list, but they weren’t included in the paste).
+
+## 2.6 EventBus integration contract
+
+* ❌ Not implemented yet:
+
+  * no `voice/interaction_start` / `end` subscriptions
+  * no sendspin events published (`sendspin/playback_state`, `sendspin/metadata`, etc.)
+
+## 2.7 Playback pipeline: SoundCard-first
+
+* ❌ Not aligned right now:
+
+  * your current sink is **mpv**, not SoundCard
+  * there is no jitter buffer keyed by timestamps
+  * no underrun metrics / silence insertion / drift estimation
+
+## 2.8 Controller + Metadata
+
+* **Controller**
+
+  * ✅ MA sends `server/command volume`, your client updates `_volume`
+  * ❌ Volume does not affect actual output sink (mpv), so “works” only on paper
+* **Metadata**
+
+  * ✅ You’re receiving metadata in `server/state`
+  * ❌ Not maintained as state; not exposed to HA; no progress estimation
+
+## 2.9 HA entity strategy (separate entity)
+
+* ❌ Not implemented yet in code you shared
+
+  * no new HA entity `media_player.<device_id>_sendspin_music`
+  * no mapping of HA commands to Sendspin `client/command`
+
+---
+
+# 3) “Complete” Assessment (What’s Done Enough to Call Phase 1 Successful)
+
+Based on your roadmap’s Phase 1 “Foundation” definition:
+
+### ✅ Completed (Phase 1 foundation, “smoke test” level)
+
+* Stable discovery + connection + correct handshake ordering
+* Player registers in MA and is targetable
+* PCM playback works reliably for at least a session (you confirmed “Perfect audio playback!”)
+* Binary logging noise is reduced enough to continue development
+
+### ⚠️ Partially complete (still Phase 1, but needed before moving on cleanly)
+
+* Stream lifecycle completeness (`stream/end` / `stream/clear`) handling
+* Basic player state handling beyond “playing audio” (track state, active stream tracking, stop/cleanup)
+* A minimal internal “Sendspin state model” (connected/playing/stopped, volume/mute, metadata)
+
+### ❌ Not complete (but explicitly part of later phases in your roadmap)
+
+* SoundCard sink + timestamp scheduling/jitter buffer
+* Voice coordination (duck/pause)
+* HA entity (separate media_player)
+* Controller send path (HA → Sendspin `client/command`)
+* Real multi-device sync validation
+
+---
+
+# 4) “What’s Next” (Next Phase Plan)
+
+You asked for “next phase of development.” Given where you are, the best next phase is:
+
+## Next Phase = “Make it a Real Player”
+
+Meaning:
+
+1. **Apply controller changes locally** (volume/mute/transport)
+2. **Track and publish state** (metadata/progress/playback state)
+3. **Prepare for HA entity + voice coordination** by defining event contracts now
+
+### 4.1 Must-fix: Volume and mute actually affect playback
+
+Right now MA volume commands update `_volume`, but mpv output doesn’t change.
+
+**Target outcome**
+
+* MA volume slider changes real audio output immediately
+* mute toggles audio output immediately
+* state you report back matches what you applied
+
+**Implementation options (choose one; recommend A)**
+
+A) **mpv IPC (recommended for your current mpv sink)**
+
+* start mpv with `--input-ipc-server=/tmp/lva_sendspin_mpv.sock` (or per-client unique path)
+* on volume/mute commands:
+
+  * send JSON IPC commands: `{"command":["set_property","volume", <0-100>]}`
+  * `{"command":["set_property","mute", true/false]}`
+* keep `_volume/_muted` in sync with mpv (optional: query property back)
+
+B) restart mpv when volume changes (not recommended)
+
+* audible glitching; heavy; error-prone
+
+C) implement a software volume scaler on PCM before mpv (possible, but wastes CPU and complicates mute)
+
+**Definition of done**
+
+* With a playing stream, moving MA slider produces a perceptible change within ~250ms.
+
+---
+
+### 4.2 Playback state model + metadata retention
+
+You already receive:
+
+* `group/update` with `playback_state`
+* `server/state.metadata` with title/artist/progress
+
+**Target outcome**
+
+* Keep an internal state object:
+
+  * connection_state: connected/disconnected
+  * playback_state: playing/paused/stopped
+  * volume/muted
+  * metadata: title/artist/album/duration/position
+* Emit **EventBus events** (even if no HA entity yet)
+
+**Definition of done**
+
+* Logs show “state changed” summaries rather than dumping raw payloads
+* Another subsystem (future HA entity) can subscribe and update UI
+
+---
+
+### 4.3 Stream lifecycle robustness
+
+Observed message types across your logs include:
+
+* `stream/start`
+* `stream/end` (seen earlier)
+* maybe `stream/clear` (per spec)
+
+**Target outcome**
+
+* treat `stream/end` and `stream/stop` equivalently: stop sink + clear queue
+* `stream/clear`: clear buffered audio immediately but keep sink alive if appropriate
+
+**Definition of done**
+
+* Starting and stopping tracks repeatedly never leaves mpv wedged or leaking processes
+* No “stuck playing silence” states
+
+---
+
+### 4.4 Controller “send path” scaffolding (for Phase 3)
+
+Right now you only **receive** `server/command`.
+Your roadmap wants HA → Sendspin via `client/command.controller`.
+
+**Target outcome**
+
+* Add a method like `send_controller_command(cmd, **kwargs)`
+* Don’t wire HA yet, just make it callable (and optionally test from a debug hook)
+
+**Definition of done**
+
+* You can programmatically trigger play/pause/next/prev/mute/volume and see MA react
+
+---
+
+### 4.5 Logging controls (match your roadmap)
+
+You already quieted websockets. Next is making Sendspin logs “operator friendly”.
+
+**Target outcome**
+
+* Config toggles:
+
+  * `debug_protocol` (log message types but not payloads)
+  * `debug_timing` (buffer stats, underruns, offsets later)
+* Replace raw payload dumps with compact summaries:
+
+  * metadata: `"title - artist (pos/dur)"`
+  * controller: `"volume=42 muted=false"`
+  * stream: `"start pcm 48k/2/16"`
+
+---
+
+# 5) Suggested Work Breakdown (Practical Ordering)
+
+**Milestone 1 — “Volume works”**
+
+* mpv IPC socket + apply volume/mute on commands
+* verify with MA slider + mute toggle during playback
+
+**Milestone 2 — “State is publishable”**
+
+* internal state dataclass
+* EventBus emits: `sendspin/connection_state`, `sendspin/playback_state`, `sendspin/metadata`, `sendspin/volume`
+
+**Milestone 3 — “Stream lifecycle solid”**
+
+* handle `stream/end` / `stream/clear`
+* ensure teardown correctness and no process leaks
+
+**Milestone 4 — “Command send path exists”**
+
+* implement `client/command.controller`
+* manual smoke test (even without HA integration)
+
+After these, you’re ready to start **Phase 2 (voice coordination)** and **Phase 3 (HA entity)** cleanly.
+
+---
+
+# 6) Key Gaps vs Your Roadmap (Explicit)
+
+These are the deltas you should be aware of:
+
+1. **Sink choice mismatch**
+
+* Roadmap says “Option A SoundCard first”
+* Implementation is “mpv sink first”
+* That’s not necessarily wrong — you’ve already proven feasibility.
+  But if you still want the SoundCard experiment for sync, that becomes a later pivot or parallel track.
+
+2. **No timestamp-based scheduling**
+
+* Multi-device sync claims in the roadmap depend on using the timestamp header and time sync offset.
+* Current implementation ignores timestamps.
+
+3. **No separate HA entity yet**
+
+* That’s fine; you’re not ready until state + controller send-path are stable.
+
+---
+
+# 7) What I Need From You for the Next Phase Document to Become “Actionable PR Tasks”
+
+You offered to paste all files. For the next phase (volume + state + stream lifecycle), the only additional code context I need is:
+
+* `linux_voice_assistant/sendspin/models.py`
+* `linux_voice_assistant/sendspin/__init__.py`
+* `linux_voice_assistant/sendspin/discovery.py` (if it exists and is used)
+* Where `SendspinClient` is instantiated/wired (likely `__main__.py` or a subsystem loader)
+* Any existing mpv wrapper module in LVA you want reused (if you prefer not to spawn raw `mpv` directly)
+
+If you paste those, I can produce a **single “next-phase evaluation doc” as PR-ready tasks** (file-by-file changes, event names, and acceptance tests) without guessing about your repo wiring.
+
+[1]: https://chatgpt.com/c/696c3114-a9f0-8326-af81-bc271fc2036a "Sendspin Protocol Integration"
+id).
+    example: "My Desktop Assistant -> my_desktop_assistant"
+  common_topics:
+    base: "lva/{device_id}/..."
+    examples:
+      availability: "lva/{device_id}/availability (payload: online/offline)"
+      mute_set: "lva/{device_id}/mute/set (payload: ON/OFF)"
+      mute_state: "lva/{device_id}/mute/state"
+      num_leds_set: "lva/{device_id}/num_leds/set (int)"
+      num_leds_state: "lva/{device_id}/num_leds/state"
+      alarm_duration_set: "lva/{device_id}/alarm_duration/set (int; 0=infinite)"
+      alarm_duration_state: "lva/{device_id}/alarm_duration/state"
+  per_voice_state_topics:
+    states: [idle, listening, thinking, responding, error]
+    for_each_state:
+      effect_set: "lva/{device_id}/{state}_effect/set"
+      effect_state: "lva/{device_id}/{state}_effect/state"
+      light_set: "lva/{device_id}/{state}_light/set (JSON: state/brightness/color)"
+      light_state: "lva/{device_id}/{state}_light/state (JSON mirror)"
+  ha_discovery_entities:
+    - "Switch: Mute Microphone"
+    - "Number: Number of LEDs"
+    - "Number: Alarm Duration"
+    - "Select (per state): LED Effect"
+    - "Light (per state): LED Color"
+
+xvf3800_support:
+  device: "Seeed reSpeaker XVF3800 USB 4‑Mic Array (vid=0x2886 pid=0x001a)"
+  what_lva_controls_over_usb:
+    leds:
+      backend_file: "linux_voice_assistant/xvf3800_led_backend.py"
+      controls:
+        - "LED_EFFECT / LED_BRIGHTNESS / LED_SPEED / LED_COLOR / LED_RING_COLOR"
+      notes: "No dependency on Seeed xvf_host.py; LVA speaks USB control transfers directly via pyusb."
+    mute_button_and_hw_mute_led:
+      backend_file: "linux_voice_assistant/xvf3800_button_controller.py"
+      notes: >
+        Reads GPO state to detect hardware mute changes and mirrors LVA mute state back to XVF3800.
+  permissions_and_udev:
+    why: "USB control endpoint requires access; running as root breaks PipeWire/PulseAudio user-session audio."
+    recommendation: >
+      Install the provided udev rule (XVF3800/99-respeaker-xvf3800.rules),
+      add user to plugdev (or equivalent), and replug/reboot.
+  startup_preflight:
+    goal: >
+      Mitigate intermittent "mic silent after boot" reports by applying a small, fast USB preflight at LVA startup.
+    behavior: >
+      When XVF3800 is configured (LED backend and/or button mode xvf3800), LVA performs:
+      (1) connect to the USB control device
+      (2) set audio routing for both USB channels to a stable ASR output mapping used during testing
+      (3) if needed, issue an XVF3800 reboot, then continue startup
+    channel_routing:
+      command_family: "Audio Manager output mux (AUDIO_MGR_OP_L / AUDIO_MGR_OP_R)"
+      known_good_mapping: "Set both channels to (category=7, source=3) aka 'ASR3' in Seeed tooling output."
+      effect_on_lva: >
+        LVA typically records 16 kHz mono; if the underlying device exposes 2ch,
+        pipewire/pulse may downmix or pick a channel. Aligning both channels reduces asymmetry and
+        helps avoid 'one channel silent' cases on some hosts.
+
+audio_pipeline_notes:
+  sample_rate: 16000
+  channels: 1
+  chunking: "AudioEngine reads block_size frames and converts float32 -> int16 bytes before processing."
+  wake_words:
+    engines:
+      - "pymicro_wakeword (MicroWakeWord)"
+      - "pyopen_wakeword (OpenWakeWord)"
+    thresholds:
+      openwakeword_probability: "Currently uses p > 0.5 for activation."
+  troubleshooting_audio:
+    common_checks:
+      - "Confirm PipeWire/Pulse sees the mic source (wpctl status / pactl list short sources)."
+      - "Try a quick capture using soundcard backend test script (LVA-style 16k mono)."
+      - "If mic is silent after boot, verify udev permissions and the XVF3800 preflight logs."
+
+tray_client:
+  status: "Optional desktop-only component (not required for headless satellites)."
+  package_location: "linux_voice_assistant/tray_client/"
+  module_entrypoint: "python -m linux_voice_assistant.tray_client"
+  primary_file: "linux_voice_assistant/tray_client/client.py"
+  dependencies:
+    managed_via: "pyproject.toml extras"
+    extras_name: "tray"
+    includes:
+      - "PyQt5>=5.15"
+  behavior:
+    requires_mqtt: true
+    notes: >
+      The Tray Client loads config.json using linux_voice_assistant.config.load_config_from_json,
+      derives the MQTT device_id using linux_voice_assistant.util.slugify_device_id,
+      and uses models.SatelliteState for its known state names.
+  systemd_control:
+    config_key: "tray.systemd_service_name"
+    default_unit: "linux-voice-assistant.service"
+
+scripts_and_install:
+  venv:
+    location: ".venv (created by script/setup)"
+  setup_script:
+    path: "script/setup"
+    purpose: "Create venv and install editable package + optional extras"
+    options:
+      dev: "--dev (extras: dev)"
+      tray: "--tray (extras: tray)"
+    semantics: >
+      Options are additive. Example: script/setup --dev --tray installs core + both optional extras.
+  run_script:
+    path: "script/run"
+    purpose: "Run main LVA entrypoint using the repo venv if present"
+    command: "python -m linux_voice_assistant"
+  tray_script:
+    path: "script/tray"
+    purpose: "Run the Tray Client entrypoint using the repo venv if present"
+    command: "python -m linux_voice_assistant.tray_client"
+
+refactor_notes_recent:
+  tray_refactor:
+    goals_covered:
+      - "Centralize Configuration: tray loads Config via load_config_from_json"
+      - "Unify device_id logic: slugify_device_id lives in util.py and is reused by MQTT + tray"
+      - "Use shared constants: models.SatelliteState used instead of hardcoded state list"
+      - "Project layout: tray client lives under linux_voice_assistant/tray_client"
+      - "Installer extras: script/setup supports additive --tray for PyQt5"
+
+release_and_merge_notes:
+  key_recent_features:
+    - "XVF3800 USB LED backend + effect mapping + per-state light color control via MQTT/HA discovery"
+    - "XVF3800 hardware mute + button integration"
+    - "XVF3800 startup preflight (channel routing + optional device reboot) to mitigate silent-mic-after-boot"
+    - "Optional startup output volume sync (wpctl/pactl/amixer) gated by audio.volume_sync"
+    - "Desktop Tray Client refactor: config loader + shared device_id slugify + SatelliteState enum + --tray installer extras"
+    - "OpenWakeWord trigger check used to be hardcoded to `p > 0.5`. It’s now configurable via:"
+    - "global setting in `config.json`, and/or an optional per-model override in the wakeword model’s `*.json` file."
+
