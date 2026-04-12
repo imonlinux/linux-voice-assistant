@@ -14,9 +14,9 @@ Clock-sync / multi-room enhancement:
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import json
 import logging
-import math
 import os
 import re
 import shutil
@@ -177,12 +177,7 @@ class SendspinPlayerPipeline:
         except Exception:
             pass
 
-        try:
-            import opuslib  # type: ignore
-
-            self._opus_available = True
-        except Exception:
-            self._opus_available = False
+        self._opus_available = importlib.util.find_spec("opuslib") is not None
 
         self._ffmpeg_available = shutil.which(self._ffmpeg_path) is not None
 

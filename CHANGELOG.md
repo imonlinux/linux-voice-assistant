@@ -138,3 +138,31 @@
 
 ---
 
+
+## upstream_refactor branch
+
+### Added
+
+- **`MpvMediaPlayer.play()` volume override** — new `volume_override: Optional[int]`
+  parameter temporarily sets mpv volume for a single playback (range 0–200),
+  restoring the previous level when done. Used internally to correct wakeup sound
+  amplitude without permanently changing user volume.
+
+- **Ruff linting configuration** — `pyproject.toml` now includes `[tool.ruff]`
+  targeting Python 3.9, selecting rules E9, F4, and F8 (syntax errors, import
+  errors, undefined names). F841 (unused variable) is suppressed for EventBus
+  handler assignments that register side-effects. Run with `ruff check .`
+
+### Fixed
+
+- **Wakeup sound plays too quietly** — PipeWire/PulseAudio typically initializes
+  the sink at ~70% regardless of the persisted volume level; the wakeup sound was
+  therefore consistently under-volume. `satellite.py` now calls
+  `tts_player.play(wakeup_sound, volume_override=100)` so the wakeup chime always
+  plays at full mpv volume, independent of the OS sink level. (#290)
+
+### Changed
+
+- **Unused imports removed** — `import numpy as np`, `MicroWakeWordFeatures`
+  (from `__main__.py`), `from pathlib import Path` (from `satellite.py`), and
+  `import math` (from `sendspin/player.py`) were removed; all flagged by ruff F401.
