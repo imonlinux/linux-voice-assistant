@@ -245,7 +245,7 @@ linux-voice-assistant/
 │   ├── config.json                                # LVA configuration file
 │   ├── config.json.example                        # Annotated configuration reference
 │   ├── config.py                                # Configuration dataclasses
-│   ├── entity.py                                # ESPHome media player entity
+│   ├── entity.py                                # ESPHome entity classes (media player, mute, sounds, sensitivity, alarm duration)
 │   ├── event_bus.py                            # Publish/subscribe event system
 │   ├── __init__.py
 │   ├── led_controller.py                        # LED effects and state mapping

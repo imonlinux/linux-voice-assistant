@@ -131,7 +131,6 @@ class VoiceSatelliteProtocol(APIServer):
         )
 
         # --- Sound Select entities (keys 5-7) ---
-        # Key 4 is reserved for WakeWordSensitivityEntity (Phase 4)
         sound_opts = getattr(self.state, "sound_options", {})
 
         wakeup_options = list(sound_opts.get("wakeup_sound", []))

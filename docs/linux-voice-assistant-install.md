@@ -374,18 +374,9 @@ systemctl --user status linux-voice-assistant --no-pager -l
 
 ## 🔌 MQTT Controls Overview
 
-The Linux Voice Assistant (LVA) creates several MQTT entities under the Home Assistant MQTT Discovery protocol. Each entity is prefixed by your LVA's unique device ID defined with the --name field in the LVA User-Mode Serviced Unit (e.g., `linux_voice_assistant`).
+MQTT is only required for LED controls. Voice and audio controls (mute, sound selection, thinking sound loop, event sounds, alarm duration, and wake word sensitivity) are now ESPHome entities available on the Home Assistant device page under **Configuration** — no MQTT required for those.
 
----
-
-### 🎤 Microphone Mute (`switch` entity)
-
-Controls the microphone mute state.
-
-- **MQTT Discovery Topic:** `homeassistant/switch/<device_id>_mute/config`
-- **Name:** `[LVA Name] Mute Microphone`
-- **Icon:** `mdi:microphone-off`
-- **Functionality:** Toggles the microphone mute. When muted, the LEDs will display a dim red `solid` effect.
+> **Note:** The desktop tray client also uses MQTT internally to mirror mute state and display voice state colors, but this does not require MQTT Discovery to be configured for mute in Home Assistant.
 
 ---
 
