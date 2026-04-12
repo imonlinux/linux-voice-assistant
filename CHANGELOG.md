@@ -139,30 +139,117 @@
 ---
 
 
+
 ## upstream_refactor branch
+
+This branch incorporates the upstream architectural changes from the OHF-Voice
+ESPHome entity pattern, migrating all voice and audio controls from MQTT Discovery
+to native ESPHome entities. After this merge, MQTT is LED hardware controls only.
+
+---
 
 ### Added
 
-- **`MpvMediaPlayer.play()` volume override** — new `volume_override: Optional[int]`
-  parameter temporarily sets mpv volume for a single playback (range 0–200),
-  restoring the previous level when done. Used internally to correct wakeup sound
-  amplitude without permanently changing user volume.
+**ESPHome Entity Migration (Phases 1–5)**
 
-- **Ruff linting configuration** — `pyproject.toml` now includes `[tool.ruff]`
-  targeting Python 3.9, selecting rules E9, F4, and F8 (syntax errors, import
-  errors, undefined names). F841 (unused variable) is suppressed for EventBus
-  handler assignments that register side-effects. Run with `ruff check .`
+This is the core architectural change in this branch. Seven new entity classes
+were added to `entity.py`, each following the upstream ESPHome entity pattern
+(callback-based state sync, `list_entities` registration, `handle_command` dispatch).
+
+| Key | Entity Class | ESPHome Type | Persisted In |
+|-----|-------------|--------------|--------------|
+| 0 | `MediaPlayerEntity` | media_player | `preferences.json` (volume) |
+| 1 | `MuteSwitchEntity` | switch | `ServerState` (runtime only) |
+| 2 | `ThinkingSoundSwitchEntity` | switch | `preferences.json` |
+| 3 | `EventSoundsSwitchEntity` | switch | `preferences.json` |
+| 4 | `WakeWordSensitivityEntity` | select | `preferences.json` |
+| 5 | `SoundSelectEntity` (wakeup) | select | `preferences.json` |
+| 6 | `SoundSelectEntity` (thinking) | select | `preferences.json` |
+| 7 | `SoundSelectEntity` (timer) | select | `preferences.json` |
+| 8 | `AlarmDurationNumberEntity` | number | `preferences.json` |
+
+Entity keys are stable across reconnections. Each entity appears on the HA device
+page under its natural category without requiring MQTT.
+
+- **`MuteSwitchEntity`** (key=1) — ports upstream's mute switch directly; syncs
+  bidirectionally with hardware mute button and XVF3800 USB button; replaces the
+  MQTT mute switch.
+- **`ThinkingSoundSwitchEntity`** (key=2) — toggles thinking-sound loop playback;
+  replaces the MQTT thinking sound loop switch. Analogous to upstream's
+  `ThinkingSoundEntity`.
+- **`EventSoundsSwitchEntity`** (key=3) — runtime toggle for the event sounds master
+  switch (`event_sounds_enabled`); was previously `config.json`-only with no HA UI.
+- **`SoundSelectEntity`** (keys=5–7, generic reusable class) — options scanned from
+  `sounds/wakeup/`, `sounds/thinking/`, and `sounds/timer/` subdirectories at
+  startup; replaces the three MQTT sound select entities.
+- **`AlarmDurationNumberEntity`** (key=8) — number entity (min=0, max=3600, step=5)
+  for runtime alarm auto-stop duration; replaces the MQTT alarm duration number
+  entity. Upstream tracks this as `timer_max_ring_seconds` on `ServerState` (PR
+  #261) with a static CLI arg only; this fork exposes it as a live HA number entity.
+- **`WakeWordSensitivityEntity`** (key=4) — select entity with coarse sensitivity
+  presets (Low / Medium / High / Maximum); based on upstream PR #207. Precedence:
+  ESPHome preset > per-model JSON threshold > global `config.json` threshold.
+
+**Entity lifecycle helper — `_setup_entity()` / `_setup_entity_by_id()`**
+- `satellite.py` now uses a helper that checks for an existing entity of the same
+  type (or type + instance ID for multi-instance entities) on reconnect, reusing it
+  instead of registering a duplicate. This is upstream's entity lifecycle pattern.
+
+**ESPHome command message routing**
+- `SwitchCommandRequest`, `SelectCommandRequest`, and `NumberCommandRequest` are now
+  imported and dispatched in `satellite.py`'s message handling loop, enabling HA to
+  control all new entity types over the ESPHome API.
+
+**`MpvMediaPlayer.play()` volume override**
+- New `volume_override: Optional[int]` parameter temporarily sets mpv volume for a
+  single playback (range 0–200), restoring the previous level when done. Used
+  internally to correct wakeup sound amplitude without permanently changing the user's
+  volume setting.
+
+**Ruff linting configuration**
+- `pyproject.toml` now includes `[tool.ruff]` targeting Python 3.9, selecting rules
+  E9, F4, and F8 (syntax errors, import errors, undefined names). F841 (unused
+  variable) is suppressed for EventBus handler assignments that register side-effects.
+  A pre-commit hook runs `ruff check` on staged Python files before each commit.
+  Run manually with `ruff check .`
+
+---
 
 ### Fixed
 
-- **Wakeup sound plays too quietly** — PipeWire/PulseAudio typically initializes
+- **Wakeup sound plays too quietly** (#76) — PipeWire/PulseAudio typically initializes
   the sink at ~70% regardless of the persisted volume level; the wakeup sound was
-  therefore consistently under-volume. `satellite.py` now calls
+  therefore consistently under-volume on every fresh start. `satellite.py` now calls
   `tts_player.play(wakeup_sound, volume_override=100)` so the wakeup chime always
-  plays at full mpv volume, independent of the OS sink level. (#290)
+  plays at full mpv volume, independent of the OS sink initialization state.
+
+- **Startup crash on unknown preference keys** (#77) — `Preferences(**preferences_dict)`
+  would raise `TypeError` if `preferences.json` contained keys added by a newer
+  version of LVA (e.g. after a rollback). Loading now filters to known fields only,
+  matching the defensive pattern already used for `config.json` sections.
+
+---
 
 ### Changed
 
-- **Unused imports removed** — `import numpy as np`, `MicroWakeWordFeatures`
-  (from `__main__.py`), `from pathlib import Path` (from `satellite.py`), and
-  `import math` (from `sendspin/player.py`) were removed; all flagged by ruff F401.
+**MQTT controller slimmed to LED-only**
+- All voice and audio control entities removed from `mqtt_controller.py`: mute switch,
+  thinking sound loop switch, event sounds switch, three sound select entities, and
+  alarm duration number entity. These are now ESPHome entities (see above).
+- The MQTT controller now manages only LED hardware: LED count, LED effects (×5), and
+  LED colors (×5).
+- **Architectural boundary:** ESPHome entities handle all voice and audio behavior
+  (mute, sounds, sensitivity, alarm duration). MQTT handles LED hardware exclusively.
+  Users without LEDs do not need an MQTT broker at all.
+
+**`self.state.satellite` assignment deferred**
+- Moved to the end of `VoiceSatelliteProtocol.__init__` after all entities are set up,
+  matching upstream's pattern and preventing callbacks from firing before entity
+  initialization is complete.
+
+**Unused imports removed**
+- `import numpy as np` and `MicroWakeWordFeatures` from `__main__.py`, `from pathlib
+  import Path` from `satellite.py`, and `import math` from `sendspin/player.py`
+  were removed; all flagged by ruff F401. Availability probe for the optional
+  `opuslib` package in `sendspin/player.py` replaced with `importlib.util.find_spec()`
+  (standard library pattern) to avoid the unused-import flag entirely.
