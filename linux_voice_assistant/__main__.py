@@ -6,7 +6,7 @@ import logging
 import os
 import time
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple, Union, Any
 
@@ -703,6 +703,10 @@ def _load_preferences(config: Config) -> Preferences:
     if preferences_path.exists():
         with open(preferences_path, "r", encoding="utf-8") as f:
             preferences_dict = json.load(f)
+            # Filter unknown keys so outdated preferences files don't crash startup
+            # (e.g. keys added by upstream PRs not yet in this fork's Preferences dataclass)
+            known_keys = {field.name for field in fields(Preferences)}
+            preferences_dict = {k: v for k, v in preferences_dict.items() if k in known_keys}
             preferences = Preferences(**preferences_dict)
     else:
         preferences = Preferences()

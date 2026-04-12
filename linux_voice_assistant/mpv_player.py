@@ -135,14 +135,38 @@ class MpvMediaPlayer:
         self,
         url: Union[str, Sequence[str], bytes],
         done_callback: Optional[Callable[[], None]] = None,
+        volume_override: Optional[int] = None,
     ) -> None:
         """Plays a URL or sequence of URLs.
 
         :param url: A single URL (str/bytes) or a sequence of URLs.
         :param done_callback: Called once when playback finishes or is stopped.
+        :param volume_override: If set, temporarily overrides mpv volume (0-200)
+            for this playback only, restoring the previous level when done.
+            Useful for sounds recorded at a lower amplitude than others.
         """
         # Ensure player is in a clean state
         self.stop()
+
+        # Apply temporary volume override, wrapping done_callback to restore
+        if volume_override is not None:
+            try:
+                prev_volume = int(self.player.volume)
+                self.player.volume = max(0, min(200, volume_override))
+            except Exception:
+                _LOGGER.exception("play() volume_override failed")
+                prev_volume = None
+
+            if prev_volume is not None:
+                original_callback = done_callback
+                def _restore_volume_then_callback(pv: int = prev_volume, cb: Optional[Callable[[], None]] = original_callback) -> None:
+                    try:
+                        self.player.volume = pv
+                    except Exception:
+                        pass
+                    if cb:
+                        cb()
+                done_callback = _restore_volume_then_callback
 
         with self._done_callback_lock:
             self._done_callback = done_callback

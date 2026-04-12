@@ -769,7 +769,9 @@ class VoiceSatelliteProtocol(APIServer):
         self._set_state(SatelliteState.LISTENING)
         self._is_streaming_audio = True
         if self.state.event_sounds_enabled and self.state.wakeup_sound:
-            self.state.tts_player.play(self.state.wakeup_sound)
+            # volume_override=150: wake_word_triggered.flac is recorded at a lower
+            # amplitude than other sounds; boost to match perceived loudness (#290)
+            self.state.tts_player.play(self.state.wakeup_sound, volume_override=150)
 
     def wakeup(self, wake_word: Union[MicroWakeWord, OpenWakeWord]) -> None:
         if self._state not in (SatelliteState.IDLE, SatelliteState.STARTING):
