@@ -10,10 +10,9 @@ from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple, Union, Any
 
-import numpy as np
 import soundcard as sc
 
-from pymicro_wakeword import MicroWakeWord, MicroWakeWordFeatures
+from pymicro_wakeword import MicroWakeWord
 from pyopen_wakeword import OpenWakeWord
 
 from .audio_engine import AudioEngine

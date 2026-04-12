@@ -8,7 +8,6 @@ import posixpath
 import shutil
 import time
 from collections.abc import Iterable
-from pathlib import Path
 from typing import Dict, Optional, Set, Union, List
 from urllib.parse import urlparse, urlunparse
 from urllib.request import urlopen
