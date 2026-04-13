@@ -135,6 +135,9 @@ class Preferences:
     # Persisted wake word sensitivity level.
     # Empty string = no preference (use default "Slightly sensitive").
     wake_word_sensitivity: str = ""
+    # When true, audio streaming starts immediately on wake word detection;
+    # the wakeup sound plays concurrently. When false, waits for the sound.
+    listen_during_wake_sound: bool = True
 
 
 @dataclass
