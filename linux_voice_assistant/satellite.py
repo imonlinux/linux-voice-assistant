@@ -762,9 +762,41 @@ class VoiceSatelliteProtocol(APIServer):
     def _start_conversation(self, wake_word_phrase: str) -> None:
         """Shared helper to start a new conversation run."""
         _LOGGER.debug("Starting conversation: %s", wake_word_phrase)
+
+        if self.state.listen_during_wake_sound:
+            # Start streaming immediately — wakeup sound plays concurrently.
+            # Requires AEC to avoid the sound bleeding into STT.
+            self.send_messages(
+                [VoiceAssistantRequest(start=True, wake_word_phrase=wake_word_phrase)]
+            )
+            self._set_state(SatelliteState.LISTENING)
+            self._is_streaming_audio = True
+            if self.state.event_sounds_enabled and self.state.wakeup_sound:
+                self.state.tts_player.play(self.state.wakeup_sound, volume_override=100)
+        else:
+            # Wait for wakeup sound to finish before streaming audio.
+            # Avoids STT interference but introduces a pause after the wake word.
+            self._pipeline_active = True
+            self.duck()
+            if self.state.event_sounds_enabled and self.state.wakeup_sound:
+                self.state.tts_player.play(
+                    self.state.wakeup_sound,
+                    volume_override=100,
+                    done_callback=lambda: self._on_wakeup_sound_finished(wake_word_phrase),
+                )
+            else:
+                self._on_wakeup_sound_finished(wake_word_phrase)
+
+    def _on_wakeup_sound_finished(self, wake_word_phrase: str) -> None:
+        """Callback when wakeup sound finishes (listen_during_wake_sound=false)."""
+        _LOGGER.debug(
+            "Wakeup sound finished, starting audio streaming: %s", wake_word_phrase,
+        )
         self.send_messages(
             [VoiceAssistantRequest(start=True, wake_word_phrase=wake_word_phrase)]
         )
+        self._set_state(SatelliteState.LISTENING)
+        self._is_streaming_audio = True
         self._set_state(SatelliteState.LISTENING)
         self._is_streaming_audio = True
         if self.state.event_sounds_enabled and self.state.wakeup_sound:
