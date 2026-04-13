@@ -52,6 +52,17 @@
     // Optional: Enables debug logging by default
     // Note: can also be enabled via CLI flag --debug
     "debug": false
+
+    // Optional: When true, audio streaming to HA starts immediately
+    // after wake word detection — the wakeup sound plays concurrently
+    // with listening. When false, LVA waits for the wakeup sound to
+    // finish before streaming audio.
+    //
+    // Set to false if STT accuracy suffers from the wakeup sound
+    // bleeding into the microphone (requires Acoustic Echo Cancellation).
+    //
+    // Default: true
+    "listen_during_wake_sound": true,
   },
 
   // ---------------------------------------------------------------------------
