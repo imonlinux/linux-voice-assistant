@@ -118,6 +118,14 @@ class AppConfig:
     # The timer alarm is NOT gated by this flag — it is a functional alert
     # and will always play regardless of this setting.
     event_sounds_enabled: bool = True
+
+    # When true (default), audio streaming starts immediately after wake
+    # word detection — the wakeup sound plays concurrently with listening.
+    # When false, LVA waits for the wakeup sound to finish before
+    # streaming audio to HA.  Set to false if STT accuracy suffers from
+    # the wakeup sound bleeding into the microphone (poor AEC setup).
+    listen_during_wake_sound: bool = True
+
     preferences_file: str = "preferences.json"
     debug: bool = False
 
