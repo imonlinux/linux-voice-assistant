@@ -415,7 +415,7 @@ class VoiceSatelliteProtocol(APIServer):
     def handle_voice_event(
         self, event_type: VoiceAssistantEventType, data: Dict[str, str]
     ) -> None:
-        _LOGGER.debug("Voice event: type=%s, data=%s", event_type.name, data)
+        _LOGGER.info("Voice event: type=%s, data=%s", event_type.name, data)
 
         if event_type == VoiceAssistantEventType.VOICE_ASSISTANT_RUN_START:
             self._run_end_received = False
