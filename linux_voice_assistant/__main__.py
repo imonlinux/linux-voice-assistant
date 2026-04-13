@@ -998,6 +998,7 @@ def _create_server_state(
         thinking_sound_loop=_resolve_thinking_sound_loop(
             preferences, config.app.thinking_sound_loop,
         ),
+        listen_during_wake_sound=config.app.listen_during_wake_sound,
     )
 
 def _init_controllers(
