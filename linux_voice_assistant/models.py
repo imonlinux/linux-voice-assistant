@@ -133,8 +133,9 @@ class Preferences:
     # True/False = explicit ESPHome entity selection.
     event_sounds_enabled: Optional[bool] = None
     # Persisted wake word sensitivity level.
-    # Empty string = no preference (use default "Slightly sensitive").
+    # Wake word sensitivity preset name (e.g., "Slightly sensitive")
     wake_word_sensitivity: str = "Slightly sensitive"
+
     # When true, audio streaming starts immediately on wake word detection;
     # the wakeup sound plays concurrently. When false, waits for the sound.
     listen_during_wake_sound: bool = True
@@ -181,6 +182,10 @@ class ServerState:
     # Wake word sensitivity preset name (e.g., "Slightly sensitive")
     wake_word_sensitivity: str = "Slightly sensitive"
 
+    # When true, audio streaming starts immediately on wake word detection;
+    # the wakeup sound plays concurrently. When false, waits for the sound.
+    listen_during_wake_sound: bool = True
+    
     # Threading event to pause the audio thread efficiently when muted
     # set() = Mic is ON (Audio processing running)
     # clear() = Mic is OFF (Audio processing paused)
