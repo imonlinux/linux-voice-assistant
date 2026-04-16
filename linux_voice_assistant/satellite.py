@@ -263,9 +263,11 @@ class VoiceSatelliteProtocol(APIServer):
         for entity in self.state.entities:
             if isinstance(entity, entity_type):
                 entity.server = self
+                _LOGGER.debug("Reusing existing entity: %s", entity_type.__name__)
                 return entity
 
         # Not found — create via factory and register
+        _LOGGER.debug("Creating new entity: %s", entity_type.__name__)
         entity = factory()
         self.state.entities.append(entity)
         return entity
@@ -580,10 +582,14 @@ class VoiceSatelliteProtocol(APIServer):
                 NumberCommandRequest,
             ),
         ):
+            if isinstance(msg, ListEntitiesRequest):
+                _LOGGER.info("Received ListEntitiesRequest - serving %d entities", len(self.state.entities))
+
             for entity in self.state.entities:
                 yield from entity.handle_message(msg)
 
             if isinstance(msg, ListEntitiesRequest):
+                _LOGGER.debug("ListEntitiesRequest completed")
                 yield ListEntitiesDoneResponse()
 
         elif isinstance(msg, VoiceAssistantConfigurationRequest):
@@ -1011,6 +1017,11 @@ class VoiceSatelliteProtocol(APIServer):
     # -------------------------------------------------------------------------
     # Connection lifecycle
     # -------------------------------------------------------------------------
+
+    def connection_made(self, transport) -> None:
+        """Called when a new connection is established."""
+        super().connection_made(transport)
+        _LOGGER.info("New connection established from %s", transport.get_extra_info('peername'))
 
     def connection_lost(self, exc):
         super().connection_lost(exc)
