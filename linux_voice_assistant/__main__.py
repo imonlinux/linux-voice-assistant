@@ -1086,6 +1086,10 @@ async def _run_server(state: ServerState, config: Config):
         host=config.esphome.host,
         port=config.esphome.port,
     )
+    # Small delay to ensure server is fully ready before zeroconf announcement
+    # This prevents race conditions where HA connects before the server is stable
+    await asyncio.sleep(0.1)
+
     # Strip colons from state.mac_address (format "aa:bb:cc:dd:ee:ff")
     # because zeroconf expects raw hex ("aabbccddeeff").
     raw_mac = state.mac_address.replace(":", "")
