@@ -6,14 +6,13 @@ import logging
 import os
 import time
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple, Union, Any
 
-import numpy as np
 import soundcard as sc
 
-from pymicro_wakeword import MicroWakeWord, MicroWakeWordFeatures
+from pymicro_wakeword import MicroWakeWord
 from pyopen_wakeword import OpenWakeWord
 
 from .audio_engine import AudioEngine
@@ -128,6 +127,17 @@ def _resolve_thinking_sound_loop(preferences: Preferences, config_value: bool) -
     if pref == "OFF":
         return False
     return config_value
+    
+def _resolve_event_sounds_enabled(preferences: Preferences, config_value: bool) -> bool:
+    """
+    Resolve event_sounds_enabled setting.
+
+    Precedence: preferences (ESPHome entity) > config.json > config.py default.
+    """
+    pref = getattr(preferences, "event_sounds_enabled", None)
+    if pref is not None:
+        return bool(pref)
+    return config_value
 
 def _resolve_sound_path(
     repo_dir: Path,
@@ -206,6 +216,18 @@ class MicMuteHandler(EventHandler):
 
             if self.mqtt_controller:
                 self.mqtt_controller.publish_mute_state(is_muted)
+
+            # Sync ESPHome mute switch entity so HA reflects changes
+            # from non-ESPHome sources (hardware button, XVF3800, MQTT)
+            if (
+                self.state.satellite is not None
+                and hasattr(self.state.satellite, "mute_switch_entity")
+                and self.state.satellite.mute_switch_entity is not None
+            ):
+                try:
+                    self.state.satellite.mute_switch_entity.sync_state_to_ha()
+                except Exception:
+                    _LOGGER.debug("Failed to sync mute state to ESPHome", exc_info=True)
 
             if is_muted:
                 self.event_bus.publish("mic_muted")
@@ -490,6 +512,8 @@ async def main() -> None:
         config, loop, event_bus, preferences,
         wake_word_data, media_players
     )
+    
+    state.sound_options = _scan_sound_files(_REPO_DIR)
 
     # --- 7. Initialize Controllers ---
     _init_controllers(loop, event_bus, state, config, preferences)
@@ -547,6 +571,7 @@ async def main() -> None:
         oww_threshold=getattr(config.wake_word, "openwakeword_threshold", 0.5),
     )
     audio_engine.start()
+    state.audio_engine = audio_engine
 
     # --- 9. Run Server ---
     try:
@@ -677,6 +702,10 @@ def _load_preferences(config: Config) -> Preferences:
     if preferences_path.exists():
         with open(preferences_path, "r", encoding="utf-8") as f:
             preferences_dict = json.load(f)
+            # Filter unknown keys so outdated preferences files don't crash startup
+            # (e.g. keys added by upstream PRs not yet in this fork's Preferences dataclass)
+            known_keys = {field.name for field in fields(Preferences)}
+            preferences_dict = {k: v for k, v in preferences_dict.items() if k in known_keys}
             preferences = Preferences(**preferences_dict)
     else:
         preferences = Preferences()
@@ -912,6 +941,16 @@ def _resolve_mac_address(preferences: Preferences, preferences_path: Path) -> st
 
     return detected
 
+def _resolve_wake_word_sensitivity(preferences: Preferences) -> str:
+    """
+    Resolve wake word sensitivity from preferences.
+
+    Returns the persisted preference if set, otherwise the default.
+    """
+    pref = getattr(preferences, "wake_word_sensitivity", "")
+    if pref and pref in ("Slightly sensitive", "Moderately sensitive", "Very sensitive"):
+        return pref
+    return "Slightly sensitive"
 
 def _create_server_state(
     config: Config,
@@ -936,6 +975,7 @@ def _create_server_state(
         wake_words=wake_word_data.models,
         active_wake_words=wake_word_data.active,
         stop_word=wake_word_data.stop_model,
+        wake_word_sensitivity=_resolve_wake_word_sensitivity(preferences),
         wakeup_sound=_resolve_sound_path(
             _REPO_DIR, "wakeup_sound",
             preferences.selected_wakeup_sound, config.app.wakeup_sound,
@@ -952,10 +992,13 @@ def _create_server_state(
         preferences_path=preferences_path,
         download_dir=_REPO_DIR / config.wake_word.download_dir,
         refractory_seconds=config.wake_word.refractory_seconds,
-        event_sounds_enabled=config.app.event_sounds_enabled,
+        event_sounds_enabled=_resolve_event_sounds_enabled(
+            preferences, config.app.event_sounds_enabled,
+        ),
         thinking_sound_loop=_resolve_thinking_sound_loop(
             preferences, config.app.thinking_sound_loop,
         ),
+        listen_during_wake_sound=config.app.listen_during_wake_sound,
     )
 
 def _init_controllers(
@@ -985,7 +1028,6 @@ def _init_controllers(
             app_name=config.app.name,
             mac_address=state.mac_address,
             preferences=preferences,
-            sound_options=sound_options,
         )
         setattr(state, "mqtt_controller", mqtt_controller)
         mqtt_controller.start()
@@ -1006,7 +1048,7 @@ def _init_controllers(
     sound_selection_handler = SoundSelectionHandler(
         event_bus=event_bus,
         state=state,
-        mqtt_controller=mqtt_controller,
+        mqtt_controller=None,
         repo_dir=_REPO_DIR,
     )
 
@@ -1044,6 +1086,10 @@ async def _run_server(state: ServerState, config: Config):
         host=config.esphome.host,
         port=config.esphome.port,
     )
+    # Small delay to ensure server is fully ready before zeroconf announcement
+    # This prevents race conditions where HA connects before the server is stable
+    await asyncio.sleep(0.1)
+
     # Strip colons from state.mac_address (format "aa:bb:cc:dd:ee:ff")
     # because zeroconf expects raw hex ("aabbccddeeff").
     raw_mac = state.mac_address.replace(":", "")

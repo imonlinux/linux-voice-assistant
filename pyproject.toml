@@ -80,3 +80,14 @@ include-package-data = true
 [tool.setuptools.packages.find]
 include = ["linux_voice_assistant"]
 exclude = ["tests", "tests.*"]
+
+[tool.ruff]
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E9", "F4", "F8"]
+ignore = [
+    # EventBus handlers intentionally assigned to unnamed locals for side-effect
+    # registration (LedController, MicMuteHandler, etc.) — not dead code
+    "F841",
+]

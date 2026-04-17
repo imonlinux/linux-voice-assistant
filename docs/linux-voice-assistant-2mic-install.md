@@ -122,39 +122,10 @@ systemctl --user status linux-voice-assistant --no-pager -l
 </details>
 
 <details>
-<summary><strong>ALSA (user-mode services)</strong></summary>
+<summary><strong>ALSA (not supported)</strong></summary>
 
-**No extra audio stack needed.** If you’re using a different sound card/driver, confirm device names:
-```bash
-arecord -l
-aplay -l
-```
+> ⚠️ **ALSA-only is not supported.** The current audio backend (`soundcard`) requires either **PipeWire-Pulse** (recommended) or **PulseAudio**. Use one of the options above.
 
-**Enable linger (required for user services to start after reboot):**
-```bash
-sudo loginctl enable-linger pi
-```
-
-**Install LVA user-mode services:**
-
-```bash
-mkdir -p ~/.config/systemd/user
-```
-
-```bash
-cp ~/linux-voice-assistant/service/linux-voice-assistant.service     ~/.config/systemd/user/linux-voice-assistant.service
-```
-
-**Enable & start:**
-```bash
-systemctl --user daemon-reload
-systemctl --user enable --now linux-voice-assistant.service
-```
-
-**Verify:**
-```bash
-systemctl --user status linux-voice-assistant --no-pager -l
-```
 </details>
 
 <details>
@@ -163,18 +134,9 @@ systemctl --user status linux-voice-assistant --no-pager -l
 
 ## 🔌 MQTT Controls Overview
 
-The Linux Voice Assistant (LVA) creates several MQTT entities under the Home Assistant MQTT Discovery protocol. Each entity is prefixed by your LVA's unique device ID defined with the --name field in the LVA User-Mode Serviced Unit (e.g., `linux_voice_assistant`).
+MQTT is only required for LED controls. Voice and audio controls (mute, sound selection, thinking sound loop, event sounds, alarm duration, and wake word sensitivity) are now ESPHome entities available on the Home Assistant device page under **Configuration** — no MQTT required for those.
 
----
-
-### 🎤 Microphone Mute (`switch` entity)
-
-Controls the microphone mute state.
-
-* **MQTT Discovery Topic:** `homeassistant/switch/<device_id>_mute/config`
-* **Name:** `[LVA Name] Mute Microphone`
-* **Icon:** `mdi:microphone-off`
-* **Functionality:** Toggles the microphone mute. When muted, the LEDs will display a dim red `solid` effect.
+> **Note:** The desktop tray client also uses MQTT internally to mirror mute state and display voice state colors, but this does not require MQTT Discovery to be configured for mute in Home Assistant.
 
 ---
 

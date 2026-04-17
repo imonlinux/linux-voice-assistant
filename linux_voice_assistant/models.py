@@ -128,6 +128,17 @@ class Preferences:
     # Empty string = no override (use config.json / config.py value).
     # "ON" / "OFF" = explicit MQTT selection.
     selected_thinking_sound_loop: str = ""
+    # Runtime-adjustable event sounds toggle.
+    # None = no preference override (use config.json value).
+    # True/False = explicit ESPHome entity selection.
+    event_sounds_enabled: Optional[bool] = None
+    # Persisted wake word sensitivity level.
+    # Wake word sensitivity preset name (e.g., "Slightly sensitive")
+    wake_word_sensitivity: str = "Slightly sensitive"
+
+    # When true, audio streaming starts immediately on wake word detection;
+    # the wakeup sound plays concurrently. When false, waits for the sound.
+    listen_during_wake_sound: bool = True
 
 
 @dataclass
@@ -164,6 +175,17 @@ class ServerState:
     event_sounds_enabled: bool = True
     thinking_sound_loop: bool = False
 
+    # Sound file options per category, populated by _scan_sound_files().
+    # Used by SoundSelectEntity to populate options lists.
+    sound_options: "Dict[str, List[str]]" = field(default_factory=dict)
+    
+    # Wake word sensitivity preset name (e.g., "Slightly sensitive")
+    wake_word_sensitivity: str = "Slightly sensitive"
+
+    # When true, audio streaming starts immediately on wake word detection;
+    # the wakeup sound plays concurrently. When false, waits for the sound.
+    listen_during_wake_sound: bool = True
+    
     # Threading event to pause the audio thread efficiently when muted
     # set() = Mic is ON (Audio processing running)
     # clear() = Mic is OFF (Audio processing paused)

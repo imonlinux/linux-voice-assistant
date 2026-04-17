@@ -8,7 +8,6 @@ import posixpath
 import shutil
 import time
 from collections.abc import Iterable
-from pathlib import Path
 from typing import Dict, Optional, Set, Union, List
 from urllib.parse import urlparse, urlunparse
 from urllib.request import urlopen
@@ -19,7 +18,10 @@ from aioesphomeapi.api_pb2 import (
     ListEntitiesDoneResponse,
     ListEntitiesRequest,
     MediaPlayerCommandRequest,
+    NumberCommandRequest,
+    SelectCommandRequest,
     SubscribeHomeAssistantStatesRequest,
+    SwitchCommandRequest,
     VoiceAssistantAnnounceFinished,
     VoiceAssistantAnnounceRequest,
     VoiceAssistantAudio,
@@ -42,46 +44,37 @@ from pymicro_wakeword import MicroWakeWord
 from pyopen_wakeword import OpenWakeWord
 
 from .api_server import APIServer
-from .entity import MediaPlayerEntity
+from .entity import (
+    AlarmDurationNumberEntity,
+    EventSoundsSwitchEntity,
+    MediaPlayerEntity,
+    MuteSwitchEntity,
+    SoundSelectEntity,
+    ThinkingSoundSwitchEntity,
+    WakeWordSensitivityEntity,
+)
 from .models import AvailableWakeWord, ServerState, SatelliteState, WakeWordType
 from .util import call_all
 
 _LOGGER = logging.getLogger(__name__)
 
+SENSITIVITY_PRESETS = {
+    "Slightly sensitive": {"mww": 0.85, "oww": 0.70},
+    "Moderately sensitive": {"mww": 0.70, "oww": 0.50},
+    "Very sensitive": {"mww": 0.55, "oww": 0.35},
+}
 
 class VoiceSatelliteProtocol(APIServer):
     def __init__(self, state: ServerState) -> None:
         super().__init__(state.name)
         self.state = state
-        self.state.satellite = self
+        # NOTE: self.state.satellite is set at the END of __init__ to
+        # prevent the audio thread from seeing a half-initialized protocol.
 
-        # --- Ensure exactly one MediaPlayerEntity with a stable key ---
-        if self.state.entities:
-            existing = self.state.entities[0]
-            if not isinstance(existing, MediaPlayerEntity):
-                _LOGGER.warning(
-                    "First ESPHome entity is not MediaPlayerEntity (%r). "
-                    "Replacing it with a new MediaPlayerEntity.",
-                    type(existing),
-                )
-                self.media_player_entity = MediaPlayerEntity(
-                    server=self,
-                    state=state,
-                    key=0,
-                    name="Media Player",
-                    object_id="linux_voice_assistant_media_player",
-                    music_player=state.music_player,
-                    announce_player=state.tts_player,
-                )
-                self.state.entities[0] = self.media_player_entity
-            else:
-                # Reuse existing entity but bind it to the current protocol
-                self.media_player_entity = existing
-                self.media_player_entity.server = self
-                self.media_player_entity.key = 0
-        else:
-            # First connection in this process: create the media player once
-            self.media_player_entity = MediaPlayerEntity(
+        # --- Media Player entity (key=0, always present) ---
+        self.media_player_entity = self._setup_entity(
+            entity_type=MediaPlayerEntity,
+            factory=lambda: MediaPlayerEntity(
                 server=self,
                 state=state,
                 key=0,
@@ -89,16 +82,147 @@ class VoiceSatelliteProtocol(APIServer):
                 object_id="linux_voice_assistant_media_player",
                 music_player=state.music_player,
                 announce_player=state.tts_player,
-            )
-            self.state.entities.append(self.media_player_entity)
+            ),
+        )
 
-        # If more entities somehow accumulated, prune them to avoid confusing HA
-        if len(self.state.entities) > 1:
-            _LOGGER.warning(
-                "Pruning %d extra ESPHome entities; keeping only the first.",
-                len(self.state.entities) - 1,
-            )
-            del self.state.entities[1:]
+        # --- Mute Switch entity (key=1) ---
+        self.mute_switch_entity = self._setup_entity(
+            entity_type=MuteSwitchEntity,
+            factory=lambda: MuteSwitchEntity(
+                server=self,
+                state=state,
+                key=1,
+                name="Mute Microphone",
+                object_id="mute_microphone",
+                get_muted=lambda: self.state.mic_muted,
+                set_muted=lambda muted: self.state.event_bus.publish(
+                    "set_mic_mute", {"state": muted}
+                ),
+            ),
+        )
+
+        # --- Thinking Sound Loop switch entity (key=2) ---
+        self.thinking_sound_entity = self._setup_entity(
+            entity_type=ThinkingSoundSwitchEntity,
+            factory=lambda: ThinkingSoundSwitchEntity(
+                server=self,
+                state=state,
+                key=2,
+                name="Sound Thinking Loop",
+                object_id="thinking_sound_loop",
+                get_enabled=lambda: self.state.thinking_sound_loop,
+                set_enabled=self._set_thinking_sound_loop,
+            ),
+        )
+
+        # --- Event Sounds switch entity (key=3) ---
+        self.event_sounds_entity = self._setup_entity(
+            entity_type=EventSoundsSwitchEntity,
+            factory=lambda: EventSoundsSwitchEntity(
+                server=self,
+                state=state,
+                key=3,
+                name="Event Sounds",
+                object_id="event_sounds_enabled",
+                get_enabled=lambda: self.state.event_sounds_enabled,
+                set_enabled=self._set_event_sounds_enabled,
+            ),
+        )
+
+        # --- Sound Select entities (keys 5-7) ---
+        sound_opts = getattr(self.state, "sound_options", {})
+
+        wakeup_options = list(sound_opts.get("wakeup_sound", []))
+        if wakeup_options:
+            wakeup_options.insert(0, "None")
+        self.sound_wakeup_entity = self._setup_entity_by_id(
+            entity_type=SoundSelectEntity,
+            instance_id="wakeup_sound",
+            factory=lambda: SoundSelectEntity(
+                server=self,
+                state=state,
+                key=5,
+                name="Sound Wakeup",
+                object_id="sound_wakeup",
+                icon="mdi:bell-ring",
+                instance_id="wakeup_sound",
+                options=wakeup_options,
+                get_selection=lambda: self._get_sound_selection("wakeup_sound"),
+                set_selection=lambda v: self._set_sound_selection("wakeup_sound", v),
+            ),
+        ) if wakeup_options else None
+
+        thinking_options = list(sound_opts.get("thinking_sound", []))
+        if thinking_options:
+            thinking_options.insert(0, "None")
+        self.sound_thinking_entity = self._setup_entity_by_id(
+            entity_type=SoundSelectEntity,
+            instance_id="thinking_sound",
+            factory=lambda: SoundSelectEntity(
+                server=self,
+                state=state,
+                key=6,
+                name="Sound Thinking",
+                object_id="sound_thinking",
+                icon="mdi:head-cog",
+                instance_id="thinking_sound",
+                options=thinking_options,
+                get_selection=lambda: self._get_sound_selection("thinking_sound"),
+                set_selection=lambda v: self._set_sound_selection("thinking_sound", v),
+            ),
+        ) if thinking_options else None
+
+        timer_options = list(sound_opts.get("timer_sound", []))
+        self.sound_timer_entity = self._setup_entity_by_id(
+            entity_type=SoundSelectEntity,
+            instance_id="timer_sound",
+            factory=lambda: SoundSelectEntity(
+                server=self,
+                state=state,
+                key=7,
+                name="Sound Timer",
+                object_id="sound_timer",
+                icon="mdi:timer-alert",
+                instance_id="timer_sound",
+                options=timer_options,
+                get_selection=lambda: self._get_sound_selection("timer_sound"),
+                set_selection=lambda v: self._set_sound_selection("timer_sound", v),
+            ),
+        ) if timer_options else None
+
+        # --- Alarm Duration number entity (key=8) ---
+        self.alarm_duration_entity = self._setup_entity(
+            entity_type=AlarmDurationNumberEntity,
+            factory=lambda: AlarmDurationNumberEntity(
+                server=self,
+                state=state,
+                key=8,
+                name="Alarm Duration",
+                object_id="alarm_duration",
+                get_value=lambda: float(
+                    getattr(self.state.preferences, "alarm_duration_seconds", 0)
+                ),
+                set_value=self._set_alarm_duration,
+            ),
+        )
+        
+        # --- Wake Word Sensitivity select entity (key=4) ---
+        self.sensitivity_entity = self._setup_entity(
+            entity_type=WakeWordSensitivityEntity,
+            factory=lambda: WakeWordSensitivityEntity(
+                server=self,
+                state=state,
+                key=4,
+                name="Wake word sensitivity",
+                object_id="wake_word_sensitivity",
+                options=list(SENSITIVITY_PRESETS.keys()),
+                get_sensitivity=lambda: self.state.wake_word_sensitivity,
+                set_sensitivity=self._set_sensitivity,
+            ),
+        )
+
+        # Apply initial sensitivity at startup
+        self._apply_sensitivity(self.state.wake_word_sensitivity)
 
         # State machine
         self._state: SatelliteState = SatelliteState.STARTING
@@ -118,6 +242,136 @@ class VoiceSatelliteProtocol(APIServer):
 
         # Thinking sound loop flag
         self._thinking_sound_active: bool = False
+
+        # Must be last — prevents race with audio thread
+        self.state.satellite = self
+
+    # -------------------------------------------------------------------------
+    # Entity lifecycle helpers
+    # -------------------------------------------------------------------------
+
+    def _setup_entity(self, entity_type, factory):
+        """Find or create an entity of *entity_type* in the state entity list.
+
+        If an entity of the requested type already exists (from a previous
+        connection), it is reused and its ``server`` attribute is rebound to
+        the current protocol instance.  Otherwise *factory* is called to
+        create a new entity and it is appended to ``state.entities``.
+
+        Returns the entity instance.
+        """
+        for entity in self.state.entities:
+            if isinstance(entity, entity_type):
+                entity.server = self
+                _LOGGER.debug("Reusing existing entity: %s", entity_type.__name__)
+                return entity
+
+        # Not found — create via factory and register
+        _LOGGER.debug("Creating new entity: %s", entity_type.__name__)
+        entity = factory()
+        self.state.entities.append(entity)
+        return entity
+
+    def _set_thinking_sound_loop(self, enabled: bool) -> None:
+        """Callback for ThinkingSoundSwitchEntity — update state and persist."""
+        self.state.thinking_sound_loop = enabled
+        self.state.preferences.selected_thinking_sound_loop = "ON" if enabled else "OFF"
+        self.state.save_preferences()
+        _LOGGER.info("Thinking sound loop set to: %s", enabled)
+
+    def _set_event_sounds_enabled(self, enabled: bool) -> None:
+        """Callback for EventSoundsSwitchEntity — update state and persist."""
+        self.state.event_sounds_enabled = enabled
+        self.state.preferences.event_sounds_enabled = enabled
+        self.state.save_preferences()
+        _LOGGER.info("Event sounds set to: %s", enabled)
+
+    def _get_sound_selection(self, cat_key: str) -> str:
+        """Get the current sound selection filename for a category."""
+        from . import __main__ as main_mod
+        cat_info = main_mod.SOUND_CATEGORIES.get(cat_key, {})
+        pref_field = cat_info.get("pref_field", "")
+        if pref_field:
+            value = getattr(self.state.preferences, pref_field, "")
+            if value:
+                return value
+        # No preference set — return the first option or empty
+        return ""
+
+    def _set_sound_selection(self, cat_key: str, filename: str) -> None:
+        """Set a sound selection, updating state and persisting."""
+        self.state.event_bus.publish(f"set_{cat_key}", {"filename": filename})
+
+    def _set_alarm_duration(self, value: float) -> None:
+        """Callback for AlarmDurationNumberEntity — update and persist."""
+        duration = int(value)
+        if duration < 0:
+            duration = 0
+        self.state.preferences.alarm_duration_seconds = duration
+        self.state.save_preferences()
+        _LOGGER.info("Alarm duration set to: %d seconds", duration)
+
+    def _setup_entity_by_id(self, entity_type, instance_id: str, factory):
+        """Find or create an entity matching both type and instance_id.
+
+        Like ``_setup_entity`` but for entity types that have multiple
+        instances (e.g. three SoundSelectEntity instances).  Matches on
+        ``entity.instance_id`` when the type matches.
+        """
+        for entity in self.state.entities:
+            if isinstance(entity, entity_type):
+                if hasattr(entity, "instance_id") and entity.instance_id == instance_id:
+                    entity.server = self
+                    return entity
+
+        # Not found — create via factory and register
+        entity = factory()
+        self.state.entities.append(entity)
+        return entity
+        
+    def _set_sensitivity(self, level: str) -> None:
+        """Callback for WakeWordSensitivityEntity — update, apply, and persist."""
+        if level not in SENSITIVITY_PRESETS:
+            _LOGGER.warning("Unknown sensitivity level: %s", level)
+            return
+        self.state.wake_word_sensitivity = level
+        self.state.preferences.wake_word_sensitivity = level
+        self.state.save_preferences()
+        self._apply_sensitivity(level)
+        _LOGGER.info("Wake word sensitivity set to: %s", level)
+
+    def _apply_sensitivity(self, level: str) -> None:
+        """Apply sensitivity preset to loaded wake word models.
+
+        - MWW: sets probability_cutoff on each loaded MicroWakeWord model
+        - OWW: updates AudioEngine.oww_threshold (the global fallback)
+
+        Per-model OWW thresholds from JSON files are unaffected because
+        AudioEngine uses getattr(ww, "threshold", self.oww_threshold),
+        so models with explicit thresholds keep them.
+        """
+        preset = SENSITIVITY_PRESETS.get(level, SENSITIVITY_PRESETS["Slightly sensitive"])
+        mww_cutoff = preset["mww"]
+        oww_cutoff = preset["oww"]
+
+        # Apply to MWW models
+        for ww in self.state.wake_words.values():
+            if isinstance(ww, MicroWakeWord):
+                try:
+                    ww.probability_cutoff = mww_cutoff
+                    _LOGGER.debug("MWW cutoff set to %.2f for %s", mww_cutoff, ww.id)
+                except Exception:
+                    _LOGGER.exception("Failed to set MWW cutoff for %s", ww.id)
+
+        # Apply to OWW global threshold via AudioEngine
+        audio_engine = getattr(self.state, "audio_engine", None)
+        if audio_engine is not None:
+            audio_engine.oww_threshold = oww_cutoff
+            _LOGGER.debug("OWW global threshold set to %.2f", oww_cutoff)
+        else:
+            _LOGGER.debug(
+                "AudioEngine not yet available; OWW threshold will be applied at startup"
+            )
 
     # -------------------------------------------------------------------------
     # State machine helpers
@@ -163,7 +417,7 @@ class VoiceSatelliteProtocol(APIServer):
     def handle_voice_event(
         self, event_type: VoiceAssistantEventType, data: Dict[str, str]
     ) -> None:
-        _LOGGER.debug("Voice event: type=%s, data=%s", event_type.name, data)
+        _LOGGER.info("Voice event: type=%s, data=%s", event_type.name, data)
 
         if event_type == VoiceAssistantEventType.VOICE_ASSISTANT_RUN_START:
             self._run_end_received = False
@@ -323,12 +577,19 @@ class VoiceSatelliteProtocol(APIServer):
                 ListEntitiesRequest,
                 SubscribeHomeAssistantStatesRequest,
                 MediaPlayerCommandRequest,
+                SwitchCommandRequest,
+                SelectCommandRequest,
+                NumberCommandRequest,
             ),
         ):
+            if isinstance(msg, ListEntitiesRequest):
+                _LOGGER.info("Received ListEntitiesRequest - serving %d entities", len(self.state.entities))
+
             for entity in self.state.entities:
                 yield from entity.handle_message(msg)
 
             if isinstance(msg, ListEntitiesRequest):
+                _LOGGER.debug("ListEntitiesRequest completed")
                 yield ListEntitiesDoneResponse()
 
         elif isinstance(msg, VoiceAssistantConfigurationRequest):
@@ -507,13 +768,47 @@ class VoiceSatelliteProtocol(APIServer):
     def _start_conversation(self, wake_word_phrase: str) -> None:
         """Shared helper to start a new conversation run."""
         _LOGGER.debug("Starting conversation: %s", wake_word_phrase)
+
+        if self.state.listen_during_wake_sound:
+            # Start streaming immediately — wakeup sound plays concurrently.
+            # Requires AEC to avoid the sound bleeding into STT.
+            self.send_messages(
+                [VoiceAssistantRequest(start=True, wake_word_phrase=wake_word_phrase)]
+            )
+            self._set_state(SatelliteState.LISTENING)
+            self._is_streaming_audio = True
+            if self.state.event_sounds_enabled and self.state.wakeup_sound:
+                self.state.tts_player.play(self.state.wakeup_sound, volume_override=100)
+        else:
+            # Wait for wakeup sound to finish before streaming audio.
+            # Avoids STT interference but introduces a pause after the wake word.
+            self._pipeline_active = True
+            self.duck()
+            if self.state.event_sounds_enabled and self.state.wakeup_sound:
+                self.state.tts_player.play(
+                    self.state.wakeup_sound,
+                    volume_override=100,
+                    done_callback=lambda: self._on_wakeup_sound_finished(wake_word_phrase),
+                )
+            else:
+                self._on_wakeup_sound_finished(wake_word_phrase)
+
+    def _on_wakeup_sound_finished(self, wake_word_phrase: str) -> None:
+        """Callback when wakeup sound finishes (listen_during_wake_sound=false)."""
+        _LOGGER.debug(
+            "Wakeup sound finished, starting audio streaming: %s", wake_word_phrase,
+        )
         self.send_messages(
             [VoiceAssistantRequest(start=True, wake_word_phrase=wake_word_phrase)]
         )
         self._set_state(SatelliteState.LISTENING)
         self._is_streaming_audio = True
+        self._set_state(SatelliteState.LISTENING)
+        self._is_streaming_audio = True
         if self.state.event_sounds_enabled and self.state.wakeup_sound:
-            self.state.tts_player.play(self.state.wakeup_sound)
+            # volume_override=100: ensures mpv is at full volume for the wakeup sound,
+            # compensating for PipeWire/PulseAudio initializing the sink at ~70% (#290)
+            self.state.tts_player.play(self.state.wakeup_sound, volume_override=100)
 
     def wakeup(self, wake_word: Union[MicroWakeWord, OpenWakeWord]) -> None:
         if self._state not in (SatelliteState.IDLE, SatelliteState.STARTING):
@@ -722,6 +1017,11 @@ class VoiceSatelliteProtocol(APIServer):
     # -------------------------------------------------------------------------
     # Connection lifecycle
     # -------------------------------------------------------------------------
+
+    def connection_made(self, transport) -> None:
+        """Called when a new connection is established."""
+        super().connection_made(transport)
+        _LOGGER.info("New connection established from %s", transport.get_extra_info('peername'))
 
     def connection_lost(self, exc):
         super().connection_lost(exc)
