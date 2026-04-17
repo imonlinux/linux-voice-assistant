@@ -702,6 +702,8 @@ class VoiceSatelliteProtocol(APIServer):
 
             _LOGGER.info("Wake word set: %s", wake_word_id)
             active_wake_words.add(wake_word_id)
+            # Apply current sensitivity preset to newly loaded external wake word
+            self._apply_sensitivity(self.state.wake_word_sensitivity)
             # Do NOT break; we want to process all requested wake words.
 
         # Finalize active wake words with the subset that actually succeeded
@@ -803,12 +805,6 @@ class VoiceSatelliteProtocol(APIServer):
         )
         self._set_state(SatelliteState.LISTENING)
         self._is_streaming_audio = True
-        self._set_state(SatelliteState.LISTENING)
-        self._is_streaming_audio = True
-        if self.state.event_sounds_enabled and self.state.wakeup_sound:
-            # volume_override=100: ensures mpv is at full volume for the wakeup sound,
-            # compensating for PipeWire/PulseAudio initializing the sink at ~70% (#290)
-            self.state.tts_player.play(self.state.wakeup_sound, volume_override=100)
 
     def wakeup(self, wake_word: Union[MicroWakeWord, OpenWakeWord]) -> None:
         if self._state not in (SatelliteState.IDLE, SatelliteState.STARTING):
