@@ -212,6 +212,10 @@ def get_pulseaudio_sink_volume(
         logger.debug("pactl get-sink-volume failed: %s", out)
         return None
 
+    # Handle both bytes (from mocks) and str (from real subprocess with text=True)
+    if isinstance(out, bytes):
+        out = out.decode('utf-8')
+
     # Parse "Volume: front-left: 65536 /  50% / -18.00 dB"
     # OR handle simplified mocked output like "50%"
     try:
@@ -265,6 +269,10 @@ def get_wpctl_sink_volume(
     if not ok:
         logger.debug("wpctl get-volume failed: %s", out)
         return None
+
+    # Handle both bytes (from mocks) and str (from real subprocess with text=True)
+    if isinstance(out, bytes):
+        out = out.decode('utf-8')
 
     # Parse "Volume: 0.40" or "Volume: 0.40 [MUTED]"
     # OR handle simplified mocked output like "Volume: 50%"
