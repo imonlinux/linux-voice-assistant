@@ -176,10 +176,11 @@ class TestWpctlVolumeControl:
     def test_get_wpctl_sink_volume_parsing(self, mock_run):
         """Test wpctl volume parsing from command output."""
         # Mock various wpctl output formats
+        # Function returns normalized 0.0-1.0 range per docstring
         test_cases = [
-            (b"Volume: 50%\n", 50.0),
-            (b"Volume: 75.5%\n", 75.5),
-            (b"Volume: 100%\n", 100.0),
+            (b"Volume: 50%\n", 0.5),
+            (b"Volume: 75.5%\n", 0.755),
+            (b"Volume: 100%\n", 1.0),
             (b"Volume: 0%\n", 0.0),
         ]
 
@@ -224,10 +225,11 @@ class TestPulseAudioVolumeControl:
     def test_get_pulseaudio_sink_volume_parsing(self, mock_run):
         """Test pactl volume parsing from command output."""
         # Mock various pactl output formats
+        # Function returns normalized 0.0-1.0 range per docstring
         test_cases = [
-            (b"50%\n", 50.0),
-            (b"75%\n", 75.0),
-            (b"100%\n", 100.0),
+            (b"50%\n", 0.5),
+            (b"75%\n", 0.75),
+            (b"100%\n", 1.0),
             (b"0%\n", 0.0),
         ]
 
