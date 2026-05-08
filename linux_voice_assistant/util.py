@@ -49,3 +49,17 @@ def slugify_device_id(name: str) -> str:
 def call_all(*callables: Optional[Callable[[], None]]) -> None:
     for item in filter(None, callables):
         item()
+
+
+def is_arm() -> bool:
+    """Detect if running on ARM architecture (e.g., Raspberry Pi)."""
+    try:
+        import platform
+        return platform.machine().startswith(('arm', 'aarch'))
+    except Exception:
+        # Fallback: try to read from /proc/cpuinfo
+        try:
+            with open('/proc/cpuinfo', 'r') as f:
+                return 'ARM' in f.read()
+        except Exception:
+            return False
