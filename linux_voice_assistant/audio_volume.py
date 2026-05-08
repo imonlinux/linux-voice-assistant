@@ -190,3 +190,137 @@ async def ensure_output_volume(
         if i < attempts:
             await asyncio.sleep(delay_seconds)
     return False
+
+
+# -----------------------------------------------------------------------------
+# Granular backend-specific functions for testing compatibility
+# -----------------------------------------------------------------------------
+
+def get_pulseaudio_sink_volume(
+    sink: str = "@DEFAULT_SINK@",
+    logger: logging.Logger = _LOGGER,
+) -> Optional[float]:
+    """Get PulseAudio sink volume as 0.0–1.0 scalar.
+
+    Returns None if pactl is unavailable or fails.
+    """
+    if not shutil.which("pactl"):
+        return None
+
+    ok, out = _run_cmd(["pactl", "get-sink-volume", sink])
+    if not ok:
+        logger.debug("pactl get-sink-volume failed: %s", out)
+        return None
+
+    # Parse "Volume: front-left: 65536 /  50% / -18.00 dB"
+    try:
+        for line in out.splitlines():
+            if "/" in line:
+                parts = line.split("/")
+                if len(parts) >= 2:
+                    pct_str = parts[1].strip()
+                    if pct_str.endswith("%"):
+                        return int(pct_str[:-1]) / 100.0
+    except Exception:
+        pass
+
+    return None
+
+
+def set_pulseaudio_sink_volume(
+    volume_0_1: float,
+    sink: str = "@DEFAULT_SINK@",
+    logger: logging.Logger = _LOGGER,
+) -> bool:
+    """Set PulseAudio sink volume from 0.0–1.0 scalar."""
+    vol = _clamp01(volume_0_1)
+    pct = int(round(vol * 100.0))
+    ok, out = _run_cmd(["pactl", "set-sink-volume", sink, f"{pct}%"])
+    if ok:
+        logger.debug("Set PulseAudio sink %s volume to %d%%", sink, pct)
+        return True
+    logger.debug("pactl set-sink-volume failed: %s", out)
+    return False
+
+
+def get_wpctl_sink_volume(
+    sink: str = "@DEFAULT_AUDIO_SINK@",
+    logger: logging.Logger = _LOGGER,
+) -> Optional[float]:
+    """Get PipeWire sink volume via wpctl as 0.0–1.0 scalar.
+
+    Returns None if wpctl is unavailable or fails.
+    """
+    if not shutil.which("wpctl"):
+        return None
+
+    ok, out = _run_cmd(["wpctl", "get-volume", sink])
+    if not ok:
+        logger.debug("wpctl get-volume failed: %s", out)
+        return None
+
+    # Parse "Volume: 0.40" or "Volume: 0.40 [MUTED]"
+    try:
+        parts = out.split()
+        if len(parts) >= 2 and parts[0] == "Volume:":
+            return float(parts[1])
+    except Exception:
+        pass
+
+    return None
+
+
+def set_wpctl_sink_volume(
+    volume_0_1: float,
+    sink: str = "@DEFAULT_AUDIO_SINK@",
+    logger: logging.Logger = _LOGGER,
+) -> bool:
+    """Set PipeWire sink volume via wpctl from 0.0–1.0 scalar."""
+    vol = _clamp01(volume_0_1)
+    ok, out = _run_cmd(["wpctl", "set-volume", sink, f"{vol:.3f}"])
+    if ok:
+        logger.debug("Set PipeWire sink %s volume to %.3f", sink, vol)
+        return True
+    logger.debug("wpctl set-volume failed: %s", out)
+    return False
+
+
+def set_amixer_sink_volume(
+    volume_0_1: float,
+    control: str = "Master",
+    logger: logging.Logger = _LOGGER,
+) -> bool:
+    """Set ALSA volume via amixer from 0.0–1.0 scalar."""
+    if not shutil.which("amixer"):
+        return False
+
+    vol = _clamp01(volume_0_1)
+    pct = int(round(vol * 100.0))
+    ok, out = _run_cmd(["amixer", "-q", "sset", control, f"{pct}%"])
+    if ok:
+        logger.debug("Set ALSA %s volume to %d%%", control, pct)
+        return True
+    logger.debug("amixer sset %s failed: %s", control, out)
+    return False
+
+
+def get_audio_system_type(
+    logger: logging.Logger = _LOGGER,
+) -> str:
+    """Detect which audio system is available: 'wpctl', 'pulseaudio', 'alsa', or 'unknown'."""
+    if shutil.which("wpctl"):
+        ok, _ = _run_cmd(["wpctl", "--version"])
+        if ok:
+            return "wpctl"
+
+    if shutil.which("pactl"):
+        ok, _ = _run_cmd(["pactl", "info"])
+        if ok:
+            return "pulseaudio"
+
+    if shutil.which("amixer"):
+        ok, _ = _run_cmd(["amixer", "--version"])
+        if ok:
+            return "alsa"
+
+    return "unknown"

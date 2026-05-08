@@ -35,7 +35,7 @@ class TestCompleteVoiceAssistantWorkflow:
     @pytest.fixture
     def event_bus(self):
         """Create event bus for workflow testing."""
-        return EventBus()
+        return EventBus(track_events=True)
 
     @pytest.fixture
     def mock_state(self, event_bus):
@@ -128,7 +128,7 @@ class TestMQTTIntegrationWorkflow:
     @pytest.fixture
     def event_bus(self):
         """Create event bus for workflow testing."""
-        return EventBus()
+        return EventBus(track_events=True)
 
     @pytest.fixture
     def mock_state(self, event_loop, event_bus):
@@ -200,7 +200,7 @@ class TestSendspinIntegrationWorkflow:
     @pytest.fixture
     def event_bus(self):
         """Create event bus for workflow testing."""
-        return EventBus()
+        return EventBus(track_events=True)
 
     @pytest.fixture
     def mock_state(self, event_loop, event_bus):
@@ -284,7 +284,7 @@ class TestHardwareIntegrationWorkflow:
     @pytest.fixture
     def event_bus(self):
         """Create event bus for workflow testing."""
-        return EventBus()
+        return EventBus(track_events=True)
 
     @pytest.fixture
     def mock_state(self, event_bus):
@@ -351,7 +351,7 @@ class TestErrorRecoveryWorkflow:
     @pytest.fixture
     def event_bus(self):
         """Create event bus for workflow testing."""
-        return EventBus()
+        return EventBus(track_events=True)
 
     @pytest.fixture
     def mock_state(self, event_loop, event_bus):
@@ -462,7 +462,7 @@ class TestMusicAssistantScenario:
     @pytest.fixture
     def event_bus(self):
         """Create event bus for workflow testing."""
-        return EventBus()
+        return EventBus(track_events=True)
 
     @pytest.fixture
     def mock_state(self, event_loop, event_bus):
@@ -529,7 +529,7 @@ class TestHomeAssistantAutomationScenario:
     @pytest.fixture
     def event_bus(self):
         """Create event bus for workflow testing."""
-        return EventBus()
+        return EventBus(track_events=True)
 
     @pytest.fixture
     def mock_state(self, event_loop, event_bus):

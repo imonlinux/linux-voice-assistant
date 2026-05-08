@@ -9,8 +9,10 @@ _LOGGER = logging.getLogger(__name__)
 class EventBus:
     """A simple synchronous publish/subscribe event bus."""
 
-    def __init__(self):
+    def __init__(self, track_events: bool = False):
         self.topics: Dict[str, List[Callable[[Any], None]]] = {}
+        self.track_events = track_events
+        self.events_received: List[tuple[str, Dict[str, Any]]] = []
 
     def subscribe(self, topic: str, listener: Callable[[Any], None]) -> None:
         """Subscribes a listener to a topic."""
@@ -30,6 +32,10 @@ class EventBus:
         if data is None:
             data = {}
 
+        # Track event if enabled (for testing/debugging)
+        if self.track_events:
+            self.events_received.append((topic, data.copy()))
+
         listeners = self.topics.get(topic, [])
         _LOGGER.debug(f"Publishing event to {len(listeners)} listeners on topic '{topic}'")
         for listener in listeners:
@@ -37,6 +43,10 @@ class EventBus:
                 listener(data)
             except Exception:
                 _LOGGER.exception("Error in event listener for topic %s", topic)
+
+    def clear_events(self) -> None:
+        """Clear tracked events history. Only useful when track_events=True."""
+        self.events_received.clear()
 
 
 # -----------------------------------------------------------------------------
