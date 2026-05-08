@@ -1,0 +1,136 @@
+name: Tests
+
+on:
+  push:
+    branches: [ main, upstream_refactor ]
+  pull_request:
+    branches: [ main, upstream_refactor ]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        python-version: ['3.11', '3.12', '3.13']
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+        cache: 'pip'
+
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          libportaudio2 \
+          libmpv-dev \
+          mpv \
+          build-essential
+
+    - name: Install Python dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pytest pytest-asyncio pytest-cov pytest-mock
+        pip install -e .
+
+    - name: Install development dependencies
+      run: |
+        pip install black flake8 mypy pylint
+
+    - name: Lint with flake8
+      run: |
+        # Stop the build if there are Python syntax errors or undefined names
+        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+        # Exit-zero treats all errors as warnings
+        flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+
+    - name: Check formatting with black
+      run: |
+        black --check linux_voice_assistant/ tests/
+
+    - name: Type check with mypy
+      run: |
+        mypy linux_voice_assistant/ --ignore-missing-imports || true
+
+    - name: Run tests with pytest
+      run: |
+        pytest tests/ -v --tb=short --cov=linux_voice_assistant --cov-report=xml --cov-report=term-missing
+
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v4
+      with:
+        file: ./coverage.xml
+        flags: unittests
+        name: codecov-umbrella
+        fail_ci_if_error: false
+
+  test-hardware:
+    runs-on: [self-hosted, linux]
+    if: github.event_name == 'workflow_dispatch'
+    strategy:
+      matrix:
+        hardware: [xvf3800, resppeaker2mic]
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pytest pytest-asyncio
+        pip install -e .
+
+    - name: Run hardware-specific tests
+      run: |
+        pytest tests/ -v -m hardware -k ${{ matrix.hardware }}
+
+  test-performance:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pytest pytest-benchmark
+        pip install -e .
+
+    - name: Run performance benchmarks
+      run: |
+        pytest tests/ -v -m benchmark --benchmark-only
+
+  security-scan:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Run security scan
+      run: |
+        pip install bandit
+        bandit -r linux_voice_assistant/ -f json -o bandit-report.json || true
+
+    - name: Upload security scan results
+      uses: actions/upload-artifact@v4
+      with:
+        name: security-scan-results
+        path: bandit-report.json
