@@ -215,8 +215,8 @@ def get_pulseaudio_sink_volume(
     # Parse "Volume: front-left: 65536 /  50% / -18.00 dB"
     # OR handle simplified mocked output like "50%"
     try:
-        # First try simple percentage format (for mocked tests)
         out = out.strip()
+        # First try simple percentage format (for mocked tests)
         if out.endswith("%"):
             return float(out[:-1]) / 100.0
 
@@ -269,13 +269,15 @@ def get_wpctl_sink_volume(
     # Parse "Volume: 0.40" or "Volume: 0.40 [MUTED]"
     # OR handle simplified mocked output like "Volume: 50%"
     try:
-        # First try simple percentage format (for mocked tests)
         out = out.strip()
+        # Handle both "Volume: 50%" (mocked) and "Volume: 0.40" (real wpctl)
         if "Volume:" in out:
             parts = out.split()
             if len(parts) >= 2:
                 vol_str = parts[1].rstrip("%")
-                return float(vol_str) / 100.0
+                vol = float(vol_str)
+                # If already in 0-1 range, return as-is; otherwise convert from percentage
+                return vol if vol <= 1.0 else vol / 100.0
     except Exception:
         pass
 
