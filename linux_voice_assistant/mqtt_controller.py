@@ -79,7 +79,7 @@ class MqttController(EventHandler):
 
         self._bootstrap_state_sync = True
         self._bootstrap_ends_at: Optional[float] = None
-        self._client = mqtt.Client()
+        self._client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
         self._client.on_connect = self._on_connect
         self._client.on_message = self._on_message
         self._client.on_disconnect = self._on_disconnect
