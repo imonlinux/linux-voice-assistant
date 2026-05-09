@@ -26,8 +26,10 @@ class TestCompleteVoiceAssistantWorkflow:
     """Test complete voice assistant workflows from wake word to response."""
 
     @pytest.mark.asyncio
-    async def test_wake_word_to_mute_toggle_workflow(self, event_loop, event_bus, mock_state):
+    async def test_wake_word_to_mute_toggle_workflow(self, event_loop, mock_state):
         """Test complete workflow: wake word detection → button press → mute toggle → LED feedback."""
+        # Use event_bus from mock_state to avoid fixture resolution issues
+        event_bus = mock_state.event_bus
         # 1. Setup: Create mock microphone with wake word capability
         mock_mic = MagicMock()
         mock_mic.RECORD = True
@@ -69,7 +71,9 @@ class TestCompleteVoiceAssistantWorkflow:
                 audio_engine.stop()
 
     @pytest.mark.asyncio
-    async def test_volume_control_workflow(self, event_loop, event_bus, mock_state):
+    async def test_volume_control_workflow(self, event_loop, mock_state):
+        # Use event_bus from mock_state to avoid fixture resolution issues
+        event_bus = mock_state.event_bus
         """Test workflow: volume change → audio ducking → unducking."""
         # 1. Setup: Initialize at volume 50%
         initial_volume = 50
@@ -94,8 +98,11 @@ class TestMQTTIntegrationWorkflow:
     """Test MQTT discovery, connection, and Home Assistant integration workflows."""
 
     @pytest.mark.asyncio
-    async def test_mqtt_discovery_and_connection_workflow(self, event_loop, event_bus, mock_state):
+    async def test_mqtt_discovery_and_connection_workflow(self, event_loop, mock_state):
         """Test complete MQTT workflow: discovery → connection → HA integration."""
+        # Use event_bus from mock_state to avoid fixture resolution issues
+        event_bus = mock_state.event_bus
+
         # 1. Setup: Mock MQTT broker
         with patch('linux_voice_assistant.mqtt_controller.mqtt.Client') as mock_mqtt_client:
             mock_client = MagicMock()
@@ -145,8 +152,10 @@ class TestSendspinIntegrationWorkflow:
     """Test Sendspin discovery, WebSocket connection, and audio routing workflows."""
 
     @pytest.mark.asyncio
-    async def test_sendspin_discovery_and_connection_workflow(self, event_loop, event_bus, mock_state):
+    async def test_sendspin_discovery_and_connection_workflow(self, event_loop, mock_state):
         """Test complete Sendspin workflow: mDNS discovery → WebSocket → handshake → state sync."""
+        # Use event_bus from mock_state to avoid fixture resolution issues
+        event_bus = mock_state.event_bus
         # 1. Setup: Mock WebSocket connection
         with patch('linux_voice_assistant.sendspin.client.websockets.connect') as mock_connect:
             mock_ws = MagicMock()
@@ -204,8 +213,10 @@ class TestSendspinIntegrationWorkflow:
 class TestHardwareIntegrationWorkflow:
     """Test hardware button → LED feedback → state sync workflows."""
 
-    def test_hardware_button_to_led_feedback_workflow(self, event_loop, event_bus, mock_state):
+    def test_hardware_button_to_led_feedback_workflow(self, event_loop, mock_state):
         """Test workflow: hardware button press → event publish → LED feedback → state update."""
+        # Use event_bus from mock_state to avoid fixture resolution issues
+        event_bus = mock_state.event_bus
         # 1. Setup: Mock USB device
         with patch('linux_voice_assistant.xvf3800_button_controller.XVF3800USBClient') as mock_usb_client:
             mock_usb = MagicMock()
@@ -247,8 +258,10 @@ class TestErrorRecoveryWorkflow:
     """Test error recovery and resilience workflows."""
 
     @pytest.mark.asyncio
-    async def test_mqtt_connection_failure_recovery(self, event_loop, event_bus, mock_state):
+    async def test_mqtt_connection_failure_recovery(self, event_loop, mock_state):
         """Test MQTT connection failure and automatic reconnection workflow."""
+        # Use event_bus from mock_state to avoid fixture resolution issues
+        event_bus = mock_state.event_bus
         # 1. Setup: Mock MQTT broker with connection failure
         with patch('linux_voice_assistant.mqtt_controller.mqtt.Client') as mock_mqtt_client:
             mock_client = MagicMock()
@@ -291,8 +304,10 @@ class TestErrorRecoveryWorkflow:
             controller.stop()
 
     @pytest.mark.asyncio
-    async def test_sendspin_websocket_disconnection_recovery(self, event_loop, event_bus, mock_state):
+    async def test_sendspin_websocket_disconnection_recovery(self, event_loop, mock_state):
         """Test Sendspin WebSocket disconnection and reconnection workflow."""
+        # Use event_bus from mock_state to avoid fixture resolution issues
+        event_bus = mock_state.event_bus
         # 1. Setup: Mock WebSocket with disconnection
         with patch('linux_voice_assistant.sendspin.client.websockets.connect') as mock_connect:
             mock_ws = MagicMock()
@@ -337,8 +352,10 @@ class TestMusicAssistantScenario:
     """Test real-world Music Assistant usage scenarios."""
 
     @pytest.mark.asyncio
-    async def test_music_assistant_volume_change_workflow(self, event_loop, event_bus, mock_state):
+    async def test_music_assistant_volume_change_workflow(self, event_loop, mock_state):
         """Test Music Assistant volume change workflow: MA sends volume → LVA updates state → LED feedback."""
+        # Use event_bus from mock_state to avoid fixture resolution issues
+        event_bus = mock_state.event_bus
         # 1. Setup: Mock WebSocket
         with patch('linux_voice_assistant.sendspin.client.websockets.connect') as mock_connect:
             mock_ws = MagicMock()
@@ -380,8 +397,10 @@ class TestHomeAssistantAutomationScenario:
     """Test real-world Home Assistant automation scenarios."""
 
     @pytest.mark.asyncio
-    async def test_home_assistant_mute_toggle_automation(self, event_loop, event_bus, mock_state):
+    async def test_home_assistant_mute_toggle_automation(self, event_loop, mock_state):
         """Test HA automation: MQTT command → LVA mute toggle → state update → feedback."""
+        # Use event_bus from mock_state to avoid fixture resolution issues
+        event_bus = mock_state.event_bus
         # 1. Setup: Mock MQTT broker
         with patch('linux_voice_assistant.mqtt_controller.mqtt.Client') as mock_mqtt_client:
             mock_client = MagicMock()
