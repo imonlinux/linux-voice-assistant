@@ -93,9 +93,10 @@ class TestButtonControllerInitialization:
     def test_button_controller_initialization(self, mock_state, button_config):
         """Test ButtonController can be initialized."""
         controller = ButtonController(
+            loop=mock_state.loop,
             event_bus=mock_state.event_bus,
             state=mock_state,
-            button_config=button_config
+            config=button_config
         )
 
         assert controller.state == mock_state
@@ -111,9 +112,10 @@ class TestButtonControllerInitialization:
         )
 
         controller = ButtonController(
+            loop=mock_state.loop,
             event_bus=mock_state.event_bus,
             state=mock_state,
-            button_config=config
+            config=config
         )
 
         # Should handle disabled GPIO gracefully
@@ -177,9 +179,10 @@ class TestButtonControllerGPIOUnavailable:
         # Should not raise exception even with GPIO=None
         try:
             controller = ButtonController(
+                loop=mock_state.loop,
                 event_bus=mock_state.event_bus,
                 state=mock_state,
-                button_config=button_config
+                config=button_config
             )
             # If GPIO is truly unavailable, controller should handle it gracefully
             assert controller is not None
@@ -342,9 +345,10 @@ class TestButtonControllerEventBusIntegration:
     def test_button_controller_publishes_wake_word_event(self, event_bus, mock_state, button_config):
         """Test that button controller publishes wake word event on short press."""
         controller = ButtonController(
+            loop=mock_state.loop,
             event_bus=event_bus,
             state=mock_state,
-            button_config=button_config
+            config=button_config
         )
 
         # Simulate short press wake word event
@@ -357,9 +361,10 @@ class TestButtonControllerEventBusIntegration:
     def test_button_controller_publishes_mute_event(self, event_bus, mock_state, button_config):
         """Test that button controller publishes mute event on long press."""
         controller = ButtonController(
+            loop=mock_state.loop,
             event_bus=event_bus,
             state=mock_state,
-            button_config=button_config
+            config=button_config
         )
 
         # Simulate long press mute event
@@ -490,9 +495,10 @@ class TestButtonControllerErrorHandling:
         )
 
         controller = ButtonController(
+            loop=mock_state.loop,
             event_bus=mock_state.event_bus,
             state=mock_state,
-            button_config=config
+            config=config
         )
 
         # Should handle gracefully or provide clear error
@@ -507,9 +513,10 @@ class TestButtonControllerErrorHandling:
         )
 
         controller = ButtonController(
+            loop=mock_state.loop,
             event_bus=mock_state.event_bus,
             state=mock_state,
-            button_config=config
+            config=config
         )
 
         # Should handle gracefully or clamp to reasonable value

@@ -309,7 +309,8 @@ class TestConfigIntegration:
             assert config.mqtt.host == "localhost"
             assert config.mqtt.port == 1883
             assert config.mqtt.username == "user"
-            assert config.mqtt.discovery_prefix == "homeassistant"
+            # discovery_prefix is no longer a supported config field
+            assert hasattr(config.mqtt, 'discovery_prefix') == False
 
         finally:
             temp_path.unlink(missing_ok=True)
@@ -337,8 +338,10 @@ class TestConfigIntegration:
             assert config.button.enabled == True
             assert config.button.mode == "gpio"
             assert config.button.pin == 17
-            assert config.button.press_time_ms == 50
-            assert config.button.long_press_time_ms == 1000
+            # press_time_ms and long_press_time_ms are no longer supported config fields
+            # Button now uses internal defaults for timing
+            assert hasattr(config.button, 'press_time_ms') == False
+            assert hasattr(config.button, 'long_press_time_ms') == False
 
         finally:
             temp_path.unlink(missing_ok=True)

@@ -127,9 +127,8 @@ class TestLedControllerEventHandler:
         return LedConfig(
             led_type="dotstar",
             interface="spi",
-            spi_device="/dev/spidev0.0",
-            gpio_clk=11,
-            gpio_mosi=10,
+            clock_pin=11,
+            data_pin=12,
             num_leds=12
         )
 
@@ -276,9 +275,8 @@ class TestLedControllerHardwareAbstraction:
         neo_config = LedConfig(
             led_type="neopixel",
             interface="spi",
-            spi_device="/dev/spidev0.0",
-            gpio_clk=0,
-            gpio_mosi=0,
+            clock_pin=0,
+            data_pin=0,
             num_leds=16
         )
 
