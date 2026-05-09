@@ -15,33 +15,33 @@ class TestPreferences:
     def test_default_preferences(self):
         """Test Preferences can be created with defaults."""
         prefs = Preferences()
-        assert prefs.volume_level == 50
-        assert prefs.active_wake_words is None
-        assert prefs.mac_address is None
+        assert prefs.volume_level == 1.0
+        assert prefs.active_wake_words == []
+        assert prefs.mac_address == ""
         assert hasattr(prefs, 'num_leds')
         assert hasattr(prefs, 'alarm_duration_seconds')
 
     def test_preferences_with_values(self):
         """Test Preferences with custom values."""
         prefs = Preferences(
-            volume_level=75,
+            volume_level=0.75,
             active_wake_words=["ok_nabu"],
             mac_address="aa:bb:cc:dd:ee:ff"
         )
-        assert prefs.volume_level == 75
+        assert prefs.volume_level == 0.75
         assert prefs.active_wake_words == ["ok_nabu"]
         assert prefs.mac_address == "aa:bb:cc:dd:ee:ff"
 
     def test_preferences_serialization(self):
         """Test Preferences can be serialized to dict."""
         prefs = Preferences(
-            volume_level=60,
+            volume_level=0.6,
             active_wake_words=["hey_jarvis"],
             num_leds=12
         )
         data = asdict(prefs)
 
-        assert data['volume_level'] == 60
+        assert data['volume_level'] == 0.6
         assert data['active_wake_words'] == ["hey_jarvis"]
         assert data['num_leds'] == 12
 
@@ -103,7 +103,7 @@ class TestPreferences:
 
         prefs = Preferences(**old_data)
         assert prefs.volume_level == 70
-        assert prefs.active_wake_words is None  # Default value
+        assert prefs.active_wake_words == []  # Default value
         assert hasattr(prefs, 'num_leds')  # Should have default
         assert hasattr(prefs, 'mac_address')  # Should have default
 

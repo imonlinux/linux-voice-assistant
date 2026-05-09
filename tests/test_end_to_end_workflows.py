@@ -46,7 +46,7 @@ class TestCompleteVoiceAssistantWorkflow:
         state.loop = loop
         state.event_bus = event_bus
         state.preferences = MagicMock(spec=Preferences)
-        state.preferences.volume_level = 50
+        state.preferences.volume_level = 0.5
         state.mic_mute = False
         return state
 
@@ -68,7 +68,7 @@ class TestCompleteVoiceAssistantWorkflow:
             audio_engine = AudioEngine(
                 mock_state,
                 mock_mic,
-                input_block_size=1024,
+                block_size=1024,
                 oww_threshold=0.5
             )
 
@@ -167,8 +167,10 @@ class TestMQTTIntegrationWorkflow:
             controller = MqttController(
                 loop=event_loop,
                 event_bus=event_bus,
-                state=mock_state,
-                config=mqtt_config
+                config=mqtt_config,
+                app_name="test_device",
+                mac_address="aa:bb:cc:dd:ee:ff",
+                preferences=mock_state.preferences
             )
 
             # 4. Action: Simulate successful connection
@@ -295,7 +297,7 @@ class TestHardwareIntegrationWorkflow:
         state.loop = loop
         state.event_bus = event_bus
         state.preferences = MagicMock(spec=Preferences)
-        state.preferences.volume_level = 50
+        state.preferences.volume_level = 0.5
         state.mic_mute = False
         return state
 
@@ -387,8 +389,10 @@ class TestErrorRecoveryWorkflow:
             controller = MqttController(
                 loop=event_loop,
                 event_bus=event_bus,
-                state=mock_state,
-                config=mqtt_config
+                config=mqtt_config,
+                app_name="test_device",
+                mac_address="aa:bb:cc:dd:ee:ff",
+                preferences=mock_state.preferences
             )
 
             # 4. Action: Start controller (first connection fails)
@@ -563,8 +567,10 @@ class TestHomeAssistantAutomationScenario:
             controller = MqttController(
                 loop=event_loop,
                 event_bus=event_bus,
-                state=mock_state,
-                config=mqtt_config
+                config=mqtt_config,
+                app_name="test_device",
+                mac_address="aa:bb:cc:dd:ee:ff",
+                preferences=mock_state.preferences
             )
 
             # 3. Action: Simulate MQTT connection

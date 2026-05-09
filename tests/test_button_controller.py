@@ -100,7 +100,7 @@ class TestButtonControllerInitialization:
         )
 
         assert controller.state == mock_state
-        assert controller.config == button_config
+        assert controller._cfg == button_config
 
     def test_button_controller_with_disabled_gpio(self, mock_state):
         """Test ButtonController when GPIO is not available."""
@@ -174,7 +174,7 @@ class TestButtonControllerGPIOUnavailable:
     def test_button_controller_handles_missing_gpio(self, mock_state, button_config, monkeypatch):
         """Test that ButtonController handles missing GPIO module."""
         # Mock GPIO as None to simulate missing module
-        monkeypatch.setattr("linux_voice_assistant.button_controller", "GPIO", None)
+        monkeypatch.setattr("linux_voice_assistant.button_controller.GPIO", None, raising=False)
 
         # Should not raise exception even with GPIO=None
         try:
@@ -244,9 +244,10 @@ class TestButtonControllerPressTiming:
     def test_button_short_press_detection(self, mock_state, short_press_config):
         """Test short press detection (press < long_press_seconds)."""
         controller = ButtonController(
+            loop=mock_state.loop,
             event_bus=mock_state.event_bus,
             state=mock_state,
-            button_config=short_press_config
+            config=short_press_config
         )
 
         # Short press should be < 1 second
@@ -255,9 +256,10 @@ class TestButtonControllerPressTiming:
     def test_button_long_press_detection(self, mock_state, short_press_config):
         """Test long press detection (press >= long_press_seconds)."""
         controller = ButtonController(
+            loop=mock_state.loop,
             event_bus=mock_state.event_bus,
             state=mock_state,
-            button_config=short_press_config
+            config=short_press_config
         )
 
         # Long press should be >= 1 second
@@ -502,7 +504,7 @@ class TestButtonControllerErrorHandling:
         )
 
         # Should handle gracefully or provide clear error
-        assert controller.config.pin == 0
+        assert controller._cfg.pin == 0
 
     def test_button_controller_handles_negative_long_press(self, mock_state):
         """Test ButtonController handles negative long press time."""
@@ -520,7 +522,7 @@ class TestButtonControllerErrorHandling:
         )
 
         # Should handle gracefully or clamp to reasonable value
-        assert controller.config.long_press_seconds == -1.0
+        assert controller._cfg.long_press_seconds == -1.0
 
 
 if __name__ == "__main__":
