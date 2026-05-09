@@ -59,7 +59,7 @@ def event_loop():
 def event_bus():
     """Create EventBus instance."""
     from linux_voice_assistant.event_bus import EventBus
-    return EventBus()
+    return EventBus(track_events=True)
 
 
 @pytest.fixture
@@ -181,6 +181,20 @@ def minimal_state(event_loop, event_bus, temp_preferences_file):
         thinking_sound_loop=False,
         listen_during_wake_sound=False
     )
+
+
+@pytest.fixture
+def mock_state(event_loop, event_bus):
+    """Create mock ServerState for end-to-end workflow tests."""
+    from linux_voice_assistant.models import ServerState, Preferences
+
+    state = MagicMock(spec=ServerState)
+    state.loop = event_loop
+    state.event_bus = event_bus
+    state.preferences = MagicMock(spec=Preferences)
+    state.preferences.volume_level = 0.5
+    state.mic_mute = False
+    return state
 
 
 # Hardware-specific skip conditions
