@@ -377,6 +377,12 @@ The project includes a comprehensive test suite covering the fork's new architec
 
 # Run with coverage report
 pytest tests/ --cov=linux_voice_assistant --cov-report=html
+
+# Run specific test with verbose output
+pytest tests/test_event_bus.py -v
+
+# Run excluding hardware tests
+pytest tests/ -m "not hardware"
 ```
 
 ### Test Structure
@@ -385,6 +391,13 @@ pytest tests/ --cov=linux_voice_assistant --cov-report=html
 - **Integration Tests**: Controllers and hardware abstractions
 - **Hardware Tests**: Physical device integration (XVF3800, ReSpeaker)
 - **End-to-End Tests**: Complete voice assistant workflows
+
+### Current Test Status
+
+- **Total Tests**: 293
+- **Passing**: 291 (99.3%)
+- **Skipped**: 2 (hardware-dependent tests)
+- **Test Framework**: pytest 7.4.4 with asyncio, mock, and coverage support
 
 See [Testing Guide](docs/testing-guide.md) for detailed testing documentation and [tests/README.md](tests/README.md) for test-specific information.
 
@@ -399,6 +412,9 @@ flake8 linux_voice_assistant/ tests/
 
 # Type checking
 mypy linux_voice_assistant/
+
+# Run diagnostics
+python tests/diagnose_imports.py
 ```
 
 ---

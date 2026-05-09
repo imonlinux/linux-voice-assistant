@@ -30,20 +30,41 @@ tests/
 
 ## Running Tests
 
-### Docker Testing Environment (Recommended)
+### Docker Testing Environment
 
-The project includes a dedicated Docker testing environment for consistent test execution:
+The project supports Docker-based testing for consistent environments across different systems.
+
+**Note:** If running inside a Docker container, use the local testing methods below instead.
+
+#### Building the Test Container
+
+```bash
+# Build the testing container from the project root
+docker build -t linux-voice-assistant-test:latest -f Dockerfile.test .
+```
+
+#### Running Tests in Docker
 
 ```bash
 # Run all tests in container
-docker run --rm -v $(pwd):/app phantom-python-tester:latest
+docker run --rm -v $(pwd):/app linux-voice-assistant-test:latest
 
 # Run specific test file
-docker run --rm -v $(pwd):/app phantom-python-tester:latest pytest tests/test_event_bus.py -v
+docker run --rm -v $(pwd):/app linux-voice-assistant-test:latest pytest tests/test_event_bus.py -v
 
 # Run with coverage
-docker run --rm -v $(pwd):/app phantom-python-tester:latest pytest tests/ --cov=linux_voice_assistant --cov-report=html
+docker run --rm -v $(pwd):/app linux-voice-assistant-test:latest pytest tests/ --cov=linux_voice_assistant --cov-report=html
 ```
+
+#### Docker Test Requirements
+
+The test container requires:
+- Python 3.12+
+- pytest 7.4.4
+- pytest-asyncio 0.23.4
+- pytest-cov 4.1.0
+- pytest-mock 3.14.0
+- pytest-benchmark 4.0.0
 
 ### Local Testing
 

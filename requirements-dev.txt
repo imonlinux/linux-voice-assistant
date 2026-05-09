@@ -1,0 +1,21 @@
+# Development dependencies for linux-voice-assistant
+-r requirements.txt
+
+# Code quality tools
+black
+flake8
+mypy
+pylint
+
+# Testing framework
+pytest==7.4.4
+pytest-asyncio==0.23.4
+pytest-cov==4.1.0
+pytest-mock==3.14.0
+pytest-benchmark==4.0.0
+pytest-xdist==3.5.0
+
+# Additional testing dependencies
+websockets>=12,<15
+aiosendspin>=3,<4
+opuslib
