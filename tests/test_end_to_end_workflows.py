@@ -22,33 +22,37 @@ from linux_voice_assistant.audio_engine import AudioEngine
 from linux_voice_assistant.led_controller import LedController
 
 
+# Module-level fixtures shared across all test classes
+@pytest.fixture
+def event_loop():
+    """Create event loop for async tests."""
+    loop = asyncio.new_event_loop()
+    yield loop
+    loop.close()
+
+
+@pytest.fixture
+def event_bus():
+    """Create event bus for workflow testing."""
+    return EventBus(track_events=True)
+
+
+@pytest.fixture
+def mock_state(event_bus):
+    """Create mock server state."""
+    import asyncio
+    loop = asyncio.new_event_loop()
+    state = MagicMock(spec=ServerState)
+    state.loop = loop
+    state.event_bus = event_bus
+    state.preferences = MagicMock(spec=Preferences)
+    state.preferences.volume_level = 0.5
+    state.mic_mute = False
+    return state
+
+
 class TestCompleteVoiceAssistantWorkflow:
     """Test complete voice assistant workflows from wake word to response."""
-
-    @pytest.fixture
-    def event_loop(self):
-        """Create event loop for async tests."""
-        loop = asyncio.new_event_loop()
-        yield loop
-        loop.close()
-
-    @pytest.fixture
-    def event_bus(self):
-        """Create event bus for workflow testing."""
-        return EventBus(track_events=True)
-
-    @pytest.fixture
-    def mock_state(self, event_bus):
-        """Create mock server state."""
-        import asyncio
-        loop = asyncio.new_event_loop()
-        state = MagicMock(spec=ServerState)
-        state.loop = loop
-        state.event_bus = event_bus
-        state.preferences = MagicMock(spec=Preferences)
-        state.preferences.volume_level = 0.5
-        state.mic_mute = False
-        return state
 
     @pytest.mark.asyncio
     async def test_wake_word_to_mute_toggle_workflow(self, event_loop, event_bus, mock_state):

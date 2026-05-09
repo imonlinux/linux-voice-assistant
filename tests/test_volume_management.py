@@ -44,7 +44,7 @@ class TestVolumeManagementIntegration:
     def mock_preferences(self):
         """Create mock preferences with volume settings."""
         prefs = Preferences()
-        prefs.volume_level = 50
+        prefs.volume_level = 0.5
         return prefs
 
     @pytest.fixture
@@ -53,6 +53,7 @@ class TestVolumeManagementIntegration:
         return "alsa_output.pci-0000_00_1f.5.analog-stereo"
 
     @patch('subprocess.run')
+    @pytest.mark.asyncio
     async def test_ensure_output_volume_with_wpctl(self, mock_run, mock_preferences, mock_output_device):
         """Test volume setting with wpctl (PipeWire)."""
         # Mock wpctl available
@@ -74,6 +75,7 @@ class TestVolumeManagementIntegration:
         assert result == True
 
     @patch('subprocess.run')
+    @pytest.mark.asyncio
     async def test_ensure_output_volume_with_pulseaudio(self, mock_run, mock_preferences):
         """Test volume setting with PulseAudio pactl."""
         # Mock pactl available, wpctl not available
@@ -99,6 +101,7 @@ class TestVolumeManagementIntegration:
         assert result == True
 
     @patch('subprocess.run')
+    @pytest.mark.asyncio
     async def test_ensure_output_volume_with_amixer(self, mock_run, mock_preferences):
         """Test volume setting with amixer (ALSA)."""
         # Mock both wpctl and pactl unavailable, amixer available
@@ -122,6 +125,7 @@ class TestVolumeManagementIntegration:
         assert result == True
 
     @patch('subprocess.run')
+    @pytest.mark.asyncio
     async def test_ensure_output_volume_max_volume_clamping(self, mock_run, mock_preferences):
         """Test that volume is clamped to max_volume_percent."""
         mock_run.return_value = MagicMock(
@@ -142,6 +146,7 @@ class TestVolumeManagementIntegration:
         # Verify that the volume set was 80%, not 90%
 
     @patch('subprocess.run')
+    @pytest.mark.asyncio
     async def test_ensure_output_volume_retries_on_failure(self, mock_run):
         """Test that volume setting retries on temporary failures."""
         # Fail first two attempts, succeed on third
@@ -348,6 +353,7 @@ class TestVolumeHardwareAbstraction:
             assert detected == system_type
 
     @patch('subprocess.run')
+    @pytest.mark.asyncio
     async def test_volume_manager_fallback_chain(self, mock_run):
         """Test volume manager fallback from wpctl -> pactl -> amixer."""
         call_count = [0]

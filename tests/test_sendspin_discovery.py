@@ -86,6 +86,7 @@ class TestSendspinDiscoveryIntegration:
 
     @patch('linux_voice_assistant.sendspin.discovery.AsyncZeroconf')
     @patch('linux_voice_assistant.sendspin.discovery.AsyncServiceBrowser')
+    @pytest.mark.asyncio
     async def test_discover_sendspin_servers_success(self, mock_browser_class, mock_azc_class, event_loop):
         """Test successful Sendspin server discovery."""
         # Mock AsyncZeroconf
@@ -140,6 +141,7 @@ class TestSendspinDiscoveryIntegration:
 
     @patch('linux_voice_assistant.sendspin.discovery.AsyncZeroconf')
     @patch('linux_voice_assistant.sendspin.discovery.AsyncServiceBrowser')
+    @pytest.mark.asyncio
     async def test_discover_sendspin_servers_timeout(self, mock_browser_class, mock_azc_class, event_loop):
         """Test discovery timeout when no servers found."""
         # Mock AsyncZeroconf
@@ -163,6 +165,7 @@ class TestSendspinDiscoveryIntegration:
 
     @patch('linux_voice_assistant.sendspin.discovery.AsyncZeroconf')
     @patch('linux_voice_assistant.sendspin.discovery.AsyncServiceBrowser')
+    @pytest.mark.asyncio
     async def test_discover_sendspin_servers_multiple(self, mock_browser_class, mock_azc_class, event_loop):
         """Test discovering multiple Sendspin servers."""
         # Mock AsyncZeroconf
@@ -221,6 +224,7 @@ class TestSendspinDiscoveryErrorHandling:
 
     @patch('linux_voice_assistant.sendspin.discovery.AsyncZeroconf')
     @patch('linux_voice_assistant.sendspin.discovery.AsyncServiceBrowser')
+    @pytest.mark.asyncio
     async def test_discovery_handles_service_browser_error(self, mock_browser_class, mock_azc_class, event_loop):
         """Test discovery handles service browser errors gracefully."""
         # Mock AsyncZeroconf to raise exception
@@ -237,6 +241,7 @@ class TestSendspinDiscoveryErrorHandling:
 
     @patch('linux_voice_assistant.sendspin.discovery.AsyncZeroconf')
     @patch('linux_voice_assistant.sendspin.discovery.AsyncServiceBrowser')
+    @pytest.mark.asyncio
     async def test_discovery_handles_cleanup_errors(self, mock_browser_class, mock_azc_class, event_loop):
         """Test discovery handles cleanup errors gracefully."""
         # Mock AsyncZeroconf
