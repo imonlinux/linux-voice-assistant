@@ -359,6 +359,50 @@ linux-voice-assistant/
 
 ---
 
+## Development & Testing
+
+### Running Tests
+
+The project includes a comprehensive test suite covering the fork's new architecture:
+
+```bash
+# Install development dependencies
+./script/setup --dev
+
+# Run all tests
+./script/test
+
+# Run specific test file
+./script/test test_event_bus.py
+
+# Run with coverage report
+pytest tests/ --cov=linux_voice_assistant --cov-report=html
+```
+
+### Test Structure
+
+- **Unit Tests**: Core architecture (EventBus, State, Configuration)
+- **Integration Tests**: Controllers and hardware abstractions
+- **Hardware Tests**: Physical device integration (XVF3800, ReSpeaker)
+- **End-to-End Tests**: Complete voice assistant workflows
+
+See [Testing Guide](docs/testing-guide.md) for detailed testing documentation and [tests/README.md](tests/README.md) for test-specific information.
+
+### Code Quality
+
+```bash
+# Format code
+black linux_voice_assistant/ tests/
+
+# Lint code
+flake8 linux_voice_assistant/ tests/
+
+# Type checking
+mypy linux_voice_assistant/
+```
+
+---
+
 ## License
 
 Licensed under the [Apache License 2.0](LICENSE.md).
