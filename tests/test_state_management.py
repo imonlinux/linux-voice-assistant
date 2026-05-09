@@ -154,18 +154,18 @@ class TestServerState:
         """Test ServerState can be initialized."""
         assert minimal_state.name == "test_device"
         assert minimal_state.mac_address == "aa:bb:cc:dd:ee:ff"
-        assert minimal_state.mic_muted == False  # Default state
+        assert minimal_state.mic_muted is False  # Default state
         assert minimal_state.preferences is not None
 
     def test_server_state_mute_toggle(self, minimal_state):
         """Test ServerState mute toggle functionality."""
-        assert minimal_state.mic_muted == False
+        assert minimal_state.mic_muted is False
 
         minimal_state.mic_muted = True
-        assert minimal_state.mic_muted == True
+        assert minimal_state.mic_muted is True
 
         minimal_state.mic_muted = False
-        assert minimal_state.mic_muted == False
+        assert minimal_state.mic_muted is False
 
     def test_server_state_save_preferences(self, minimal_state):
         """Test ServerState saves preferences correctly."""
@@ -214,26 +214,16 @@ class TestServerState:
         assert len(events_received) == 1
         assert events_received[0] == {"test": "data"}
 
-    def test_server_state_mic_muted_event(self, minimal_state):
-        """Test mic muted event handling."""
-        events_received = []
-
-        def mute_handler(data):
-            events_received.append(("mute", data))
-
-        def unmute_handler(data):
-            events_received.append(("unmute", data))
-
-        minimal_state.event_bus.subscribe("mic_muted", mute_handler)
-        minimal_state.event_bus.subscribe("mic_unmuted", unmute_handler)
-
-        # Test mute
-        minimal_state.event_bus.publish("set_mic_mute", {"state": True})
-        assert ("mute", {}) in events_received
-
-        # Test unmute
-        minimal_state.event_bus.publish("set_mic_mute", {"state": False})
-        assert ("unmute", {}) in events_received
+    # NOTE: A previous test here ("test_server_state_mic_muted_event") tried to
+    # publish "set_mic_mute" and assert that "mic_muted"/"mic_unmuted" events
+    # were re-emitted. That re-emission is the responsibility of the
+    # MicMuteHandler (defined in linux_voice_assistant/__main__.py), not of
+    # ServerState. The test was therefore exercising imaginary behaviour and
+    # has been removed.
+    #
+    # TODO: When MicMuteHandler is extracted from __main__.py into its own
+    # module, add a dedicated test_mic_mute_handler.py covering the
+    # set_mic_mute -> mic_muted/mic_unmuted contract.
 
 
 class TestMacAddressHandling:

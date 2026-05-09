@@ -340,17 +340,73 @@ class TestVolumeValidation:
 class TestVolumeHardwareAbstraction:
     """Test volume management hardware abstraction layer."""
 
-    @patch('linux_voice_assistant.audio_volume.get_audio_system_type')
-    def test_volume_manager_adapts_to_audio_system(self, mock_system_type):
-        """Test that volume manager adapts to available audio system."""
-        # Test each audio system type
-        audio_systems = ["wpctl", "pulseaudio", "alsa"]
+    # NOTE: A previous test here ("test_volume_manager_adapts_to_audio_system")
+    # patched ``audio_volume.get_audio_system_type`` and then called the
+    # function as imported into this test module. Because the test module
+    # holds its own reference to the original function (via ``from ... import
+    # get_audio_system_type``), the patch never took effect, so the assertion
+    # was just comparing the host's real audio system to the mock's
+    # ``return_value``. The replacement tests below exercise the real
+    # detection logic by patching the lower-level helpers (``shutil.which``
+    # and ``subprocess.run``) that ``get_audio_system_type`` actually uses.
 
-        for system_type in audio_systems:
-            mock_system_type.return_value = system_type
+    @patch('linux_voice_assistant.audio_volume._run_cmd')
+    @patch('linux_voice_assistant.audio_volume.shutil.which')
+    def test_detects_wpctl_when_present(self, mock_which, mock_run_cmd):
+        """``get_audio_system_type`` returns 'wpctl' when wpctl is available."""
+        # All three commands resolve, all version probes succeed.
+        mock_which.side_effect = lambda name: f"/usr/bin/{name}"
+        mock_run_cmd.return_value = (True, "")
 
-            detected = get_audio_system_type()
-            assert detected == system_type
+        assert get_audio_system_type() == "wpctl"
+
+    @patch('linux_voice_assistant.audio_volume._run_cmd')
+    @patch('linux_voice_assistant.audio_volume.shutil.which')
+    def test_falls_back_to_pulseaudio_when_wpctl_missing(self, mock_which, mock_run_cmd):
+        """When wpctl is absent, detection should fall through to pactl."""
+        def which(name):
+            return None if name == "wpctl" else f"/usr/bin/{name}"
+
+        mock_which.side_effect = which
+        mock_run_cmd.return_value = (True, "")
+
+        assert get_audio_system_type() == "pulseaudio"
+
+    @patch('linux_voice_assistant.audio_volume._run_cmd')
+    @patch('linux_voice_assistant.audio_volume.shutil.which')
+    def test_falls_back_to_alsa_when_only_amixer_present(self, mock_which, mock_run_cmd):
+        """When only amixer is on PATH, detection should return 'alsa'."""
+        def which(name):
+            return f"/usr/bin/{name}" if name == "amixer" else None
+
+        mock_which.side_effect = which
+        mock_run_cmd.return_value = (True, "")
+
+        assert get_audio_system_type() == "alsa"
+
+    @patch('linux_voice_assistant.audio_volume._run_cmd')
+    @patch('linux_voice_assistant.audio_volume.shutil.which')
+    def test_returns_unknown_when_nothing_present(self, mock_which, mock_run_cmd):
+        """With no audio tools on PATH, detection should return 'unknown'."""
+        mock_which.return_value = None
+        mock_run_cmd.return_value = (False, "")
+
+        assert get_audio_system_type() == "unknown"
+
+    @patch('linux_voice_assistant.audio_volume._run_cmd')
+    @patch('linux_voice_assistant.audio_volume.shutil.which')
+    def test_skips_wpctl_if_version_probe_fails(self, mock_which, mock_run_cmd):
+        """If wpctl is on PATH but ``wpctl --version`` fails, fall through."""
+        mock_which.side_effect = lambda name: f"/usr/bin/{name}"
+
+        def run_cmd(cmd):
+            if cmd[:2] == ["wpctl", "--version"]:
+                return (False, "boom")
+            return (True, "")
+
+        mock_run_cmd.side_effect = run_cmd
+
+        assert get_audio_system_type() == "pulseaudio"
 
     @patch('subprocess.run')
     @pytest.mark.asyncio

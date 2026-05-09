@@ -1,445 +1,371 @@
-"""End-to-End workflow tests for linux-voice-assistant.
+"""End-to-end / integration workflow tests for linux-voice-assistant.
 
-Tests complete user workflows and integration scenarios across components.
+These tests wire together two or more real components and verify their
+contract — for example, "an MQTT 'mute set' command turns into a state
+change on ServerState and a re-published 'mute state' MQTT message".
+
+Scope and design notes
+----------------------
+The previous version of this file tried to test "complete user workflows"
+end-to-end including the audio capture thread, the LED controller, and the
+Sendspin WebSocket client. That ended up wedged between two stools:
+
+* It wasn't a unit test, because it instantiated half a dozen real objects.
+* It wasn't a real integration test either, because the components it most
+  needed (the satellite, the audio engine, the LED hardware) had to be
+  mocked away to even reach the assertions.
+
+The honest replacement is the small set of tests below. They:
+
+* use a **real** ``EventBus`` (with ``track_events=True`` so we can introspect)
+* use a **real** ``ServerState``
+* mock paho's ``mqtt.Client`` at the import site, which is the only external
+  dependency that actually has to be faked
+* re-implement the ``MicMuteHandler`` contract inline as ``_TestMicMuteHandler``
+
+The audio engine / LED / Sendspin / wake-word workflows that used to live
+here are already covered by their own unit tests
+(``test_audio_engine.py``, ``test_led_controller.py``,
+``test_sendspin_client.py`` etc.). Asserting them again here doesn't add
+coverage, it just adds a broken duplicate.
+
+TODO: Once ``MicMuteHandler`` is extracted from ``linux_voice_assistant/
+__main__.py`` into its own module, replace ``_TestMicMuteHandler`` below
+with a direct import so we test the real handler.
 """
 
-import pytest
+from __future__ import annotations
+
 import asyncio
-import time
-from unittest.mock import Mock, MagicMock, patch, AsyncMock
+import json
+from pathlib import Path
+from typing import Optional
+from unittest.mock import MagicMock, patch
 
-# Mock hardware dependencies before importing
-import sys
-sys.modules['soundcard'] = MagicMock()
+import pytest
 
-from linux_voice_assistant.event_bus import EventBus
-from linux_voice_assistant.models import ServerState, Preferences
+from linux_voice_assistant.config import MqttConfig
+from linux_voice_assistant.event_bus import EventBus, EventHandler, subscribe
+from linux_voice_assistant.models import Preferences, ServerState
 from linux_voice_assistant.mqtt_controller import MqttController
-from linux_voice_assistant.sendspin.client import SendspinClient
-from linux_voice_assistant.xvf3800_button_controller import XVF3800ButtonController
-from linux_voice_assistant.xvf3800_led_backend import XVF3800LedBackend
-from linux_voice_assistant.audio_engine import AudioEngine
-from linux_voice_assistant.led_controller import LedController
-
-
-class TestCompleteVoiceAssistantWorkflow:
-    """Test complete voice assistant workflows from wake word to response."""
-
-    @pytest.mark.asyncio
-    async def test_wake_word_to_mute_toggle_workflow(self, event_loop, mock_state):
-        """Test complete workflow: wake word detection → button press → mute toggle → LED feedback."""
-        # Use event_bus from mock_state to avoid fixture resolution issues
-        event_bus = mock_state.event_bus
-        # 1. Setup: Create mock microphone with wake word capability
-        mock_mic = MagicMock()
-        mock_mic.RECORD = True
-        mock_mic.__enter__ = Mock(return_value=mock_mic)
-        mock_mic.__exit__ = Mock(return_value=False)
-
-        # 2. Setup: Create audio engine for wake word detection
-        with patch('linux_voice_assistant.audio_engine.MicroWakeWord') as mock_www:
-            mock_wake_word = MagicMock()
-            mock_wake_word.detect.return_value = True  # Simulate wake word detected
-            mock_www.return_value = mock_wake_word
-
-            audio_engine = AudioEngine(
-                mock_state,
-                mock_mic,
-                block_size=1024,
-                oww_threshold=0.5
-            )
-
-            # 3. Setup: Create LED controller for feedback
-            with patch('linux_voice_assistant.led_controller.get_mic') as mock_get_mic:
-                mock_get_mic.return_value = MagicMock()
-                led_controller = LedController(mock_state)
-                led_controller.start()
-
-                # 4. Action: Simulate wake word detection
-                event_bus.publish("wake_word_detected", {"model": "ok_nabu"})
-
-                # 5. Action: Simulate hardware button press for mute toggle
-                event_bus.publish("set_mic_mute", {"mute": True})
-
-                # 6. Verification: Check state changed
-                assert mock_state.mic_mute is True
-
-                # 7. Verification: Check LED feedback was triggered
-                await asyncio.sleep(0.1)  # Allow async operations
-                led_controller.stop()
-
-                audio_engine.stop()
-
-    @pytest.mark.asyncio
-    async def test_volume_control_workflow(self, event_loop, mock_state):
-        # Use event_bus from mock_state to avoid fixture resolution issues
-        event_bus = mock_state.event_bus
-        """Test workflow: volume change → audio ducking → unducking."""
-        # 1. Setup: Initialize at volume 50%
-        initial_volume = 50
-        mock_state.preferences.volume_level = initial_volume
-
-        # 2. Action: Simulate TTS starting (should duck volume)
-        event_bus.publish("tts_start", {"volume_ducking": 0.3})
-
-        # 3. Verification: Check ducking occurred
-        # In real implementation, this would check volume was reduced
-        await asyncio.sleep(0.1)
-
-        # 4. Action: Simulate TTS ending (should unduck volume)
-        event_bus.publish("tts_end", {})
-
-        # 5. Verification: Check volume restored
-        # In real implementation, this would verify volume is back to 50%
-        await asyncio.sleep(0.1)
-
-
-class TestMQTTIntegrationWorkflow:
-    """Test MQTT discovery, connection, and Home Assistant integration workflows."""
-
-    @pytest.mark.asyncio
-    async def test_mqtt_discovery_and_connection_workflow(self, event_loop, mock_state):
-        """Test complete MQTT workflow: discovery → connection → HA integration."""
-        # Use event_bus from mock_state to avoid fixture resolution issues
-        event_bus = mock_state.event_bus
-
-        # 1. Setup: Mock MQTT broker
-        with patch('linux_voice_assistant.mqtt_controller.mqtt.Client') as mock_mqtt_client:
-            mock_client = MagicMock()
-            mock_mqtt_client.return_value = mock_client
-            mock_client.connect.return_value = 0  # Connection successful
-
-            # 2. Setup: Create MQTT controller
-            mqtt_config = MagicMock()
-            mqtt_config.host = "localhost"
-            mqtt_config.port = 1883
-            mqtt_config.username = None
-            mqtt_config.password = None
-            mqtt_config.client_id = "lva-test"
-            mqtt_config.discovery_prefix = "homeassistant"
-            mqtt_config.birth_topic = "homeassistant/status"
-            mqtt_config.birth_payload = "online"
-            mqtt_config.will_topic = "homeassistant/status"
-            mqtt_config.will_payload = "offline"
-
-            # 3. Action: Start MQTT controller (triggers discovery)
-            controller = MqttController(
-                loop=event_loop,
-                event_bus=event_bus,
-                config=mqtt_config,
-                app_name="test_device",
-                mac_address="aa:bb:cc:dd:ee:ff",
-                preferences=mock_state.preferences
-            )
-
-            # 4. Action: Simulate successful connection
-            mock_client.on_connect = None
-            controller._on_connect(None, None, 0, 0)
-
-            # 5. Verification: Check discovery topics were published
-            assert mock_client.publish.called
-
-            # 6. Verification: Check state sync
-            publish_calls = [call[0][0] for call in mock_client.publish.call_args_list]
-            discovery_calls = [call for call in publish_calls if "homeassistant/" in call]
-            assert len(discovery_calls) > 0
-
-            # 7. Cleanup
-            controller.stop()
-
-
-class TestSendspinIntegrationWorkflow:
-    """Test Sendspin discovery, WebSocket connection, and audio routing workflows."""
-
-    @pytest.mark.asyncio
-    async def test_sendspin_discovery_and_connection_workflow(self, event_loop, mock_state):
-        """Test complete Sendspin workflow: mDNS discovery → WebSocket → handshake → state sync."""
-        # Use event_bus from mock_state to avoid fixture resolution issues
-        event_bus = mock_state.event_bus
-        # 1. Setup: Mock WebSocket connection
-        with patch('linux_voice_assistant.sendspin.client.websockets.connect') as mock_connect:
-            mock_ws = MagicMock()
-            mock_connect.return_value = mock_ws
-
-            # 2. Setup: Mock server hello message
-            mock_ws.recv.side_effect = [
-                # Server hello
-                '{"type": "hello", "seq": 1, "server_id": "ma-test", "server_name": "MusicAssistant", "version": "1.0", "snapshot": {"volume": 80, "muted": false}}',
-                # Close message
-                '{"type": "close"}'
-            ]
-
-            # 3. Setup: Create Sendspin client
-            sendspin_config = {
-                "enabled": True,
-                "discovery": True,
-                "auto_connect": True,
-                "server_id": "ma-test"
-            }
-
-            client = SendspinClient(
-                loop=event_loop,
-                event_bus=event_bus,
-                config=sendspin_config,
-                client_id="lva-aabbccddeeff",
-                client_name="LVA Test"
-            )
-
-            # 4. Action: Start client (triggers discovery and connection)
-            task = event_loop.create_task(client.run())
-            await asyncio.sleep(0.2)  # Allow connection and handshake
-
-            # 5. Verification: Check WebSocket was connected
-            assert mock_connect.called
-
-            # 6. Verification: Check handshake was sent
-            sent_messages = []
-            for call in mock_ws.send.call_args_list:
-                sent_messages.append(call[0][0])
-
-            hello_messages = [msg for msg in sent_messages if "hello" in msg]
-            assert len(hello_messages) > 0
-
-            # 7. Verification: Check state was synchronized
-            # Client should have published its initial state
-            state_events = [e for e in event_bus.events_received if "volume" in str(e)]
-            assert len(state_events) > 0
-
-            # 8. Cleanup
-            client.stop()
-            task.cancel()
-
-
-class TestHardwareIntegrationWorkflow:
-    """Test hardware button → LED feedback → state sync workflows."""
-
-    def test_hardware_button_to_led_feedback_workflow(self, event_loop, mock_state):
-        """Test workflow: hardware button press → event publish → LED feedback → state update."""
-        # Use event_bus from mock_state to avoid fixture resolution issues
-        event_bus = mock_state.event_bus
-        # 1. Setup: Mock USB device
-        with patch('linux_voice_assistant.xvf3800_button_controller.XVF3800USBClient') as mock_usb_client:
-            mock_usb = MagicMock()
-            mock_usb_client.return_value = mock_usb
-            mock_usb.GPO_MUTE_INDEX = 1
-            mock_usb.get_mute_gpo.return_value = False
-
-            # 2. Setup: Mock LED backend
-            with patch('linux_voice_assistant.xvf3800_led_backend.XVF3800LedBackend') as mock_led_backend:
-                mock_led = MagicMock()
-                mock_led_backend.return_value = mock_led
-
-                # 3. Action: Create button controller
-                button_config = MagicMock()
-                button_config.xvf3800_button_poll_interval = 0.1
-
-                controller = XVF3800ButtonController(
-                    loop=event_loop,
-                    event_bus=event_bus,
-                    state=mock_state,
-                    button_config=button_config
-                )
-
-                # 4. Action: Simulate mute event from software
-                event_bus.publish("set_mic_mute", {"mute": True})
-
-                # 5. Verification: Check state updated
-                time.sleep(0.2)  # Allow polling cycle
-                assert mock_state.mic_mute is True
-
-                # 6. Verification: Check hardware was updated
-                assert mock_usb.set_mute_gpo.called
-
-                # 7. Cleanup
-                controller.stop()
-
-
-class TestErrorRecoveryWorkflow:
-    """Test error recovery and resilience workflows."""
-
-    @pytest.mark.asyncio
-    async def test_mqtt_connection_failure_recovery(self, event_loop, mock_state):
-        """Test MQTT connection failure and automatic reconnection workflow."""
-        # Use event_bus from mock_state to avoid fixture resolution issues
-        event_bus = mock_state.event_bus
-        # 1. Setup: Mock MQTT broker with connection failure
-        with patch('linux_voice_assistant.mqtt_controller.mqtt.Client') as mock_mqtt_client:
-            mock_client = MagicMock()
-            mock_mqtt_client.return_value = mock_client
-
-            # 2. Simulate connection failure then success
-            mock_client.connect.side_effect = [1, 0]  # Fail then succeed
-            mock_client.loop_start.return_value = None
-
-            # 3. Setup: Create MQTT controller
-            mqtt_config = MagicMock()
-            mqtt_config.host = "localhost"
-            mqtt_config.port = 1883
-            mqtt_config.username = None
-            mqtt_config.password = None
-            mqtt_config.client_id = "lva-test"
-
-            controller = MqttController(
-                loop=event_loop,
-                event_bus=event_bus,
-                config=mqtt_config,
-                app_name="test_device",
-                mac_address="aa:bb:cc:dd:ee:ff",
-                preferences=mock_state.preferences
-            )
-
-            # 4. Action: Start controller (first connection fails)
-            controller.start()
-
-            # 5. Action: Simulate reconnection trigger
-            controller._on_disconnect(None, None, 0)
-
-            # 6. Action: Simulate successful reconnection
-            controller._on_connect(None, None, 0, 0)
-
-            # 7. Verification: Check controller handled recovery
-            assert controller.connected is True
-
-            # 8. Cleanup
-            controller.stop()
-
-    @pytest.mark.asyncio
-    async def test_sendspin_websocket_disconnection_recovery(self, event_loop, mock_state):
-        """Test Sendspin WebSocket disconnection and reconnection workflow."""
-        # Use event_bus from mock_state to avoid fixture resolution issues
-        event_bus = mock_state.event_bus
-        # 1. Setup: Mock WebSocket with disconnection
-        with patch('linux_voice_assistant.sendspin.client.websockets.connect') as mock_connect:
-            mock_ws = MagicMock()
-            mock_connect.return_value = mock_ws
-
-            # 2. Simulate server messages then disconnection
-            mock_ws.recv.side_effect = [
-                '{"type": "hello", "seq": 1}',
-                ConnectionError("WebSocket closed")
-            ]
-
-            # 3. Setup: Create Sendspin client
-            sendspin_config = {
-                "enabled": True,
-                "auto_connect": True,
-                "reconnect_delay": 0.1
-            }
-
-            client = SendspinClient(
-                loop=event_loop,
-                event_bus=event_bus,
-                config=sendspin_config,
-                client_id="lva-test",
-                client_name="LVA Test"
-            )
-
-            # 4. Action: Start client
-            task = event_loop.create_task(client.run())
-
-            # 5. Wait for connection and disconnection
-            await asyncio.sleep(0.3)
-
-            # 6. Verification: Check client handled disconnection gracefully
-            assert client.connected is False
-
-            # 7. Cleanup
-            client.stop()
-            task.cancel()
-
-
-class TestMusicAssistantScenario:
-    """Test real-world Music Assistant usage scenarios."""
-
-    @pytest.mark.asyncio
-    async def test_music_assistant_volume_change_workflow(self, event_loop, mock_state):
-        """Test Music Assistant volume change workflow: MA sends volume → LVA updates state → LED feedback."""
-        # Use event_bus from mock_state to avoid fixture resolution issues
-        event_bus = mock_state.event_bus
-        # 1. Setup: Mock WebSocket
-        with patch('linux_voice_assistant.sendspin.client.websockets.connect') as mock_connect:
-            mock_ws = MagicMock()
-            mock_connect.return_value = mock_ws
-
-            # 2. Setup: Mock server messages including volume change
-            mock_ws.recv.side_effect = [
-                '{"type": "hello", "seq": 1}',
-                # Volume update from MA
-                '{"type": "message", "seq": 2, "message": "volume_update", "data": {"volume": 75}}',
-                '{"type": "close"}'
-            ]
-
-            # 3. Setup: Create Sendspin client
-            sendspin_config = {"enabled": True, "auto_connect": True}
-
-            client = SendspinClient(
-                loop=event_loop,
-                event_bus=event_bus,
-                config=sendspin_config,
-                client_id="lva-test",
-                client_name="LVA Test"
-            )
-
-            # 4. Action: Start client and receive volume update
-            task = event_loop.create_task(client.run())
-            await asyncio.sleep(0.3)
-
-            # 5. Verification: Check volume event was published
-            volume_events = [e for e in event_bus.events_received if "volume" in str(e).lower()]
-            assert len(volume_events) > 0
-
-            # 6. Cleanup
-            client.stop()
-            task.cancel()
-
-
-class TestHomeAssistantAutomationScenario:
-    """Test real-world Home Assistant automation scenarios."""
-
-    @pytest.mark.asyncio
-    async def test_home_assistant_mute_toggle_automation(self, event_loop, mock_state):
-        """Test HA automation: MQTT command → LVA mute toggle → state update → feedback."""
-        # Use event_bus from mock_state to avoid fixture resolution issues
-        event_bus = mock_state.event_bus
-        # 1. Setup: Mock MQTT broker
-        with patch('linux_voice_assistant.mqtt_controller.mqtt.Client') as mock_mqtt_client:
-            mock_client = MagicMock()
-            mock_mqtt_client.return_value = mock_client
-            mock_client.connect.return_value = 0
-
-            # 2. Setup: Create MQTT controller
-            mqtt_config = MagicMock()
-            mqtt_config.host = "localhost"
-            mqtt_config.port = 1883
-            mqtt_config.username = None
-            mqtt_config.password = None
-            mqtt_config.client_id = "lva-test"
-            mqtt_config.discovery_prefix = "homeassistant"
-
-            controller = MqttController(
-                loop=event_loop,
-                event_bus=event_bus,
-                config=mqtt_config,
-                app_name="test_device",
-                mac_address="aa:bb:cc:dd:ee:ff",
-                preferences=mock_state.preferences
-            )
-
-            # 3. Action: Simulate MQTT connection
-            controller._on_connect(None, None, 0, 0)
-
-            # 4. Action: Simulate HA sending mute command via MQTT
-            controller._on_command(None, {"mute": True})
-
-            # 5. Verification: Check mute event was published to event bus
-            mute_events = [e for e in event_bus.events_received if "mute" in str(e).lower()]
-            assert len(mute_events) > 0
-
-            # 6. Verification: Check state was updated
-            assert mock_state.mic_mute is True
-
-            # 7. Cleanup
-            controller.stop()
+
+
+# ---------------------------------------------------------------------------
+# Test-local re-implementation of MicMuteHandler
+# ---------------------------------------------------------------------------
+#
+# The real MicMuteHandler lives in linux_voice_assistant/__main__.py. Importing
+# it from there pulls in soundcard / pymicro_wakeword / pyopen_wakeword at
+# module load, which is a heavy dependency for a unit test. Restating the
+# contract here keeps the test self-contained. If the production handler's
+# behaviour changes, this re-statement must be updated to match (or — better —
+# the production handler should be extracted into its own module so tests can
+# import it directly).
+
+class _TestMicMuteHandler(EventHandler):
+    """Minimal stand-in for the production MicMuteHandler.
+
+    Subscribes to ``set_mic_mute`` and:
+      * updates ``state.mic_muted``
+      * sets/clears ``state.mic_muted_event``
+      * forwards to ``mqtt_controller.publish_mute_state`` if provided
+      * re-publishes ``mic_muted`` / ``mic_unmuted`` events on the bus
+    """
+
+    def __init__(
+        self,
+        event_bus: EventBus,
+        state: ServerState,
+        mqtt_controller: Optional[MqttController] = None,
+    ):
+        super().__init__(event_bus)
+        self.state = state
+        self.mqtt_controller = mqtt_controller
+        self._subscribe_all_methods()
+
+    @subscribe
+    def set_mic_mute(self, data: dict):
+        is_muted = bool(data.get("state", False))
+        if self.state.mic_muted == is_muted:
+            return
+
+        self.state.mic_muted = is_muted
+        if is_muted:
+            self.state.mic_muted_event.clear()
+        else:
+            self.state.mic_muted_event.set()
+
+        if self.mqtt_controller is not None:
+            self.mqtt_controller.publish_mute_state(is_muted)
+
+        self.event_bus.publish(
+            "mic_muted" if is_muted else "mic_unmuted",
+            {},
+        )
+
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def real_event_loop():
+    """An asyncio loop scoped to a single test."""
+    loop = asyncio.new_event_loop()
+    yield loop
+    loop.close()
+
+
+@pytest.fixture
+def tracked_event_bus():
+    """Real EventBus with event tracking enabled for assertions."""
+    return EventBus(track_events=True)
+
+
+@pytest.fixture
+def server_state(real_event_loop, tracked_event_bus, tmp_path):
+    """A real ServerState wired to the test's event_bus + loop.
+
+    All hardware/model fields are left empty/None — this state is intended
+    for tests that exercise control-plane events, not audio or wake-word
+    processing.
+    """
+    prefs = Preferences()
+    state = ServerState(
+        name="test_device",
+        mac_address="aa:bb:cc:dd:ee:ff",
+        event_bus=tracked_event_bus,
+        loop=real_event_loop,
+        entities=[],
+        music_player=None,
+        tts_player=None,
+        available_wake_words={},
+        wake_words={},
+        active_wake_words=set(),
+        stop_word=None,
+        wake_word_sensitivity="Slightly sensitive",
+        wakeup_sound="",
+        thinking_sound="",
+        timer_finished_sound="",
+        preferences=prefs,
+        preferences_path=tmp_path / "preferences.json",
+        download_dir=tmp_path / "downloads",
+        refractory_seconds=0.5,
+        event_sounds_enabled=True,
+        thinking_sound_loop=False,
+        listen_during_wake_sound=False,
+    )
+    state.mic_muted_event.set()  # Start unmuted
+    state.shutdown = False
+    return state
+
+
+@pytest.fixture
+def mqtt_config():
+    return MqttConfig(host="localhost", port=1883, username=None, password=None)
+
+
+@pytest.fixture
+def mqtt_controller_with_mocked_client(real_event_loop, tracked_event_bus, mqtt_config, server_state):
+    """An MqttController whose paho client is mocked.
+
+    Yields ``(controller, mock_client)`` so tests can assert against publish/
+    subscribe calls.
+    """
+    with patch("linux_voice_assistant.mqtt_controller.mqtt.Client") as mock_client_class:
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+
+        controller = MqttController(
+            loop=real_event_loop,
+            event_bus=tracked_event_bus,
+            config=mqtt_config,
+            app_name="test_device",
+            mac_address="aa:bb:cc:dd:ee:ff",
+            preferences=server_state.preferences,
+        )
+        yield controller, mock_client
+
+
+# ---------------------------------------------------------------------------
+# MQTT integration
+# ---------------------------------------------------------------------------
+
+class TestMqttIntegrationWorkflow:
+    """Verify MqttController <-> EventBus round-trips."""
+
+    def test_on_connect_subscribes_and_publishes_discovery(
+        self, mqtt_controller_with_mocked_client
+    ):
+        """Connecting should subscribe to the command topic + publish discovery."""
+        controller, mock_client = mqtt_controller_with_mocked_client
+
+        # Simulate a successful connect callback (rc=0).
+        controller._on_connect(mock_client, None, {}, 0)
+
+        # The controller must subscribe to the command-topic wildcard.
+        sub_calls = [c.args[0] for c in mock_client.subscribe.call_args_list]
+        assert any(
+            arg.endswith("/+/set") for arg in sub_calls
+        ), f"Expected a subscribe to '<prefix>/+/set'; got {sub_calls!r}"
+
+        # And it should have published at least one discovery config.
+        publish_topics = [c.args[0] for c in mock_client.publish.call_args_list]
+        assert any(
+            t.startswith("homeassistant/") for t in publish_topics
+        ), f"Expected a homeassistant/* discovery publish; got {publish_topics!r}"
+
+        # Internal flag should now report connected.
+        assert controller._connected is True
+
+    def test_mqtt_mute_command_publishes_set_mic_mute_event(
+        self, mqtt_controller_with_mocked_client, tracked_event_bus
+    ):
+        """A 'mute/set' MQTT message should fan out as a set_mic_mute event."""
+        controller, _mock_client = mqtt_controller_with_mocked_client
+
+        # Skip bootstrap so a non-retained command is honoured.
+        controller._bootstrap_state_sync = False
+
+        topic = controller.topics["mute"]["command"]
+        controller._handle_message_on_loop(topic, "ON", retained=False)
+
+        published_topics = [t for t, _ in tracked_event_bus.events_received]
+        assert "set_mic_mute" in published_topics
+
+        # And the payload should carry state=True.
+        for t, data in tracked_event_bus.events_received:
+            if t == "set_mic_mute":
+                assert data.get("state") is True
+                break
+
+
+class TestMqttConnectionRecoveryWorkflow:
+    """Verify the disconnect -> reconnect path keeps internal state sane."""
+
+    def test_disconnect_then_reconnect_resets_connected_flag(
+        self, mqtt_controller_with_mocked_client
+    ):
+        controller, mock_client = mqtt_controller_with_mocked_client
+
+        # Initial connect.
+        controller._on_connect(mock_client, None, {}, 0)
+        assert controller._connected is True
+
+        # Simulate a disconnect.
+        controller._on_disconnect(mock_client, None, 0)
+
+        # Reconnect.
+        controller._on_connect(mock_client, None, {}, 0)
+        assert controller._connected is True
+        # Bootstrap should re-arm on every fresh connect.
+        assert controller._bootstrap_state_sync is True
+
+
+# ---------------------------------------------------------------------------
+# Mute round-trip: software command -> state -> MQTT re-publish
+# ---------------------------------------------------------------------------
+
+class TestMuteToggleWorkflow:
+    """Verify that publishing set_mic_mute drives state and MQTT correctly."""
+
+    def test_set_mic_mute_updates_state_and_publishes_mqtt(
+        self, mqtt_controller_with_mocked_client, server_state, tracked_event_bus
+    ):
+        """set_mic_mute -> state.mic_muted, mic_muted_event, mute MQTT publish."""
+        controller, mock_client = mqtt_controller_with_mocked_client
+        _TestMicMuteHandler(tracked_event_bus, server_state, controller)
+
+        # Pre-state.
+        assert server_state.mic_muted is False
+        assert server_state.mic_muted_event.is_set()
+
+        # Action: HA / button / whoever publishes set_mic_mute.
+        tracked_event_bus.publish("set_mic_mute", {"state": True})
+
+        # State must have flipped.
+        assert server_state.mic_muted is True
+        assert not server_state.mic_muted_event.is_set()
+
+        # And the MQTT side should have published the new mute state on the
+        # state topic. We don't assert on the call_args_list count because
+        # the controller may also have published other things during init.
+        mute_state_topic = controller.topics["mute"]["state"]
+        mute_publishes = [
+            c for c in mock_client.publish.call_args_list
+            if c.args[0] == mute_state_topic
+        ]
+        assert mute_publishes, (
+            f"Expected publish to {mute_state_topic}; "
+            f"saw {[c.args[0] for c in mock_client.publish.call_args_list]}"
+        )
+        # The most recent publish on that topic should reflect 'ON'.
+        assert mute_publishes[-1].args[1] == "ON"
+
+        # And the bus should have seen the secondary mic_muted event.
+        secondary = [t for t, _ in tracked_event_bus.events_received if t == "mic_muted"]
+        assert secondary, "Expected mic_muted to be re-published after set_mic_mute"
+
+    def test_set_mic_mute_idempotent_when_already_muted(
+        self, mqtt_controller_with_mocked_client, server_state, tracked_event_bus
+    ):
+        """Re-asserting the current state should not produce duplicate work."""
+        controller, mock_client = mqtt_controller_with_mocked_client
+        _TestMicMuteHandler(tracked_event_bus, server_state, controller)
+
+        # Move to muted, then clear the mock so we only see follow-up calls.
+        tracked_event_bus.publish("set_mic_mute", {"state": True})
+        mock_client.publish.reset_mock()
+        tracked_event_bus.clear_events()
+
+        # Re-publish the same state.
+        tracked_event_bus.publish("set_mic_mute", {"state": True})
+
+        # No new publish on the mute state topic.
+        mute_state_topic = controller.topics["mute"]["state"]
+        assert not [
+            c for c in mock_client.publish.call_args_list
+            if c.args[0] == mute_state_topic
+        ]
+        # And no secondary mic_muted event either (only the original
+        # set_mic_mute we just published is in the bus history).
+        secondary = [t for t, _ in tracked_event_bus.events_received if t == "mic_muted"]
+        assert not secondary
+
+
+# ---------------------------------------------------------------------------
+# HA -> MQTT -> EventBus -> state, end-to-end
+# ---------------------------------------------------------------------------
+
+class TestHomeAssistantMuteAutomationWorkflow:
+    """Full path: HA-style MQTT command in, ServerState change out."""
+
+    def test_ha_mqtt_mute_command_drives_state(
+        self, mqtt_controller_with_mocked_client, server_state, tracked_event_bus
+    ):
+        controller, mock_client = mqtt_controller_with_mocked_client
+        _TestMicMuteHandler(tracked_event_bus, server_state, controller)
+
+        # Simulate the controller being post-bootstrap and an HA command arriving.
+        controller._on_connect(mock_client, None, {}, 0)
+        controller._bootstrap_state_sync = False
+
+        topic = controller.topics["mute"]["command"]
+        controller._handle_message_on_loop(topic, "ON", retained=False)
+
+        # State updated.
+        assert server_state.mic_muted is True
+        assert not server_state.mic_muted_event.is_set()
+
+        # And we published the new state back out to MQTT.
+        mute_state_topic = controller.topics["mute"]["state"]
+        latest_state_publish = next(
+            (c for c in reversed(mock_client.publish.call_args_list)
+             if c.args[0] == mute_state_topic),
+            None,
+        )
+        assert latest_state_publish is not None
+        assert latest_state_publish.args[1] == "ON"
 
 
 if __name__ == "__main__":
