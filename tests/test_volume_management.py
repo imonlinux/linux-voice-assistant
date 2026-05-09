@@ -89,7 +89,7 @@ class TestVolumeManagementIntegration:
 
         mock_run.side_effect = side_effect
 
-        result = ensure_output_volume(
+        result = await ensure_output_volume(
             volume=mock_preferences.volume_level,
             output_device="alsa_output.pci-0000_00_1f.5.analog-stereo",
             max_volume_percent=100,

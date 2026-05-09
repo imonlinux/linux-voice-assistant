@@ -122,29 +122,6 @@ class TestCompleteVoiceAssistantWorkflow:
 class TestMQTTIntegrationWorkflow:
     """Test MQTT discovery, connection, and Home Assistant integration workflows."""
 
-    @pytest.fixture
-    def event_loop(self):
-        """Create event loop for async tests."""
-        loop = asyncio.new_event_loop()
-        yield loop
-        loop.close()
-
-    @pytest.fixture
-    def event_bus(self):
-        """Create event bus for workflow testing."""
-        return EventBus(track_events=True)
-
-    @pytest.fixture
-    def mock_state(self, event_loop, event_bus):
-        """Create mock server state."""
-        state = MagicMock(spec=ServerState)
-        state.loop = event_loop
-        state.event_bus = event_bus
-        state.preferences = MagicMock(spec=Preferences)
-        state.preferences.volume_level = 50
-        state.mac_address = "aa:bb:cc:dd:ee:ff"
-        return state
-
     @pytest.mark.asyncio
     async def test_mqtt_discovery_and_connection_workflow(self, event_loop, event_bus, mock_state):
         """Test complete MQTT workflow: discovery → connection → HA integration."""
@@ -195,30 +172,6 @@ class TestMQTTIntegrationWorkflow:
 
 class TestSendspinIntegrationWorkflow:
     """Test Sendspin discovery, WebSocket connection, and audio routing workflows."""
-
-    @pytest.fixture
-    def event_loop(self):
-        """Create event loop for async tests."""
-        loop = asyncio.new_event_loop()
-        yield loop
-        loop.close()
-
-    @pytest.fixture
-    def event_bus(self):
-        """Create event bus for workflow testing."""
-        return EventBus(track_events=True)
-
-    @pytest.fixture
-    def mock_state(self, event_loop, event_bus):
-        """Create mock server state."""
-        state = MagicMock(spec=ServerState)
-        state.loop = event_loop
-        state.event_bus = event_bus
-        state.preferences = MagicMock(spec=Preferences)
-        state.preferences.volume_level = 50
-        state.preferences.sendspin_volume = 100
-        state.mac_address = "aabbccddeeff"
-        return state
 
     @pytest.mark.asyncio
     async def test_sendspin_discovery_and_connection_workflow(self, event_loop, event_bus, mock_state):
@@ -280,31 +233,6 @@ class TestSendspinIntegrationWorkflow:
 class TestHardwareIntegrationWorkflow:
     """Test hardware button → LED feedback → state sync workflows."""
 
-    @pytest.fixture
-    def event_loop(self):
-        """Create event loop for async tests."""
-        loop = asyncio.new_event_loop()
-        yield loop
-        loop.close()
-
-    @pytest.fixture
-    def event_bus(self):
-        """Create event bus for workflow testing."""
-        return EventBus(track_events=True)
-
-    @pytest.fixture
-    def mock_state(self, event_bus):
-        """Create mock server state."""
-        import asyncio
-        loop = asyncio.new_event_loop()
-        state = MagicMock(spec=ServerState)
-        state.loop = loop
-        state.event_bus = event_bus
-        state.preferences = MagicMock(spec=Preferences)
-        state.preferences.volume_level = 0.5
-        state.mic_mute = False
-        return state
-
     def test_hardware_button_to_led_feedback_workflow(self, event_loop, event_bus, mock_state):
         """Test workflow: hardware button press → event publish → LED feedback → state update."""
         # 1. Setup: Mock USB device
@@ -346,29 +274,6 @@ class TestHardwareIntegrationWorkflow:
 
 class TestErrorRecoveryWorkflow:
     """Test error recovery and resilience workflows."""
-
-    @pytest.fixture
-    def event_loop(self):
-        """Create event loop for async tests."""
-        loop = asyncio.new_event_loop()
-        yield loop
-        loop.close()
-
-    @pytest.fixture
-    def event_bus(self):
-        """Create event bus for workflow testing."""
-        return EventBus(track_events=True)
-
-    @pytest.fixture
-    def mock_state(self, event_loop, event_bus):
-        """Create mock server state."""
-        state = MagicMock(spec=ServerState)
-        state.loop = event_loop
-        state.event_bus = event_bus
-        state.preferences = MagicMock(spec=Preferences)
-        state.preferences.volume_level = 50
-        state.mac_address = "aa:bb:cc:dd:ee:ff"
-        return state
 
     @pytest.mark.asyncio
     async def test_mqtt_connection_failure_recovery(self, event_loop, event_bus, mock_state):
@@ -460,30 +365,6 @@ class TestErrorRecoveryWorkflow:
 class TestMusicAssistantScenario:
     """Test real-world Music Assistant usage scenarios."""
 
-    @pytest.fixture
-    def event_loop(self):
-        """Create event loop for async tests."""
-        loop = asyncio.new_event_loop()
-        yield loop
-        loop.close()
-
-    @pytest.fixture
-    def event_bus(self):
-        """Create event bus for workflow testing."""
-        return EventBus(track_events=True)
-
-    @pytest.fixture
-    def mock_state(self, event_loop, event_bus):
-        """Create mock server state."""
-        state = MagicMock(spec=ServerState)
-        state.loop = event_loop
-        state.event_bus = event_bus
-        state.preferences = MagicMock(spec=Preferences)
-        state.preferences.volume_level = 50
-        state.preferences.sendspin_volume = 100
-        state.mac_address = "aabbccddeeff"
-        return state
-
     @pytest.mark.asyncio
     async def test_music_assistant_volume_change_workflow(self, event_loop, event_bus, mock_state):
         """Test Music Assistant volume change workflow: MA sends volume → LVA updates state → LED feedback."""
@@ -526,29 +407,6 @@ class TestMusicAssistantScenario:
 
 class TestHomeAssistantAutomationScenario:
     """Test real-world Home Assistant automation scenarios."""
-
-    @pytest.fixture
-    def event_loop(self):
-        """Create event loop for async tests."""
-        loop = asyncio.new_event_loop()
-        yield loop
-        loop.close()
-
-    @pytest.fixture
-    def event_bus(self):
-        """Create event bus for workflow testing."""
-        return EventBus(track_events=True)
-
-    @pytest.fixture
-    def mock_state(self, event_loop, event_bus):
-        """Create mock server state."""
-        state = MagicMock(spec=ServerState)
-        state.loop = event_loop
-        state.event_bus = event_bus
-        state.preferences = MagicMock(spec=Preferences)
-        state.preferences.volume_level = 50
-        state.mac_address = "aa:bb:cc:dd:ee:ff"
-        return state
 
     @pytest.mark.asyncio
     async def test_home_assistant_mute_toggle_automation(self, event_loop, event_bus, mock_state):
