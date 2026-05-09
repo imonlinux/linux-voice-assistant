@@ -41,6 +41,9 @@ RUN pip install --no-cache-dir \
     pytest-benchmark==4.0.0 \
     pytest-xdist==3.5.0
 
+# Copy application files
+COPY --chown=tester:tester . .
+
 # Switch to non-root user
 USER tester
 
