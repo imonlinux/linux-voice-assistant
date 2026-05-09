@@ -147,7 +147,7 @@ class MqttController(EventHandler):
         self._connected = False
         _LOGGER.debug("Disconnected from MQTT broker")
 
-    def _on_connect(self, client, userdata, flags, rc):
+    def _on_connect(self, client, userdata, flags, rc, properties=None):
         if rc == 0:
             _LOGGER.info("Connected to MQTT broker")
             self._connected = True
