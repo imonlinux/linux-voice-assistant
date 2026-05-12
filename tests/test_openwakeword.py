@@ -3,6 +3,8 @@
 import wave
 from pathlib import Path
 
+import pytest
+
 from linux_voice_assistant.openwakeword import OpenWakeWordFeatures, OpenWakeWord
 from linux_voice_assistant.util import is_arm
 
@@ -17,6 +19,17 @@ else:
 
 
 libtensorflowlite_c_path = _LIB_DIR / "libtensorflowlite_c.so"
+
+
+# Skip the entire module when the bundled TensorFlow Lite shared library
+# isn't present. This happens on dev/test hosts that haven't run the install
+# script, on architectures we don't ship a build for, or in CI without the
+# native dependencies. Users who actually run LVA always have the library;
+# this guard just keeps `pytest tests/` green on bare environments.
+pytestmark = pytest.mark.skipif(
+    not libtensorflowlite_c_path.is_file(),
+    reason=f"libtensorflowlite_c.so not found at {libtensorflowlite_c_path}",
+)
 
 
 def test_features() -> None:

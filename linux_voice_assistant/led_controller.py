@@ -204,6 +204,11 @@ class LedController(EventHandler):
         if not (self._enabled and self._is_ready):
             return
 
+        # Guard against None event loop (e.g., in test contexts)
+        if self.loop is None:
+            _LOGGER.warning("Cannot run LED action '%s': event loop is None", action_method_name)
+            return
+
         if self.current_task and not self.current_task.done():
             self.current_task.cancel()
 

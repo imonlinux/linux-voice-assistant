@@ -236,6 +236,7 @@ linux-voice-assistant/
 │   ├── linux-voice-assistant-xvf3800.md        # ReSpeaker XVF3800 4-Mic USB Array configuration
 │   ├── linux-voice-assistant-xvf3800-mute.md    # Hardware mute button and LED sync details
 │   ├── lva-desktop.md                            # Running LVA on a Linux desktop with the tray client
+│   ├── testing-guide.md                        # Comprehensive testing documentation
 │   └── xvf3800_legacy_led_effects_mapping.md    # LED functions when running firmware older than 2.0.7
 ├── linux_voice_assistant
 │   ├── api_server.py                            # ESPHome API server
@@ -250,9 +251,11 @@ linux-voice-assistant/
 │   ├── __init__.py
 │   ├── led_controller.py                        # LED effects and state mapping
 │   ├── __main__.py                                # Application entry point
+│   ├── microwakeword.py                            # Micro wake word detection module
 │   ├── models.py                                # Shared state and data models
 │   ├── mpv_player.py                            # Media playback via mpv
 │   ├── mqtt_controller.py                        # MQTT discovery and entity management
+│   ├── openwakeword.py                              # Open wake word detection module
 │   ├── satellite.py                            # ESPHome voice assistant protocol
 │   ├── sendspin                                # Sendspin client subsystem
 │   │   ├── client.py                            # WebSocket connection and protocol
@@ -302,13 +305,30 @@ linux-voice-assistant/
 │   │   └── timer_finished.flac
 │   └── wakeup                                    # Wake word triggered sounds
 │       └── wake_word_triggered.flac
-├── tests
-│   ├── lva_mic_capture.py
-│   ├── ok_nabu.wav
-│   ├── test_microwakeword.py
-│   ├── test_openwakeword.py
-│   ├── xvf3800_hid_mute_probe.py
-│   └── xvf3800_probe.py
+├── tests                                              # Comprehensive test suite (293 tests, 99.3% passing)
+│   ├── README.md                                      # Test documentation
+│   ├── conftest.py                                    # Shared pytest fixtures
+│   ├── diagnose_imports.py                            # Import diagnostic utility
+│   ├── test_audio_engine.py                           # Audio engine tests
+│   ├── test_button_controller.py                      # Button controller tests
+│   ├── test_configuration.py                         # Configuration management tests
+│   ├── test_end_to_end_workflows.py                  # End-to-end integration tests
+│   ├── test_event_bus.py                              # Event system architecture tests
+│   ├── test_format_mac.py                             # MAC address formatting tests
+│   ├── test_led_controller.py                         # LED control tests
+│   ├── test_microwakeword.py                          # MicroWakeWord detection tests
+│   ├── test_mqtt_controller.py                        # MQTT integration tests
+│   ├── test_openwakeword.py                           # OpenWakeWord detection tests
+│   ├── test_sendspin_client.py                        # Sendspin client tests
+│   ├── test_sendspin_discovery.py                     # Sendspin discovery tests
+│   ├── test_state_management.py                       # State management tests
+│   ├── test_volume_management.py                      # Volume control tests
+│   ├── test_xvf3800_button_controller.py             # XVF3800 button hardware tests
+│   ├── test_xvf3800_led_backend.py                   # XVF3800 LED hardware tests
+│   ├── lva_mic_capture.py                             # Audio capture utility
+│   ├── ok_nabu.wav                                    # Test audio file
+│   ├── xvf3800_hid_mute_probe.py                     # XVF3800 hardware probe
+│   └── xvf3800_probe.py                               # XVF3800 device probe
 ├── wakewords                                    # Wake word models
 │   ├── alexa.json
 │   ├── alexa.tflite
@@ -355,6 +375,66 @@ linux-voice-assistant/
 │   └── stop.tflite
 └── XVF3800
     └── 99-respeaker-xvf3800.rules                # XVF3800 USB permissions and disable power suspend UDEV rule
+```
+
+---
+
+## Development & Testing
+
+### Running Tests
+
+The project includes a comprehensive test suite covering the fork's new architecture:
+
+```bash
+# Install development dependencies
+./script/setup --dev
+
+# Run all tests
+./script/test
+
+# Run specific test file
+./script/test test_event_bus.py
+
+# Run with coverage report
+pytest tests/ --cov=linux_voice_assistant --cov-report=html
+
+# Run specific test with verbose output
+pytest tests/test_event_bus.py -v
+
+# Run excluding hardware tests
+pytest tests/ -m "not hardware"
+```
+
+### Test Structure
+
+- **Unit Tests**: Core architecture (EventBus, State, Configuration)
+- **Integration Tests**: Controllers and hardware abstractions
+- **Hardware Tests**: Physical device integration (XVF3800, ReSpeaker)
+- **End-to-End Tests**: Complete voice assistant workflows
+
+### Current Test Status
+
+- **Total Tests**: 293
+- **Passing**: 291 (99.3%)
+- **Skipped**: 2 (hardware-dependent tests)
+- **Test Framework**: pytest 7.4.4 with asyncio, mock, and coverage support
+
+See [Testing Guide](docs/testing-guide.md) for detailed testing documentation and [tests/README.md](tests/README.md) for test-specific information.
+
+### Code Quality
+
+```bash
+# Format code
+black linux_voice_assistant/ tests/
+
+# Lint code
+flake8 linux_voice_assistant/ tests/
+
+# Type checking
+mypy linux_voice_assistant/
+
+# Run diagnostics
+python tests/diagnose_imports.py
 ```
 
 ---

@@ -50,6 +50,10 @@ dev = [
     "mypy",
     "pylint",
     "pytest",
+    "pytest-asyncio",
+    "pytest-cov",
+    "pytest-mock",
+    "pytest-benchmark",
 ]
 
 # Optional GUI/tray dependencies. Only needed on desktop installs that use lva_tray_client.
@@ -91,3 +95,17 @@ ignore = [
     # registration (LedController, MicMuteHandler, etc.) — not dead code
     "F841",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short --strict-markers"
+markers = [
+    "hardware: marks tests as requiring hardware",
+    "slow: marks tests as slow running",
+    "integration: marks tests as integration tests",
+    "benchmark: marks tests as performance benchmarks",
+]
+asyncio_mode = "auto"

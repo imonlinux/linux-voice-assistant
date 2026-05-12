@@ -38,7 +38,11 @@ def get_mac_address() -> str:
 
 def format_mac(mac: str) -> str:
     """Format a hex MAC string with colons (e.g., aa:bb:cc:dd:ee:ff)."""
-    return ":".join(mac[i : i + 2] for i in range(0, 12, 2))
+    # Remove existing colons and other separators
+    clean_mac = mac.replace(":", "").replace("-", "").replace(".", "")
+
+    # Format with colons every 2 characters
+    return ":".join(clean_mac[i : i + 2] for i in range(0, 12, 2))
 
 
 def slugify_device_id(name: str) -> str:
@@ -49,3 +53,17 @@ def slugify_device_id(name: str) -> str:
 def call_all(*callables: Optional[Callable[[], None]]) -> None:
     for item in filter(None, callables):
         item()
+
+
+def is_arm() -> bool:
+    """Detect if running on ARM architecture (e.g., Raspberry Pi)."""
+    try:
+        import platform
+        return platform.machine().startswith(('arm', 'aarch'))
+    except Exception:
+        # Fallback: try to read from /proc/cpuinfo
+        try:
+            with open('/proc/cpuinfo', 'r') as f:
+                return 'ARM' in f.read()
+        except Exception:
+            return False

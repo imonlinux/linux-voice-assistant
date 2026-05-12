@@ -286,4 +286,8 @@ class AudioEngine:
 
         except Exception as e:
             _LOGGER.critical("A soundcard error occurred: %s", e)
-            self.state.loop.call_soon_threadsafe(self.state.loop.stop)
+            # Guard against None event loop (e.g., in test contexts)
+            if self.state.loop is not None:
+                self.state.loop.call_soon_threadsafe(self.state.loop.stop)
+            else:
+                _LOGGER.warning("Cannot stop event loop: loop is None")

@@ -20,12 +20,9 @@ libtensorflowlite_c_path = _LIB_DIR / "libtensorflowlite_c.so"
 
 
 def test_features() -> None:
-    features = MicroWakeWordFeatures(
-        libtensorflowlite_c_path=libtensorflowlite_c_path,
-    )
+    features = MicroWakeWordFeatures()
     ww = MicroWakeWord.from_config(
         config_path=_MICRO_DIR / "okay_nabu.json",
-        libtensorflowlite_c_path=libtensorflowlite_c_path,
     )
 
     detected = False
