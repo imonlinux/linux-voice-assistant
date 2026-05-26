@@ -115,7 +115,7 @@ class LvaTrayClient(QtWidgets.QSystemTrayIcon):
         self._set_icon_by_key("offline")
 
         # MQTT setup
-        self._client = mqtt.Client()
+        self._client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
         if self._mqtt_username:
             self._client.username_pw_set(self._mqtt_username, self._mqtt_password)
 
@@ -225,7 +225,7 @@ class LvaTrayClient(QtWidgets.QSystemTrayIcon):
     # MQTT callbacks
     # ------------------------------------------------------------------
 
-    def _on_connect(self, client, userdata, flags, rc):  # noqa: ARG002
+    def _on_connect(self, client, userdata, flags, rc, properties=None):  # noqa: ARG002
         if rc == 0:
             _LOGGER.info("Connected to MQTT broker (tray)")
             # Subscribe to everything under our prefix
@@ -233,7 +233,7 @@ class LvaTrayClient(QtWidgets.QSystemTrayIcon):
         else:
             _LOGGER.error("Failed to connect to MQTT, return code %d", rc)
 
-    def _on_disconnect(self, client, userdata, rc):  # noqa: ARG002
+    def _on_disconnect(self, client, userdata, disconnect_flags, rc, properties=None):  # noqa: ARG002
         _LOGGER.warning("MQTT disconnected (rc=%s)", rc)
         self._available = False
         self._update_tray_icon()
