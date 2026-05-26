@@ -173,8 +173,8 @@ class MqttController(EventHandler):
             self._publish_discovery_configs()
         else:
             _LOGGER.error("Failed to connect to MQTT, return code %d", rc)
-
-    def _on_disconnect(self, client, userdata, rc):
+            
+    def _on_disconnect(self, client, userdata, disconnect_flags, rc, properties=None):
         self._connected = False
         if rc != 0:
             _LOGGER.warning(
