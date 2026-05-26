@@ -253,7 +253,7 @@ class TestMqttConnectionRecoveryWorkflow:
         assert controller._connected is True
 
         # Simulate a disconnect.
-        controller._on_disconnect(mock_client, None, 0)
+        controller._on_disconnect(mock_client, None, {}, 0)
 
         # Reconnect.
         controller._on_connect(mock_client, None, {}, 0)
