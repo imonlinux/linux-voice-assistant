@@ -1,8 +1,8 @@
 [Unit]
 Description=Linux Voice Assistant Tray Client
-# Make sure we have a graphical session
+# Bind lifecycle to the graphical session; never pull it up ourselves
 After=graphical-session.target
-Wants=graphical-session.target
+PartOf=graphical-session.target
 
 [Service]
 Type=simple
@@ -12,5 +12,5 @@ Restart=on-failure
 RestartSec=2
 
 [Install]
-WantedBy=default.target
+WantedBy=graphical-session.target
 
