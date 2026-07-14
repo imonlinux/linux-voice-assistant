@@ -17,7 +17,7 @@ from pyopen_wakeword import OpenWakeWord
 
 from .audio_engine import AudioEngine
 from .button_controller import ButtonController
-from .config import Config, load_config_from_json
+from .config import Config, load_config_from_json, _load_json_with_comments
 from .event_bus import EventBus, EventHandler, subscribe
 from .led_controller import LedController
 from .mqtt_controller import MqttController
@@ -653,8 +653,7 @@ def _init_basics() -> Tuple[Config, Dict[str, Any], asyncio.AbstractEventLoop, E
 
     # ALSO load raw JSON dict (so Sendspin gets its section exactly as authored)
     try:
-        with open(config_path, "r", encoding="utf-8") as f:
-            raw_config: Dict[str, Any] = json.load(f)
+        raw_config: Dict[str, Any] = _load_json_with_comments(config_path)
     except Exception:
         _LOGGER.exception("Failed to read raw config JSON (required for sendspin section)")
         raw_config = {}

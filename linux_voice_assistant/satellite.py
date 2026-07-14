@@ -784,7 +784,6 @@ class VoiceSatelliteProtocol(APIServer):
         else:
             # Wait for wakeup sound to finish before streaming audio.
             # Avoids STT interference but introduces a pause after the wake word.
-            self._pipeline_active = True
             self.duck()
             if self.state.event_sounds_enabled and self.state.wakeup_sound:
                 self.state.tts_player.play(
@@ -853,9 +852,10 @@ class VoiceSatelliteProtocol(APIServer):
             return
 
         # Otherwise this is stopping a TTS response.
+        # Note: tts_player.stop() fires the done_callback (_tts_finished) internally,
+        # so we do NOT call _tts_finished() explicitly here (would cause double-fire).
         self.state.tts_player.stop()
         _LOGGER.debug("TTS response stopped manually")
-        self._tts_finished()
 
     def play_tts(self) -> None:
         if not self._tts_url:
@@ -911,8 +911,8 @@ class VoiceSatelliteProtocol(APIServer):
             return
         self.state.tts_player.play(
             self.state.timer_finished_sound,
-            done_callback=lambda: call_all(
-                lambda: time.sleep(1.0), self._play_timer_finished
+            done_callback=lambda: self.state.loop.call_later(
+                1.0, self._play_timer_finished
             ),
         )
 

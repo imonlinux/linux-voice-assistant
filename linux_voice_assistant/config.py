@@ -23,6 +23,46 @@ T = TypeVar("T")
 # Helpers
 # -----------------------------------------------------------------------------
 
+def _load_json_with_comments(path: Path) -> dict:
+    """Load JSON from file, stripping JSON-with-comments (JSONC) comments.
+
+    Supports both // comments and /* block comments */. Strips comments
+    before parsing to allow documented config files while using stdlib json.
+    """
+    import re
+
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            content = f.read()
+    except FileNotFoundError:
+        _LOGGER.critical("Configuration file not found at: %s", path)
+        raise
+
+    # Strip // comments (but not inside strings)
+    # First pass: remove // comments outside of quotes
+    lines = []
+    for line in content.splitlines():
+        # Simple heuristic: split on " and // to find // outside strings
+        # This is conservative - it may miss some edge cases but works for typical configs
+        in_string = False
+        i = 0
+        while i < len(line):
+            c = line[i]
+            if c == '"' and (i == 0 or line[i-1] != '\\'):
+                in_string = not in_string
+            elif not in_string and c == '/' and i + 1 < len(line) and line[i+1] == '/':
+                # Found // comment, strip rest of line
+                line = line[:i]
+                break
+            i += 1
+        lines.append(line)
+    content = '\n'.join(lines)
+
+    # Strip /* block comments */
+    content = re.sub(r'/\*.*?\*/', '', content, flags=re.DOTALL)
+
+    return json.loads(content)
+
 def _clamp_0_1(name: str, value: float) -> float:
     """Clamp a float to [0.0, 1.0], logging a warning if clamped."""
     try:
@@ -425,14 +465,13 @@ class Config:
 # -----------------------------------------------------------------------------
 
 def load_config_from_json(config_path: Path) -> Config:
-    """Loads configuration from a JSON file and populates dataclasses."""
+    """Loads configuration from a JSON file and populates dataclasses.
+
+    Supports JSON-with-comments (JSONC) format - comments are stripped before parsing.
+    """
 
     try:
-        with open(config_path, "r", encoding="utf-8") as f:
-            raw_data = json.load(f)
-    except FileNotFoundError:
-        _LOGGER.critical("Configuration file not found at: %s", config_path)
-        raise
+        raw_data = _load_json_with_comments(config_path)
     except json.JSONDecodeError as e:
         _LOGGER.critical("Error parsing configuration file: %s", e)
         raise
