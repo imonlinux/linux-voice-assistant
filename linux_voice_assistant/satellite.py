@@ -852,9 +852,10 @@ class VoiceSatelliteProtocol(APIServer):
             return
 
         # Otherwise this is stopping a TTS response.
+        # tts_player.stop() fires the done_callback (_tts_finished) internally,
+        # so we don't call it explicitly here to avoid duplicate execution.
         self.state.tts_player.stop()
         _LOGGER.debug("TTS response stopped manually")
-        self._tts_finished()
 
     def play_tts(self) -> None:
         if not self._tts_url:

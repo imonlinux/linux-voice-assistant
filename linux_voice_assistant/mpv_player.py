@@ -68,6 +68,10 @@ class MpvMediaPlayer:
             network_timeout=7,
             ytdl=False,
             msg_level=os.environ.get("LVA_MPV_MSG_LEVEL", "all=warn"),
+            # Reduced buffer and stream silence for lower audio latency
+            # Trades CPU for responsiveness; may need acceptance testing on low-end hardware
+            audio_buffer=0.5,
+            stream_silence=True,
         )
 
         # Optional: allow forcing ao via environment for power users/debugging.
@@ -146,7 +150,9 @@ class MpvMediaPlayer:
             Useful for sounds recorded at a lower amplitude than others.
         """
         # Ensure player is in a clean state
-        self.stop()
+        # Use _stop_for_replacement() instead of stop() to avoid firing
+        # the previous media's done_callback when new media replaces it.
+        self._stop_for_replacement()
 
         # Apply temporary volume override, wrapping done_callback to restore
         if volume_override is not None:
@@ -195,6 +201,12 @@ class MpvMediaPlayer:
         self.is_playing = True
         self.player.playlist_pos = 0  # Start playing from the first item
 
+        # Ensure playback starts even if player was previously paused
+        try:
+            self.player.pause = False
+        except Exception:
+            _LOGGER.exception("Failed to reset pause state in play()")
+
     def pause(self) -> None:
         """Pauses playback."""
         try:
@@ -220,6 +232,25 @@ class MpvMediaPlayer:
                 _LOGGER.exception("stop() failed")
             finally:
                 self._run_done_callback()
+
+    def _stop_for_replacement(self) -> None:
+        """Stop playback without firing the pending done_callback.
+
+        Used by play() to ensure a clean state when new media replaces
+        existing playback, preventing the previous media's callback from
+        firing erroneously.
+        """
+        # Clear the callback without firing it
+        with self._done_callback_lock:
+            self._done_callback = None
+
+        if self.is_playing:
+            self.is_playing = False
+            try:
+                self.player.playlist_clear()
+                self.player.command("stop")
+            except Exception:
+                _LOGGER.exception("stop-for-replacement failed")
 
     def set_volume(self, volume: int) -> None:
         """Sets the player (mpv) volume from 0 to 100."""
