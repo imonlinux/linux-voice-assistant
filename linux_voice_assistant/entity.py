@@ -238,6 +238,14 @@ class MuteSwitchEntity(ESPHomeEntity):
     def _switch_state(self) -> bool:
         return self._get_muted()
 
+    def update_get_muted(self, get_muted: Callable[[], bool]) -> None:
+        """Update the get_muted callback (called on reconnect to refresh closure)."""
+        self._get_muted = get_muted
+
+    def update_set_muted(self, set_muted: Callable[[bool], None]) -> None:
+        """Update the set_muted callback (called on reconnect to refresh closure)."""
+        self._set_muted = set_muted
+
     def sync_state_to_ha(self) -> None:
         """Push the current mute state to HA.
 
@@ -303,6 +311,14 @@ class ThinkingSoundSwitchEntity(ESPHomeEntity):
     def _switch_state(self) -> bool:
         return self._get_enabled()
 
+    def update_get_enabled(self, get_enabled: Callable[[], bool]) -> None:
+        """Update the get_enabled callback (called on reconnect to refresh closure)."""
+        self._get_enabled = get_enabled
+
+    def update_set_enabled(self, set_enabled: Callable[[bool], None]) -> None:
+        """Update the set_enabled callback (called on reconnect to refresh closure)."""
+        self._set_enabled = set_enabled
+
     def handle_message(self, msg: message.Message) -> Iterable[message.Message]:
         if isinstance(msg, SwitchCommandRequest) and (msg.key == self.key):
             self._set_enabled(msg.state)
@@ -356,6 +372,14 @@ class EventSoundsSwitchEntity(ESPHomeEntity):
     @property
     def _switch_state(self) -> bool:
         return self._get_enabled()
+
+    def update_get_enabled(self, get_enabled: Callable[[], bool]) -> None:
+        """Update the get_enabled callback (called on reconnect to refresh closure)."""
+        self._get_enabled = get_enabled
+
+    def update_set_enabled(self, set_enabled: Callable[[bool], None]) -> None:
+        """Update the set_enabled callback (called on reconnect to refresh closure)."""
+        self._set_enabled = set_enabled
 
     def handle_message(self, msg: message.Message) -> Iterable[message.Message]:
         if isinstance(msg, SwitchCommandRequest) and (msg.key == self.key):
@@ -418,6 +442,14 @@ class SoundSelectEntity(ESPHomeEntity):
     @property
     def _current_state(self) -> str:
         return self._get_selection()
+
+    def update_get_selection(self, get_selection: Callable[[], str]) -> None:
+        """Update the get_selection callback (called on reconnect to refresh closure)."""
+        self._get_selection = get_selection
+
+    def update_set_selection(self, set_selection: Callable[[str], None]) -> None:
+        """Update the set_selection callback (called on reconnect to refresh closure)."""
+        self._set_selection = set_selection
 
     def handle_message(self, msg: message.Message) -> Iterable[message.Message]:
         if isinstance(msg, SelectCommandRequest) and (msg.key == self.key):
@@ -493,6 +525,14 @@ class AlarmDurationNumberEntity(ESPHomeEntity):
     def _current_value(self) -> float:
         return self._get_value()
 
+    def update_get_value(self, get_value: Callable[[], float]) -> None:
+        """Update the get_value callback (called on reconnect to refresh closure)."""
+        self._get_value = get_value
+
+    def update_set_value(self, set_value: Callable[[float], None]) -> None:
+        """Update the set_value callback (called on reconnect to refresh closure)."""
+        self._set_value = set_value
+
     def handle_message(self, msg: message.Message) -> Iterable[message.Message]:
         if isinstance(msg, NumberCommandRequest) and (msg.key == self.key):
             value = max(self.min_value, min(self.max_value, msg.state))
@@ -561,6 +601,14 @@ class WakeWordSensitivityEntity(ESPHomeEntity):
     @property
     def _current_state(self) -> str:
         return self._get_sensitivity()
+
+    def update_get_sensitivity(self, get_sensitivity: Callable[[], str]) -> None:
+        """Update the get_sensitivity callback (called on reconnect to refresh closure)."""
+        self._get_sensitivity = get_sensitivity
+
+    def update_set_sensitivity(self, set_sensitivity: Callable[[str], None]) -> None:
+        """Update the set_sensitivity callback (called on reconnect to refresh closure)."""
+        self._set_sensitivity = set_sensitivity
 
     def handle_message(self, msg: message.Message) -> Iterable[message.Message]:
         if isinstance(msg, SelectCommandRequest) and (msg.key == self.key):

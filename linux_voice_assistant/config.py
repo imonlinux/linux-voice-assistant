@@ -166,6 +166,11 @@ class AppConfig:
     # the wakeup sound bleeding into the microphone (poor AEC setup).
     listen_during_wake_sound: bool = True
 
+    # Delay in seconds before reopening the mic after TTS finishes when
+    # continue_conversation is enabled. This prevents the TTS tail from being
+    # captured as new audio. Default is 0.5s to match upstream behavior.
+    continue_conversation_delay: float = 0.5
+
     preferences_file: str = "preferences.json"
     debug: bool = False
 

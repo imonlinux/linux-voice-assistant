@@ -255,16 +255,21 @@ class VoiceSatelliteProtocol(APIServer):
 
         If an entity of the requested type already exists (from a previous
         connection), it is reused and its ``server`` attribute is rebound to
-        the current protocol instance.  Otherwise *factory* is called to
-        create a new entity and it is appended to ``state.entities``.
+        the current protocol instance. Callbacks are also refreshed by
+        recreating the entity via factory (fork-specific reconnect pattern).
+
+        Otherwise *factory* is called to create a new entity and it is
+        appended to ``state.entities``.
 
         Returns the entity instance.
         """
-        for entity in self.state.entities:
+        for idx, entity in enumerate(self.state.entities):
             if isinstance(entity, entity_type):
-                entity.server = self
                 _LOGGER.debug("Reusing existing entity: %s", entity_type.__name__)
-                return entity
+                # Recreate the entity to refresh callbacks (they close over protocol instance)
+                new_entity = factory()
+                self.state.entities[idx] = new_entity
+                return new_entity
 
         # Not found — create via factory and register
         _LOGGER.debug("Creating new entity: %s", entity_type.__name__)
@@ -317,12 +322,17 @@ class VoiceSatelliteProtocol(APIServer):
         Like ``_setup_entity`` but for entity types that have multiple
         instances (e.g. three SoundSelectEntity instances).  Matches on
         ``entity.instance_id`` when the type matches.
+
+        On reconnect, the entity is recreated via factory to refresh callbacks.
         """
-        for entity in self.state.entities:
+        for idx, entity in enumerate(self.state.entities):
             if isinstance(entity, entity_type):
                 if hasattr(entity, "instance_id") and entity.instance_id == instance_id:
-                    entity.server = self
-                    return entity
+                    _LOGGER.debug("Reusing existing entity: %s (id=%s)", entity_type.__name__, instance_id)
+                    # Recreate the entity to refresh callbacks (they close over protocol instance)
+                    new_entity = factory()
+                    self.state.entities[idx] = new_entity
+                    return new_entity
 
         # Not found — create via factory and register
         entity = factory()
@@ -810,11 +820,10 @@ class VoiceSatelliteProtocol(APIServer):
             # Existing behavior: ignore wakeup in other states.
             return
 
-        # If a timer alarm is currently ringing, stop it instead of starting
-        # a new conversation run.
+        # If a timer alarm is currently ringing, stop it and continue into
+        # a new conversation (upstream #275 behavior).
         if self._timer_finished:
             self._stop_timer_alarm("wakeup")
-            return
 
         wake_word_phrase = getattr(wake_word, "wake_word", "wake word")
         _LOGGER.debug("Detected wake word: %s", wake_word_phrase)
@@ -828,9 +837,10 @@ class VoiceSatelliteProtocol(APIServer):
         if self._state not in (SatelliteState.IDLE, SatelliteState.STARTING):
             return
 
+        # If a timer alarm is currently ringing, stop it and continue into
+        # a new conversation (upstream #275 behavior).
         if self._timer_finished:
             self._stop_timer_alarm("button")
-            return
 
         _LOGGER.debug("Manual wakeup triggered: %s", phrase)
         self._start_conversation(phrase)
@@ -876,14 +886,40 @@ class VoiceSatelliteProtocol(APIServer):
 
     def _determine_final_state(self) -> None:
         if self._continue_conversation:
-            self.send_messages([VoiceAssistantRequest(start=True)])
-            self._is_streaming_audio = True
-            _LOGGER.debug("Continuing conversation")
-            self._set_state(SatelliteState.LISTENING)
+            # Use loop.call_later for thread-safe delayed conversation continue
+            # (upstream #342 adaptation - avoids threading.Timer)
+            delay = self.state.config.app.continue_conversation_delay
+            self.state.loop.call_later(delay, self._start_continued_conversation)
+            _LOGGER.debug("Continuing conversation in %.1fs", delay)
         else:
             self._set_state(SatelliteState.IDLE)
 
         _LOGGER.debug("Final state determined")
+
+    def _start_continued_conversation(self) -> None:
+        """Start a continued conversation after delay (upstream #342 adaptation).
+
+        This helper is scheduled by loop.call_later() and re-checks mic_muted
+        and connection state before sending, to avoid sending after disconnect
+        or mute state changes.
+        """
+        # Guard: don't continue if mic has been muted during the delay
+        if self.state.mic_muted:
+            _LOGGER.debug("Continue-conversation skipped: mic is muted")
+            self._set_state(SatelliteState.IDLE)
+            return
+
+        # Guard: don't continue if connection has been lost
+        if self._transport is None:
+            _LOGGER.debug("Continue-conversation skipped: connection lost")
+            self._set_state(SatelliteState.IDLE)
+            return
+
+        # Safe to continue the conversation
+        self.send_messages([VoiceAssistantRequest(start=True)])
+        self._is_streaming_audio = True
+        _LOGGER.debug("Continuing conversation")
+        self._set_state(SatelliteState.LISTENING)
 
     def _tts_finished(self) -> None:
         self.state.active_wake_words.discard(self.state.stop_word.id)
@@ -907,7 +943,10 @@ class VoiceSatelliteProtocol(APIServer):
         """
         if not self._timer_finished:
             # Alarm has been cleared; restore audio state.
-            self.unduck()
+            # Only unduck if we're not in an active conversation (LISTENING/RESPONDING/THINKING).
+            # This prevents unwanted unduck when a wake word during ring continues into listening.
+            if self._state in (SatelliteState.IDLE, SatelliteState.STARTING):
+                self.unduck()
             return
         self.state.tts_player.play(
             self.state.timer_finished_sound,
