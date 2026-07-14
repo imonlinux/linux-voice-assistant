@@ -998,6 +998,7 @@ def _create_server_state(
             preferences, config.app.thinking_sound_loop,
         ),
         listen_during_wake_sound=config.app.listen_during_wake_sound,
+        continue_conversation_delay=config.app.continue_conversation_delay,
     )
 
 def _init_controllers(

@@ -250,26 +250,35 @@ class VoiceSatelliteProtocol(APIServer):
     # Entity lifecycle helpers
     # -------------------------------------------------------------------------
 
-    def _setup_entity(self, entity_type, factory):
+    def _setup_entity(self, entity_type, factory, callbacks=None):
         """Find or create an entity of *entity_type* in the state entity list.
 
         If an entity of the requested type already exists (from a previous
-        connection), it is reused and its ``server`` attribute is rebound to
-        the current protocol instance. Callbacks are also refreshed by
-        recreating the entity via factory (fork-specific reconnect pattern).
+        connection), it is reused with rebind:
+        - entity.server = self (rebind server reference)
+        - Callbacks are refreshed via update_* methods (if callbacks provided)
 
         Otherwise *factory* is called to create a new entity and it is
         appended to ``state.entities``.
 
+        Args:
+            entity_type: The entity class to find/create
+            factory: Callable that creates a new entity instance
+            callbacks: Optional dict of callback names to callables for rebind
+
         Returns the entity instance.
         """
-        for idx, entity in enumerate(self.state.entities):
+        for entity in self.state.entities:
             if isinstance(entity, entity_type):
                 _LOGGER.debug("Reusing existing entity: %s", entity_type.__name__)
-                # Recreate the entity to refresh callbacks (they close over protocol instance)
-                new_entity = factory()
-                self.state.entities[idx] = new_entity
-                return new_entity
+                # Rebind server reference
+                entity.server = self
+                # Rebind callbacks if provided
+                if callbacks:
+                    for attr_name, callback in callbacks.items():
+                        if hasattr(entity, attr_name):
+                            getattr(entity, attr_name)(callback)
+                return entity
 
         # Not found — create via factory and register
         _LOGGER.debug("Creating new entity: %s", entity_type.__name__)
@@ -323,16 +332,14 @@ class VoiceSatelliteProtocol(APIServer):
         instances (e.g. three SoundSelectEntity instances).  Matches on
         ``entity.instance_id`` when the type matches.
 
-        On reconnect, the entity is recreated via factory to refresh callbacks.
+        On reconnect, rebinds server to the existing entity (preserves state).
         """
-        for idx, entity in enumerate(self.state.entities):
+        for entity in self.state.entities:
             if isinstance(entity, entity_type):
                 if hasattr(entity, "instance_id") and entity.instance_id == instance_id:
                     _LOGGER.debug("Reusing existing entity: %s (id=%s)", entity_type.__name__, instance_id)
-                    # Recreate the entity to refresh callbacks (they close over protocol instance)
-                    new_entity = factory()
-                    self.state.entities[idx] = new_entity
-                    return new_entity
+                    entity.server = self
+                    return entity
 
         # Not found — create via factory and register
         entity = factory()
@@ -888,7 +895,7 @@ class VoiceSatelliteProtocol(APIServer):
         if self._continue_conversation:
             # Use loop.call_later for thread-safe delayed conversation continue
             # (upstream #342 adaptation - avoids threading.Timer)
-            delay = self.state.config.app.continue_conversation_delay
+            delay = self.state.continue_conversation_delay
             self.state.loop.call_later(delay, self._start_continued_conversation)
             _LOGGER.debug("Continuing conversation in %.1fs", delay)
         else:

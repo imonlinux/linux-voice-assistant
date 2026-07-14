@@ -185,7 +185,11 @@ class ServerState:
     # When true, audio streaming starts immediately on wake word detection;
     # the wakeup sound plays concurrently. When false, waits for the sound.
     listen_during_wake_sound: bool = True
-    
+
+    # Delay before reopening the mic when continue_conversation is set (seconds).
+    # Prevents TTS tail from being captured as new audio.
+    continue_conversation_delay: float = 0.5
+
     # Threading event to pause the audio thread efficiently when muted
     # set() = Mic is ON (Audio processing running)
     # clear() = Mic is OFF (Audio processing paused)
