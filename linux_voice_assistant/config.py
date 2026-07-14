@@ -14,6 +14,8 @@ from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Type, TypeVar
 
+from .util import load_jsonc
+
 _LOGGER = logging.getLogger(__name__)
 
 T = TypeVar("T")
@@ -425,11 +427,14 @@ class Config:
 # -----------------------------------------------------------------------------
 
 def load_config_from_json(config_path: Path) -> Config:
-    """Loads configuration from a JSON file and populates dataclasses."""
+    """Loads configuration from a JSON file and populates dataclasses.
+
+    Supports JSONC (JSON with comments) - // and /* */ style comments are
+    stripped before parsing, allowing inline documentation in config files.
+    """
 
     try:
-        with open(config_path, "r", encoding="utf-8") as f:
-            raw_data = json.load(f)
+        raw_data = load_jsonc(config_path)
     except FileNotFoundError:
         _LOGGER.critical("Configuration file not found at: %s", config_path)
         raise

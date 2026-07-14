@@ -1,12 +1,77 @@
 """Utility methods."""
 
+import json
 import logging
 import uuid
 from collections.abc import Callable
-from typing import Optional
+from typing import Any
 
 _LOGGER = logging.getLogger(__name__)
 _CACHED_MAC: Optional[str] = None
+
+
+def load_jsonc(path: str, encoding: str = "utf-8") -> Any:
+    """
+    Load a JSON file, stripping JSONC comments (// and /* */).
+
+    This allows config files to contain comments for documentation
+    while maintaining compatibility with json.load() for standard JSON.
+
+    Args:
+        path: Path to the JSON file
+        encoding: File encoding (default: utf-8)
+
+    Returns:
+        Parsed JSON data as Python dict/list
+
+    Raises:
+        FileNotFoundError: If file doesn't exist
+        json.JSONDecodeError: If JSON is malformed after comment stripping
+    """
+    with open(path, "r", encoding=encoding) as f:
+        content = f.read()
+
+    # Strip // comments (not inside strings)
+    lines = []
+    in_string = False
+    string_char = None
+
+    for line in content.split('\n'):
+        i = 0
+        stripped_line = []
+        while i < len(line):
+            char = line[i]
+
+            # Track if we're inside a string literal
+            if char in ('"', "'") and (i == 0 or line[i-1] != '\\'):
+                if in_string and char == string_char:
+                    in_string = False
+                    string_char = None
+                elif not in_string:
+                    in_string = True
+                    string_char = char
+
+            # If not in string, check for comment start
+            if not in_string:
+                if char == '/' and i + 1 < len(line) and line[i+1] == '/':
+                    # Line comment - skip rest of line
+                    break
+                elif char == '/' and i + 1 < len(line) and line[i+1] == '*':
+                    # Block comment start - find end
+                    end_idx = line.find('*/', i + 2)
+                    if end_idx != -1:
+                        i = end_idx + 2
+                    else:
+                        # Multi-line comment - skip rest of line, will handle in subsequent lines
+                        break
+
+            stripped_line.append(char)
+            i += 1
+
+        if stripped_line:
+            lines.append(''.join(stripped_line).rstrip())
+
+    return json.loads('\n'.join(lines))
 
 
 def get_mac_address() -> str:

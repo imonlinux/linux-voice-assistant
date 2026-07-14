@@ -784,7 +784,6 @@ class VoiceSatelliteProtocol(APIServer):
         else:
             # Wait for wakeup sound to finish before streaming audio.
             # Avoids STT interference but introduces a pause after the wake word.
-            self._pipeline_active = True
             self.duck()
             if self.state.event_sounds_enabled and self.state.wakeup_sound:
                 self.state.tts_player.play(
@@ -904,6 +903,7 @@ class VoiceSatelliteProtocol(APIServer):
         Play the timer-finished sound in a loop until either:
         - _timer_finished is cleared (Stop/wakeup/auto-timeout), or
         - alarm_duration_seconds == 0 and user explicitly stops it.
+        Uses loop.call_later to avoid blocking the event loop (upstream #159).
         """
         if not self._timer_finished:
             # Alarm has been cleared; restore audio state.
@@ -911,10 +911,17 @@ class VoiceSatelliteProtocol(APIServer):
             return
         self.state.tts_player.play(
             self.state.timer_finished_sound,
-            done_callback=lambda: call_all(
-                lambda: time.sleep(1.0), self._play_timer_finished
-            ),
+            done_callback=self._timer_sound_finished,
         )
+
+    def _timer_sound_finished(self) -> None:
+        """Callback when timer alarm sound finishes playing. Schedules next repeat."""
+        if not self._timer_finished:
+            # Alarm has been cleared; restore audio state.
+            self.unduck()
+            return
+        # Schedule next play after 1 second delay (non-blocking)
+        self.state.loop.call_later(1.0, self._play_timer_finished)
 
     # -------------------------------------------------------------------------
     # External wake word download helpers

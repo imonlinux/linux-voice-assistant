@@ -152,27 +152,34 @@ class MqttController(EventHandler):
             _LOGGER.info("Connected to MQTT broker")
             self._connected = True
 
-            # --- Bug 1 & 2 fix ---
-            # Always reset bootstrap state sync on every (re)connect so that
-            # retained messages flooding in after reconnect are handled correctly.
-            # Cancel any previous bootstrap-end timer that may still be pending
-            # from a disconnect that happened within the prior bootstrap window.
-            if self._bootstrap_end_handle is not None:
-                self._bootstrap_end_handle.cancel()
-                self._bootstrap_end_handle = None
-
-            self._bootstrap_state_sync = True
-            self._bootstrap_ends_at = self.loop.time() + 5.0
-            self._bootstrap_end_handle = self.loop.call_later(
-                5.0, self._end_bootstrap_state_sync
-            )
-
+            # Subscribe to command topics (must be done in paho callback thread)
             client.subscribe(f"{self._topic_prefix}/+/set")
             client.subscribe(f"{self._topic_prefix}/+/state")
 
-            self._publish_discovery_configs()
+            # Marshal bootstrap timer setup and discovery config to asyncio loop
+            # for thread safety (loop.time() and handle manipulation)
+            self.loop.call_soon_threadsafe(self._setup_post_connect)
         else:
             _LOGGER.error("Failed to connect to MQTT, return code %d", rc)
+
+    def _setup_post_connect(self) -> None:
+        """Asyncio-loop-callback for post-connect setup (thread-safe)."""
+        # --- Bug 1 & 2 fix ---
+        # Always reset bootstrap state sync on every (re)connect so that
+        # retained messages flooding in after reconnect are handled correctly.
+        # Cancel any previous bootstrap-end timer that may still be pending
+        # from a disconnect that happened within the prior bootstrap window.
+        if self._bootstrap_end_handle is not None:
+            self._bootstrap_end_handle.cancel()
+            self._bootstrap_end_handle = None
+
+        self._bootstrap_state_sync = True
+        self._bootstrap_ends_at = self.loop.time() + 5.0
+        self._bootstrap_end_handle = self.loop.call_later(
+            5.0, self._end_bootstrap_state_sync
+        )
+
+        self._publish_discovery_configs()
             
     def _on_disconnect(self, client, userdata, disconnect_flags, rc, properties=None):
         self._connected = False

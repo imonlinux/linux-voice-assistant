@@ -25,7 +25,7 @@ from .models import AvailableWakeWord, Preferences, ServerState, WakeWordType
 from .mpv_player import MpvMediaPlayer
 from .audio_volume import ensure_output_volume
 from .satellite import VoiceSatelliteProtocol
-from .util import get_mac_address, format_mac
+from .util import get_mac_address, format_mac, load_jsonc
 from .zeroconf import HomeAssistantZeroconf
 from .xvf3800_button_controller import XVF3800ButtonController  # NEW
 
@@ -652,9 +652,9 @@ def _init_basics() -> Tuple[Config, Dict[str, Any], asyncio.AbstractEventLoop, E
     config = load_config_from_json(config_path)
 
     # ALSO load raw JSON dict (so Sendspin gets its section exactly as authored)
+    # Supports JSONC comments for documentation
     try:
-        with open(config_path, "r", encoding="utf-8") as f:
-            raw_config: Dict[str, Any] = json.load(f)
+        raw_config = load_jsonc(config_path)
     except Exception:
         _LOGGER.exception("Failed to read raw config JSON (required for sendspin section)")
         raw_config = {}
