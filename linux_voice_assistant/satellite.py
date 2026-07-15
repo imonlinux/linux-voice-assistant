@@ -237,8 +237,7 @@ class VoiceSatelliteProtocol(APIServer):
                 "update_set_value": self._set_alarm_duration,
             },
         )
-        )
-        
+
         # --- Wake Word Sensitivity select entity (key=4) ---
         self.sensitivity_entity = self._setup_entity(
             entity_type=WakeWordSensitivityEntity,
@@ -317,6 +316,11 @@ class VoiceSatelliteProtocol(APIServer):
                     for attr_name, callback in callbacks.items():
                         if hasattr(entity, attr_name):
                             getattr(entity, attr_name)(callback)
+                        else:
+                            _LOGGER.warning(
+                                "Rebind skipped: %s has no method %s",
+                                entity_type.__name__, attr_name,
+                            )
                 return entity
 
         # Not found — create via factory and register
@@ -383,6 +387,11 @@ class VoiceSatelliteProtocol(APIServer):
                         for attr_name, callback in callbacks.items():
                             if hasattr(entity, attr_name):
                                 getattr(entity, attr_name)(callback)
+                            else:
+                                _LOGGER.warning(
+                                    "Rebind skipped: %s has no method %s",
+                                    entity_type.__name__, attr_name,
+                                )
                     return entity
 
         # Not found — create via factory and register
@@ -1017,13 +1026,29 @@ class VoiceSatelliteProtocol(APIServer):
                 self._timer_repeat_handle.cancel()
                 self._timer_repeat_handle = None
             return
-        # Schedule the repeat and store the handle for cancellation
-        self._timer_repeat_handle = self.state.loop.call_later(
-            1.0, self._play_timer_finished
-        )
         self.state.tts_player.play(
             self.state.timer_finished_sound,
-            done_callback=None,  # We handle repeat scheduling manually via the handle
+            done_callback=self._schedule_timer_repeat,
+        )
+
+    def _schedule_timer_repeat(self) -> None:
+        """Runs on the loop when the alarm sound finishes; schedules the next beep.
+
+        This ensures repeat happens 1.0s AFTER the sound finishes (end-relative cadence),
+        not 1.0s after it starts. This prevents stuttering on sounds ≥ 1.0s long.
+        """
+        if not self._timer_finished:
+            # Alarm has been cleared
+            if self._state in (SatelliteState.IDLE, SatelliteState.STARTING):
+                self.unduck()
+            # Cancel any pending repeat (defensive)
+            if self._timer_repeat_handle is not None:
+                self._timer_repeat_handle.cancel()
+                self._timer_repeat_handle = None
+            return
+        # Schedule next repeat 1.0s from now
+        self._timer_repeat_handle = self.state.loop.call_later(
+            1.0, self._play_timer_finished
         )
 
     # -------------------------------------------------------------------------
