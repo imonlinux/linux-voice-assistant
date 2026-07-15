@@ -99,6 +99,12 @@ class VoiceSatelliteProtocol(APIServer):
                     "set_mic_mute", {"state": muted}
                 ),
             ),
+            callbacks={
+                "update_get_muted": lambda: self.state.mic_muted,
+                "update_set_muted": lambda muted: self.state.event_bus.publish(
+                    "set_mic_mute", {"state": muted}
+                ),
+            },
         )
 
         # --- Thinking Sound Loop switch entity (key=2) ---
@@ -113,6 +119,10 @@ class VoiceSatelliteProtocol(APIServer):
                 get_enabled=lambda: self.state.thinking_sound_loop,
                 set_enabled=self._set_thinking_sound_loop,
             ),
+            callbacks={
+                "update_get_enabled": lambda: self.state.thinking_sound_loop,
+                "update_set_enabled": self._set_thinking_sound_loop,
+            },
         )
 
         # --- Event Sounds switch entity (key=3) ---
@@ -127,6 +137,10 @@ class VoiceSatelliteProtocol(APIServer):
                 get_enabled=lambda: self.state.event_sounds_enabled,
                 set_enabled=self._set_event_sounds_enabled,
             ),
+            callbacks={
+                "update_get_enabled": lambda: self.state.event_sounds_enabled,
+                "update_set_enabled": self._set_event_sounds_enabled,
+            },
         )
 
         # --- Sound Select entities (keys 5-7) ---
@@ -150,6 +164,10 @@ class VoiceSatelliteProtocol(APIServer):
                 get_selection=lambda: self._get_sound_selection("wakeup_sound"),
                 set_selection=lambda v: self._set_sound_selection("wakeup_sound", v),
             ),
+            callbacks={
+                "update_get_selection": lambda: self._get_sound_selection("wakeup_sound"),
+                "update_set_selection": lambda v: self._set_sound_selection("wakeup_sound", v),
+            },
         ) if wakeup_options else None
 
         thinking_options = list(sound_opts.get("thinking_sound", []))
@@ -170,6 +188,10 @@ class VoiceSatelliteProtocol(APIServer):
                 get_selection=lambda: self._get_sound_selection("thinking_sound"),
                 set_selection=lambda v: self._set_sound_selection("thinking_sound", v),
             ),
+            callbacks={
+                "update_get_selection": lambda: self._get_sound_selection("thinking_sound"),
+                "update_set_selection": lambda v: self._set_sound_selection("thinking_sound", v),
+            },
         ) if thinking_options else None
 
         timer_options = list(sound_opts.get("timer_sound", []))
@@ -188,6 +210,10 @@ class VoiceSatelliteProtocol(APIServer):
                 get_selection=lambda: self._get_sound_selection("timer_sound"),
                 set_selection=lambda v: self._set_sound_selection("timer_sound", v),
             ),
+            callbacks={
+                "update_get_selection": lambda: self._get_sound_selection("timer_sound"),
+                "update_set_selection": lambda v: self._set_sound_selection("timer_sound", v),
+            },
         ) if timer_options else None
 
         # --- Alarm Duration number entity (key=8) ---
@@ -204,6 +230,13 @@ class VoiceSatelliteProtocol(APIServer):
                 ),
                 set_value=self._set_alarm_duration,
             ),
+            callbacks={
+                "update_get_value": lambda: float(
+                    getattr(self.state.preferences, "alarm_duration_seconds", 0)
+                ),
+                "update_set_value": self._set_alarm_duration,
+            },
+        )
         )
         
         # --- Wake Word Sensitivity select entity (key=4) ---
@@ -219,6 +252,10 @@ class VoiceSatelliteProtocol(APIServer):
                 get_sensitivity=lambda: self.state.wake_word_sensitivity,
                 set_sensitivity=self._set_sensitivity,
             ),
+            callbacks={
+                "update_get_sensitivity": lambda: self.state.wake_word_sensitivity,
+                "update_set_sensitivity": self._set_sensitivity,
+            },
         )
 
         # Apply initial sensitivity at startup
@@ -232,6 +269,8 @@ class VoiceSatelliteProtocol(APIServer):
         self._continue_conversation: bool = False
         self._timer_finished: bool = False
         self._timer_auto_stop_handle: Optional[asyncio.TimerHandle] = None
+        self._timer_repeat_handle: Optional[asyncio.TimerHandle] = None
+        self._continue_conversation_handle: Optional[asyncio.TimerHandle] = None
         self._run_end_received: bool = False
         self._tts_end_received: bool = False
         # Track if current audio is an announcement
@@ -325,20 +364,25 @@ class VoiceSatelliteProtocol(APIServer):
         self.state.save_preferences()
         _LOGGER.info("Alarm duration set to: %d seconds", duration)
 
-    def _setup_entity_by_id(self, entity_type, instance_id: str, factory):
+    def _setup_entity_by_id(self, entity_type, instance_id: str, factory, callbacks=None):
         """Find or create an entity matching both type and instance_id.
 
         Like ``_setup_entity`` but for entity types that have multiple
         instances (e.g. three SoundSelectEntity instances).  Matches on
         ``entity.instance_id`` when the type matches.
 
-        On reconnect, rebinds server to the existing entity (preserves state).
+        On reconnect, rebinds server and callbacks to the existing entity.
         """
         for entity in self.state.entities:
             if isinstance(entity, entity_type):
                 if hasattr(entity, "instance_id") and entity.instance_id == instance_id:
                     _LOGGER.debug("Reusing existing entity: %s (id=%s)", entity_type.__name__, instance_id)
                     entity.server = self
+                    # Rebind callbacks if provided
+                    if callbacks:
+                        for attr_name, callback in callbacks.items():
+                            if hasattr(entity, attr_name):
+                                getattr(entity, attr_name)(callback)
                     return entity
 
         # Not found — create via factory and register
@@ -766,6 +810,14 @@ class VoiceSatelliteProtocol(APIServer):
         _LOGGER.debug("Stopping timer finished sound (%s)", reason)
         self._timer_finished = False
         self._clear_timer_auto_stop()
+        # Cancel any pending repeat callback
+        if self._timer_repeat_handle is not None:
+            try:
+                self._timer_repeat_handle.cancel()
+            except Exception:
+                _LOGGER.exception("Failed to cancel timer repeat handle")
+            finally:
+                self._timer_repeat_handle = None
         try:
             self.state.tts_player.stop()
         except Exception:
@@ -896,7 +948,13 @@ class VoiceSatelliteProtocol(APIServer):
             # Use loop.call_later for thread-safe delayed conversation continue
             # (upstream #342 adaptation - avoids threading.Timer)
             delay = self.state.continue_conversation_delay
-            self.state.loop.call_later(delay, self._start_continued_conversation)
+            # Cancel any previous continue-conversation handle
+            if self._continue_conversation_handle is not None:
+                self._continue_conversation_handle.cancel()
+            # Store the new handle for cancellation on disconnect
+            self._continue_conversation_handle = self.state.loop.call_later(
+                delay, self._start_continued_conversation
+            )
             _LOGGER.debug("Continuing conversation in %.1fs", delay)
         else:
             self._set_state(SatelliteState.IDLE)
@@ -954,12 +1012,18 @@ class VoiceSatelliteProtocol(APIServer):
             # This prevents unwanted unduck when a wake word during ring continues into listening.
             if self._state in (SatelliteState.IDLE, SatelliteState.STARTING):
                 self.unduck()
+            # Cancel any pending repeat callback
+            if self._timer_repeat_handle is not None:
+                self._timer_repeat_handle.cancel()
+                self._timer_repeat_handle = None
             return
+        # Schedule the repeat and store the handle for cancellation
+        self._timer_repeat_handle = self.state.loop.call_later(
+            1.0, self._play_timer_finished
+        )
         self.state.tts_player.play(
             self.state.timer_finished_sound,
-            done_callback=lambda: self.state.loop.call_later(
-                1.0, self._play_timer_finished
-            ),
+            done_callback=None,  # We handle repeat scheduling manually via the handle
         )
 
     # -------------------------------------------------------------------------
@@ -1069,3 +1133,21 @@ class VoiceSatelliteProtocol(APIServer):
         super().connection_lost(exc)
         self._set_state(SatelliteState.ERROR)
         _LOGGER.info("Disconnected from Home Assistant")
+
+        # Cancel any pending continue-conversation callback
+        if self._continue_conversation_handle is not None:
+            try:
+                self._continue_conversation_handle.cancel()
+            except Exception:
+                _LOGGER.exception("Failed to cancel continue-conversation handle")
+            finally:
+                self._continue_conversation_handle = None
+
+        # Cancel any pending timer repeat callback
+        if self._timer_repeat_handle is not None:
+            try:
+                self._timer_repeat_handle.cancel()
+            except Exception:
+                _LOGGER.exception("Failed to cancel timer repeat handle")
+            finally:
+                self._timer_repeat_handle = None
