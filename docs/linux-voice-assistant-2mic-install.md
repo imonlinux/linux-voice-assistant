@@ -28,6 +28,11 @@ sudo apt install build-essential git \
 sudo reboot
 ```
 
+> **Note:** For GPIO button support on the ReSpeaker 2-Mic HAT, also install:
+> ```bash
+> sudo apt install swig liblgpio-dev
+> ```
+
 
 ## 2. Get the code
 

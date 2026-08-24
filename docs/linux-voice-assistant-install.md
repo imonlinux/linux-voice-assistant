@@ -32,6 +32,11 @@ sudo apt install build-essential git \
 sudo reboot
 ```
 
+> **Note:** If you plan to use GPIO-based hardware features (ReSpeaker 2-Mic HAT button, Grove Port LEDs), also install:
+> ```bash
+> sudo apt install swig liblgpio-dev
+> ```
+
 ## 2. (Optional) ReSpeaker 2‑Mic HAT drivers or ReSpeaker XVF3800 support
 
 Instructions for the install (or re-install) of the ReSpeaker 2-Mic Hat (**version 1 and version 2**) or the ReSpeaker XVF3800 USB 4-Mic Array have been moved to Section 5.
