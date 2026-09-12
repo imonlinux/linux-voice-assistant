@@ -1043,6 +1043,7 @@ async def main() -> None:
         name=state.name,
         mac_address=state.mac_address,
         host_ip_address=host_ip_address,
+        friendly_name=friendly_name,
     )
     await discovery.register_server()
 
