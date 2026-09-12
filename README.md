@@ -1,228 +1,471 @@
-# Linux-Voice-Assistant
+# Linux Voice Assistant
 
-[![CI](https://github.com/OHF-Voice/linux-voice-assistant/actions/workflows/docker-build-release.yml/badge.svg)](https://github.com/OHF-Voice/linux-voice-assistant/actions/workflows/docker-build-release.yml) [![GitHub Package Version](https://img.shields.io/github/v/tag/OHF-Voice/linux-voice-assistant?label=version)](https://github.com/OHF-Voice/linux-voice-assistant/pkgs/container/linux-voice-assistant) [![GitHub License](https://img.shields.io/github/license/OHF-Voice/linux-voice-assistant)](https://github.com/OHF-Voice/linux-voice-assistant/blob/main/LICENSE.md) [![GitHub last commit](https://img.shields.io/github/last-commit/OHF-Voice/linux-voice-assistant)](https://github.com/OHF-Voice/linux-voice-assistant/commits) [![GitHub Container Registry](https://img.shields.io/badge/Container%20Registry-GHCR-blue)](https://github.com/OHF-Voice/linux-voice-assistant/pkgs/container/linux-voice-assistant)
+> Forked from [OHF-Voice/linux-voice-assistant][ohf-voice] Release v1.0.0.
+>
+> **Re-founded on upstream v1.1.15+** (2026-09): this fork now tracks upstream's
+> architecture directly — the upstream core (`satellite.py`, `entity.py`,
+> `player/`, `wake_word.py`, peripheral API) is used as-is and the fork's
+> differentiating features are add-on modules on top. Upstream releases merge
+> cleanly again. See [docs/RESYNC_PLAN.md](docs/RESYNC_PLAN.md).
+>
+> From upstream, this brings the full ESPHome device-page entity set (mic
+> auto gain, noise suppression, mic volume, per-slot wake word and stop word
+> sensitivities), dual music/TTS players with ducking and announcements,
+> `--music-output-device`, output-only mode, external wake word downloads,
+> MWW/OWW model switching from the UI, and the WebSocket peripheral API.
 
-An experimental voice satellite software for [Home Assistant](https://www.home-assistant.io/) remote voice control and interaction.
+A Linux-based voice satellite for [Home Assistant][homeassistant] that speaks the [ESPHome][esphome] protocol via [aioesphomeapi][aioesphomeapi]. It turns any Linux device — from a Raspberry Pi Zero 2 W to a full desktop — into a capable voice assistant with wake word detection, speech-to-text, TTS playback, timers, LED feedback, and optional multiroom audio via Sendspin.
 
-This project enables you to build a Linux-based voice assistant designed to use [Assist](https://www.home-assistant.io/voice_control/) for Home Assistant. It allows you to create your own smart speaker that runs on any x64 or ARM64 hardware capable of handling local audio processing (using PulseAudio).
+Runs on `aarch64` and `x86_64`
 
-Unlike simpler voice satellites that run on microcontrollers with very limited compute power, this setup can perform local wake word detection (OWW/MWW) and process some data on-device.
+Tested with Python 3.11, 3.13, and 3.14 on Raspberry Pi OS (Trixie), Fedora, Arch, and Nobara.
 
-Because it runs on a full Linux system and offers access significantly more local computing resources for additional features and other integrations on the same satellite, this approach also provides greater flexibility for customization (such as for example experiment with using PipeWire).
+See [the tutorial](docs/linux-voice-assistant-install.md) for complete instructions to install LVA.
 
-[![A project from the Open Home Foundation](https://www.openhomefoundation.org/badges/ohf-project.png)](https://www.openhomefoundation.org/)
+---
 
 ## Features
 
-- Works with [Home Assistant](https://www.home-assistant.io/integrations/esphome/) using the [ESPHome](https://esphome.io/) protocol/API (via [aioesphomeapi](https://github.com/esphome/aioesphomeapi))
-- Feature local on-device wake word detection using integrated [OpenWakeWord](https://github.com/dscripka/openWakeWord) or [MicroWakeWord](https://github.com/kahrendt/microWakeWord)
-- Supports multiple wake words and languages
-- Supports multiple architectures (linux/amd64 and linux/aarch64)
-- Automated builds with artifact attestation for security
-- Supports [announcments](https://www.home-assistant.io/actions/assist_satellite.announce/), [start](https://www.home-assistant.io/actions/assist_satellite.start_conversation/)/continue conversation, and timers
-- Tested and works with Python 3.11 and Python 3.13.
-- Prebuild docker image available on [GitHub Container Registry](https://github.com/OHF-Voice/linux-voice-assistant/pkgs/container/linux-voice-assistant)
-- Prebuild [Raspberry Pi image](https://github.com/florian-asche/PiCompose)
-- Supports [Websocket API](./docs/peripheral_api.md) for peripherals (e.g. buttons, LEDs, etc.) to integrate with the voice assistant
+### Voice Assistant Core
 
-## Requirements
+- **Dual wake word engines** — MicroWakeWord and OpenWakeWord models can run simultaneously. Wake words are selectable from the Home Assistant UI and persisted across reboots.
+- **Wake word sensitivity** — Per-slot numeric sensitivity controls (Wake Word 1/2, Stop Word) on the Home Assistant device page. Precedence: entity value > per-model `.json` threshold > global threshold (config.json / `--wake-word-threshold`).
+- **Microphone tuning** — Mic auto gain, noise suppression, and mic volume entities on the device page (upstream WebRTC processing).
+- **Conversational flow** — Supports announcements, start/continue conversation (configurable delay), and timers with configurable alarm duration and auto-stop.
+- **Configurable event sounds** — Wakeup, thinking, and timer sounds selectable from the Home Assistant device page, with a master toggle (`Event Sounds`). Thinking sound supports optional looping. Timer alarm is a functional alert and always plays regardless of the toggle. The wake chime always plays at full volume.
+- **Acoustic Echo Cancellation** — WebRTC-based AEC via PipeWire filter chains for clean wake word detection during TTS playback, plus optional dual-channel input for server-side AEC.
+- **Stop word** — A dedicated MicroWakeWord model can interrupt TTS playback or silence a ringing timer alarm.
+- **Alarm Duration** — Set the time in seconds for the alarm to play (0 = play until interrupted by the Stop wake word). Configurable from the Home Assistant device page. Alarm repeats are scheduled end-relative (no stutter on long alarm sounds), and a wake word while the alarm rings starts listening immediately.
 
-- **Microphone:** Device must support 16kHz mono audio
-- **CPU:** 1Ghz
-- **Memory:** min. 512MB
-- **Storage:** The OS and software is around 4GB
-- **OS:** linux/amd64 or linux/aarch64
+### ESPHome Device Page (no MQTT required)
 
-A more extensive list for possible compatible hardware can be found in the [PiCompose documentation](https://github.com/florian-asche/PiCompose) but basically any microphone that works with [PipeWire (multimedia framework for Linux)](https://pipewire.org/) can in theory be used for voice input with the prebuild image from there, you should however preferably use a far-field microphone-array solution if want better result.
+All voice/audio controls appear on the HA device page via the native ESPHome API:
 
-Two solutions recommended for setups today is:
+| Entity | Type |
+| --- | --- |
+| Media Player (music + announcements) | `media_player` |
+| Mute | `switch` |
+| Thinking Sound / Thinking Sound Loop | `switch` ×2 |
+| Event Sounds (master toggle) | `switch` |
+| Sound Wakeup / Thinking / Timer | `select` ×3 |
+| Alarm Duration | `number` |
+| Wake Word 1/2 & Stop Word Sensitivity | `number` ×3 |
+| Mic Auto Gain / Noise Suppression / Volume | `number`/`select` |
 
-- use a Raspberry Pi Zero 2W (Single Board Computer with built-in WiFi) in combination with the [Satellite1 Hat Board](https://futureproofhomes.net/products/satellite1-top-microphone-board)
-- use at least a Raspberry Pi 3 with the [Respeaker Lite](https://wiki.seeedstudio.com/reSpeaker_usb_v3/). The Respeaker Lite currently has a problem with the Zero 2W.
+### MQTT Device Controls
 
-Those mic-boards have microphone-array designed for far-field voice capture with the added benefit of using an onboard XMOS DSP microcontroller with custom firmware which does advanced audio pre-processing for microphone cleanup that result in very good voice recognition capabilities (as it runs algorithms for Noise Suppression, Acoustic Echo Cancellation, Interference Cancellation, and Automatic Gain Control).
+When MQTT is enabled, *(See Section 5 of [the tutorial](docs/linux-voice-assistant-install.md))* LVA publishes a full device via MQTT Discovery with the following entities:
 
-Alternatively if on a lower budget then suggest could use other microphone-array boards like for example the [reSpeaker 2-Mics Pi HAT V2.0](https://wiki.seeedstudio.com/ReSpeaker_2_Mics_Pi_HAT/) (which uses a much more basic audio codec chip).
+| Entity | Type | Description |
+| --- | --- | --- |
+| LED Count | `number` | Set the number of addressable LEDs |
+| LED \<State\> Effect | `select` | Choose an LED animation per voice state |
+| LED \<State\> Color | `light` | Set color and brightness per voice state |
 
-## Usage
+*LED states: Idle, Listening, Thinking, Responding, Error. Available effects: Off, Solid, Slow/Medium/Fast Pulse, Slow/Medium/Fast Blink, Spin*
 
-### Installation
+> **Note:** MQTT is only needed for LED controls and the desktop tray client (which mirrors state over MQTT). Everything else lives on the ESPHome device page.
 
-**Assist Satellite app for Home Assistant OS**
+<img width="515" height="1033" alt="image" src="https://github.com/user-attachments/assets/cfc9e462-b301-4323-a3d8-5bab0322a548" />
 
-For HA OS, we provide a finished [Assist Satellite](https://github.com/OHF-Voice/apps/tree/main/assist_satellite) app (formerly add-on), which uses the Linux Voice Assistant runtime to turn your HA host into a voice satellite. 
 
-> [!NOTE]
-> For now you first have to add the [OHF-Voice apps](https://github.com/OHF-Voice/apps) repo manually to the App Store repository inside Home Assistant before you can install it.
+### Hardware Integrations *(See Section 5 of [the tutorial](docs/linux-voice-assistant-install.md))*
 
-Later you will be able to install it directly from the official add-on repository (but it is not yet published publicly there):
+- **ReSpeaker 2-Mic Pi HAT v1 or v2** — GPIO button (mute toggle, short/long press) and SPI LEDs
+- **ReSpeaker XVF3800 4-Mic USB Array** — Hardware mute button, red mute LED sync, USB LED ring, and 4-mic input with AEC support. No vendor binaries required — LVA communicates directly via USB control transfers.
 
-[![Add repository to your Home Assistant instance.](https://my.home-assistant.io/badges/supervisor_addon.svg)](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https://github.com/home-assistant/addons)
+### LED Support
 
-Once installed, the satellite is automatically discovered by Home Assistant via the ESPHome integration.
+- **DotStar (APA102)** — SPI or GPIO interface
+- **NeoPixel (WS2812B)** — SPI or GPIO interface *(Experimental)*
+- **ReSpeaker XVF3800** — USB LED ring with 12 addressable LEDs
+- Per-state effect, color, and brightness control from Home Assistant
 
-**Raspberry Pi prebuilt image**
+### Sendspin Client (Music Assistant) *(See Section 5 of [the tutorial](docs/linux-voice-assistant-install.md))*
 
-For Raspberry Pi users, we provide a prebuild image that can be flashed to a SD card. See [PiCompose](https://github.com/florian-asche/PiCompose).
+The optional Sendspin client turns LVA into a multiroom audio player for [Music Assistant][music-assistant]. The LVA automatically appears as a player in Music Assistant using the device name.
 
-**Docker / bare metal**
+- **Codec support** — PCM, FLAC (via ffmpeg), and Opus (via opuslib or ffmpeg)
+- **Clock-synchronized playback** — Kalman filter clock sync with configurable target latency and late-drop policy for tight multiroom alignment
+- **Transport controls** — Play, pause, stop, volume, and mute from Music Assistant
+- **Voice coordination** — Automatic audio ducking during voice interactions
+- **Tunable timing** — `output_latency_ms`, `sync_target_latency_ms`, and `sync_late_drop_ms` for per-device calibration
 
-For all other users, we have different installation methods available (Docker, systemd), each with its own dedicated instructions. See [Linux-Voice-Assistant - Installation](docs/install.md). 
+#### *Requires Python 3.12+ and the `--sendspin` install extra.*
 
-### Parameter overview
+### Desktop Tray Client *(See [this tutorial](docs/lva-desktop.md))*
 
-💡 **Note:** There is an [environment variable](docs/install_application.md#environment-variables-reference) for each parameter if you use docker or systemd based setup.
+An optional PyQt5 system tray application for Linux desktops that mirrors the LVA's state via MQTT:
 
-```sh
-usage: __main__.py [-h] [--name NAME] [--audio-input-device AUDIO_INPUT_DEVICE] [--list-input-devices] [--audio-input-block-size AUDIO_INPUT_BLOCK_SIZE] [--audio-output-device AUDIO_OUTPUT_DEVICE] [--music-output-device MUSIC_OUTPUT_DEVICE] [--list-output-devices] [--wake-word-dir WAKE_WORD_DIR]  [--mic-auto-gain] [--mic-noise-suppression]
-                   [--wake-model WAKE_MODEL] [--stop-model STOP_MODEL] [--download-dir DOWNLOAD_DIR] [--refractory-seconds REFRACTORY_SECONDS] [--wakeup-sound WAKEUP_SOUND] [--timer-finished-sound TIMER_FINISHED_SOUND] [--processing-sound PROCESSING_SOUND]
-                   [--mute-sound MUTE_SOUND] [--unmute-sound UNMUTE_SOUND] [--preferences-file PREFERENCES_FILE] [--host HOST] [--network-interface NETWORK_INTERFACE] [--port PORT] [--enable-thinking-sound] [--listen-during-wake-sound] [--debug]
+- Visual state indicator with LED color mirroring
+- Mute toggle from the tray menu
+- Start, stop, and restart the LVA systemd service
+
+*Requires the `--tray` install extra.*
+
+### Stable Device Identity
+
+LVA persists its MAC address to `preferences.json` on first boot. This ensures the device identity in Home Assistant survives NIC changes, VM re-provisioning, or NetworkManager MAC randomization. To reset identity, remove the `mac_address` field from `preferences.json`.
+
+### Persistent Settings
+
+Volume, wake word selection, LED count, alarm duration, sound selections, and Sendspin volume are all persisted to `preferences.json` and restored on startup.
+
+---
+
+## Quick Start (Minimal System)
+
+### System Dependencies
+
+```bash
+sudo apt-get install libportaudio2 build-essential libmpv-dev mpv
 ```
 
-| Parameter                       | Description                                                   | Default                              |
-| ------------------------------- | ------------------------------------------------------------- | ------------------------------------ |
-| `--name`                        | Name of the voice assistant device (required)                 | Autogenerated (`lva-MAC-ADDRESS`)    |
-| `--audio-input-device`          | Soundcard name for input device                               | Autodetected                         |
-| `--audio-input-block-size`      | Audio input block size in samples                             | 1024                                 |
-| `--audio-output-device`         | mpv name for output device                                    | Autodetected                         |
-| `--music-output-device`         | mpv name for the music/media output device                    | `--audio-output-device`              |
-| `--mic-volume`                  | Control microphone volume                                     | 100                                  |
-| `--mic-auto-gain`               | Add WebRTC Gain to Mic                                        | 0                                    |
-| `--mic-noise-suppression`       | Add WebRTC Noise Suppression to Mic                           | 0                                    |
-| `--audio-input-channels`        | Number of microphone audio channels to stream                 | 2                                    |
-| `--wake-word-dir`               | Directory with wake word models (.tflite) and configs (.json) | `wakewords/`                         |
-| `--wake-model`                  | ID of active wake word model                                  | `okay_nabu`                          |
-| `--stop-model`                  | ID of stop model                                              | `stop`                               |
-| `--download-dir`                | Directory to download custom wake word models, etc.           | `local/`                             |
-| `--refractory-seconds`          | Seconds before wake word can be activated again               | 2.0                                  |
-| `--continue-conversation-delay` | Delay before mic opens for continued conversation             | 0.5                                  |
-| `--timer-max-ring-seconds`      | Seconds after which the timer stops ringing                   | 900.0                                |
-| `--wakeup-sound`                | Sound file played when wake word is detected                  | `sounds/wake_word_triggered.flac`    |
-| `--start-listening-sound`       | Sound file played when button is pressed to start listening   | `sounds/start_listening_button.flac` |
-| `--timer-finished-sound`        | Sound file played when timer finishes                         | `sounds/timer_finished.flac`         |
-| `--processing-sound`            | Sound played while assistant is processing                    | `sounds/processing.wav`              |
-| `--mute-sound`                  | Sound played when muting the assistant                        | `sounds/mute_switch_on.flac`         |
-| `--unmute-sound`                | Sound played when unmuting the assistant                      | `sounds/mute_switch_off.flac`        |
-| `--preferences-file`            | Path to preferences JSON file                                 | `preferences.json`                   |
-| `--host`                        | IP-Address for ESPHome server, use 0.0.0.0 for all            | Autodetected                         |
-| `--network-interface`           | Network interface for ESPHome server                          | Autodetected                         |
-| `--port`                        | Port for ESPHome server                                       | 6053                                 |
-| `--enable-thinking-sound`       | Enable thinking sound on startup                              | False                                |
-| `--listen-during-wake-sound`    | Start listening while the wake sound is still playing         | False                                |
-| `--peripheral-host`             | Bind address for the peripheral WebSocket API                 | 0.0.0.0                              |
-| `--peripheral-port`             | Port for the peripheral WebSocket API                         | 6055                                 |
-| `--peripheral-volume-step`      | Volume change per button press, 0.0–1.0                       | %(default)s                          |
-| `--disable-peripheral-api`      | Disable the peripheral WebSocket API entirely                 | False                                |
-| `--debug`                       | Print DEBUG messages to console                               | False                                |
-| `--colored-debug`               | Print colored DEBUG messages to console                       | False                                |
-| `--output-only`                 | Enable output only mode                                       | False                                |
+### Install
 
-💡 **Note:** There are detailed explanations on the controlled entities from device page in the [configuration](docs/configuration.md) file.
+```bash
+git clone https://github.com/imonlinux/linux-voice-assistant.git
+cd linux-voice-assistant
+script/setup
+```
 
-## Build Information
+Optional extras (additive):
 
-Image builds can be tracked in this repository's `Actions` tab, and utilize [artifact attestation](https://docs.github.com/en/actions/security-guides/using-artifact-attestations-to-establish-provenance-for-builds) to certify provenance.
+```bash
+script/setup --tray        # Desktop tray client (PyQt5)
+script/setup --sendspin    # Sendspin / Music Assistant support
+script/setup --dev         # Development tools
+```
 
-The Docker images are built using GitHub Actions, which provides:
+### Configure
 
-- Automated builds for different architectures
-- Artifact attestation for build provenance verification
-- Regular updates and maintenance
+Copy and edit the example configuration:
 
-The documentation for the build process can be found in the [GitHub Actions Workflows](.github/workflow.md) file.
+```bash
+nano ~/linux_voice_assistant/config.json
+```
 
-## Development
+*At minimum, set the `app.name` field. See [`config.json.example`](linux_voice_assistant/config.json.example) for all available options with inline documentation.*
 
-### System Requirements
+### Run
 
-**System packages (Linux):**
-- libmpv-dev (`sudo apt install libmpv-dev`)
-- PulseAudio/PipeWire (`sudo apt install pulseaudio pipewire`)
-- ALSA utils (`sudo apt install alsa-utils`)
+```bash
+script/run
+```
 
-**Python:**
-- Python 3.11+ must be installed on your system (`python3 --version` should show 3.11+)
-- On Ubuntu/Debian: `sudo apt install python3.11 python3.11-venv python3.11-dev`
+Or directly:
 
-### VS Code Setup
+```bash
+python3 -m linux_voice_assistant
+```
 
-VS Code development uses a local Python virtual environment (`.venv/`):
+### Connect to Home Assistant
 
-1. Open workspace in VS Code
-2. Accept Workspace Trust (bottom-left status bar)
-3. Install recommended extensions when prompted:
-   - `ms-python.python` - Python language support
-   - `ms-python.vscode-pylance` - Python language server
-   - `kilo.kilocode` - Kilo AI assistant
-4. **Terminal** → **New Terminal** (or `` Ctrl+` ``) - Opens integrated terminal (uses .venv when available)
-5. Run `./script/setup --dev` to create `.venv` and install dev dependencies
-6. VS Code automatically detects `.venv/bin/python` as the Python interpreter
+LVA advertises itself via mDNS/Zeroconf and should be auto-discovered. If not:
 
-**Available VS Code Tasks:**
-- `Ctrl+Shift+B` - Run Setup or Linter
-- `Ctrl+Shift+T` - Run Tests
-- `Ctrl+Shift+P` → "Tasks: Run Task" - Show all tasks (Setup, Linter, Tests, Run App)
+1. Go to **Settings → Devices & Services** in Home Assistant
+2. Click **Add Integration** → **ESPHome** → **Set up another instance**
+3. Enter the IP address of your LVA device with port `6053`
+4. During registration, use the wake word shown on the registration page (default: "OK Nabu")
 
-### Code Quality Checks
+### Run as a Service
 
-The project uses the following tools to ensure code quality:
+```bash
+# Copy and edit the service file (adjust paths/username as needed)
+mkdir -p ~/.config/systemd/user/
+cp service/linux-voice-assistant.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now linux-voice-assistant.service
+```
 
-- **Black**: Code formatting (88 characters per line, PEP 8 compliant)
-- **isort**: Import sorting compatible with Black
-- **flake8**: Style and syntax checks
-- **pylint**: Code quality checks
-- **mypy**: Static type analysis
+Verify:
 
-### Setup
+```bash
+journalctl --user -u linux-voice-assistant.service -f
+```
 
-To use the development tools (linting, testing, etc.), you need to install the required dependencies:
+---
 
-```sh
+## Tutorials
+
+| Guide | Description |
+| --- | --- |
+| [Full Install Guide](docs/linux-voice-assistant-install.md) | Complete setup including AEC, MQTT, LEDs, Sendspin, and XVF3800 |
+| [2-Mic HAT Quick Start](docs/linux-voice-assistant-2mic-install.md) | Raspberry Pi + ReSpeaker 2-Mic HAT focused guide |
+| [XVF3800 Setup](docs/linux-voice-assistant-xvf3800.md) | ReSpeaker XVF3800 4-Mic USB Array configuration |
+| [Desktop Client](docs/lva-desktop.md) | Running LVA on a Linux desktop with the tray client |
+| [PipeWire Install](docs/install_pipewire.md) | PipeWire setup notes |
+| [PulseAudio Install](docs/install_pulseaudio.md) | PulseAudio setup notes |
+
+---
+
+## Configuration Reference
+
+LVA is configured via `config.json`. The file is organized into sections:
+
+| Section | Purpose |
+| --- | --- |
+| `app` | Device name, sound file paths, event sounds toggle, preferences file |
+| `audio` | Input/output device selection, volume sync, max volume percent |
+| `wake_word` | Model directories, default model, stop model, detection threshold |
+| `esphome` | API server host and port |
+| `led` | LED type (dotstar/neopixel/xvf3800), interface, GPIO pins, count |
+| `mqtt` | Broker connection (host, port, credentials) |
+| `button` | Hardware button mode (gpio/xvf3800), pin, press timing |
+| `sendspin` | Sendspin client connection, player tuning, codec preferences |
+
+*See [`config.json.example`](linux_voice_assistant/config.json.example) for the complete reference with inline documentation.*
+
+---
+
+## Wake Word Models
+
+Built-in models (in `wakewords/`):
+
+Community openWakeword models from [home-assistant-wakewords-collection][wakewords-collection] can be added by placing the `.tflite` and corresponding `.json` file in `wakewords/openWakeWord/`.
+
+> **Wake word detection threshold is configurable via the Home Assistant ESPHome entity (MWW and OWW), globally via `config.json` `wake_word.openwakeword_threshold` (OWW only), or per-model via the model's `.json` file (OWW only). The ESPHome entity applies sensitivity presets that adjust all models simultaneously. Per-model OWW thresholds from `.json` files take precedence over both the ESPHome preset and the global `config.json` value.**
+
+Example file:
+`wakewords/openWakeWord/ok_nabu_v0.1.json`
+
+```bash
+{
+  "type": "openWakeWord",
+  "wake_word": "Okay Nabu",
+  "model": "ok_nabu_v0.1.tflite",
+  "threshold": 0.62
+}
+```
+
+---
+
+## Project Structure
+
+```
+linux-voice-assistant/
+├── docs                                        # Installation and setup guides
+│   ├── install_pipewire.md                        # PipeWire setup notes
+│   ├── install_pulseaudio.md                    # PulseAudio setup notes
+│   ├── linux-voice-assistant-2mic-install.md    # Raspberry Pi + ReSpeaker 2-Mic HAT focused guide
+│   ├── linux-voice-assistant-install.md        # Complete setup including AEC, MQTT, LEDs, Sendspin, and XVF3800
+│   ├── linux-voice-assistant-xvf3800.md        # ReSpeaker XVF3800 4-Mic USB Array configuration
+│   ├── linux-voice-assistant-xvf3800-mute.md    # Hardware mute button and LED sync details
+│   ├── lva-desktop.md                            # Running LVA on a Linux desktop with the tray client
+│   ├── testing-guide.md                        # Comprehensive testing documentation
+│   └── xvf3800_legacy_led_effects_mapping.md    # LED functions when running firmware older than 2.0.7
+├── linux_voice_assistant
+│   ├── api_server.py                            # ESPHome API server
+│   ├── audio_engine.py                            # Mic capture and wake word detection
+│   ├── audio_volume.py                            # OS volume control (wpctl/pactl/amixer)
+│   ├── button_controller.py                    # GPIO button handler
+│   ├── config.json                                # LVA configuration file
+│   ├── config.json.example                        # Annotated configuration reference
+│   ├── config.py                                # Configuration dataclasses
+│   ├── entity.py                                # ESPHome entity classes (media player, mute, sounds, sensitivity, alarm duration)
+│   ├── event_bus.py                            # Publish/subscribe event system
+│   ├── __init__.py
+│   ├── led_controller.py                        # LED effects and state mapping
+│   ├── __main__.py                                # Application entry point
+│   ├── microwakeword.py                            # Micro wake word detection module
+│   ├── models.py                                # Shared state and data models
+│   ├── mpv_player.py                            # Media playback via mpv
+│   ├── mqtt_controller.py                        # MQTT discovery and entity management
+│   ├── openwakeword.py                              # Open wake word detection module
+│   ├── satellite.py                            # ESPHome voice assistant protocol
+│   ├── sendspin                                # Sendspin client subsystem
+│   │   ├── client.py                            # WebSocket connection and protocol
+│   │   ├── clock_sync.py                        # Kalman filter time synchronization
+│   │   ├── controller.py                        # EventBus handlers for ducking/commands
+│   │   ├── discovery.py                        # mDNS server discovery
+│   │   ├── __init__.py
+│   │   ├── models.py                            # Sendspin internal state
+│   │   └── player.py                            # PCM sink and decoder pipeline
+│   ├── tray_client                                # Desktop tray client
+│   │   ├── client.py                            # PyQt5 system tray application
+│   │   ├── __init__.py
+│   │   └── __main__.py                            # Tray client entry point
+│   ├── util.py                                    # MAC address, slugify, helpers
+│   ├── xvf3800_button_controller.py            # XVF3800 USB mute integration
+│   ├── xvf3800_led_backend.py                    # XVF3800 USB LED ring driver
+│   └── zeroconf.py                                # mDNS discovery advertisement
+├── mypy.ini
+├── pylintrc
+├── pyproject.toml
+├── README.md
+├── respeaker2mic                                # reSpeaker 2mic hat driver installers
+│   └── install-respeaker-drivers.sh            # verion 1.0 hardware driver installer
+├── script
+│   ├── format
+│   ├── lint
+│   ├── run
+│   ├── setup
+│   ├── test
+│   └── tray
+├── service                                        # systemd unit files
+│   ├── aec-module-load.service                    # Audio Echo Cancellation unit file
+│   ├── linux-voice-assistant.service            # LVA unit file
+│   ├── linux-voice-assistant-tray.service        # Tray Client unit file
+│   └── linux-voice-assistant_xvf3800.service    # LVA unit file with pipewire depends
+├── setup.cfg
+├── sounds
+│   ├── LICENSE.md
+│   ├── thinking                                # Thinking state sounds
+│   │   ├── nothing.flac
+│   │   ├── processing.flac
+│   │   ├── thinking_modem.flac
+│   │   ├── thinking_music_2.flac
+│   │   ├── thinking_music_3.flac
+│   │   └── thinking_music.flac
+│   ├── timer                                    # Timer alarm sounds
+│   │   └── timer_finished.flac
+│   └── wakeup                                    # Wake word triggered sounds
+│       └── wake_word_triggered.flac
+├── tests                                              # Comprehensive test suite (293 tests, 99.3% passing)
+│   ├── README.md                                      # Test documentation
+│   ├── conftest.py                                    # Shared pytest fixtures
+│   ├── diagnose_imports.py                            # Import diagnostic utility
+│   ├── test_audio_engine.py                           # Audio engine tests
+│   ├── test_button_controller.py                      # Button controller tests
+│   ├── test_configuration.py                         # Configuration management tests
+│   ├── test_end_to_end_workflows.py                  # End-to-end integration tests
+│   ├── test_event_bus.py                              # Event system architecture tests
+│   ├── test_format_mac.py                             # MAC address formatting tests
+│   ├── test_led_controller.py                         # LED control tests
+│   ├── test_microwakeword.py                          # MicroWakeWord detection tests
+│   ├── test_mqtt_controller.py                        # MQTT integration tests
+│   ├── test_openwakeword.py                           # OpenWakeWord detection tests
+│   ├── test_sendspin_client.py                        # Sendspin client tests
+│   ├── test_sendspin_discovery.py                     # Sendspin discovery tests
+│   ├── test_state_management.py                       # State management tests
+│   ├── test_volume_management.py                      # Volume control tests
+│   ├── test_xvf3800_button_controller.py             # XVF3800 button hardware tests
+│   ├── test_xvf3800_led_backend.py                   # XVF3800 LED hardware tests
+│   ├── lva_mic_capture.py                             # Audio capture utility
+│   ├── ok_nabu.wav                                    # Test audio file
+│   ├── xvf3800_hid_mute_probe.py                     # XVF3800 hardware probe
+│   └── xvf3800_probe.py                               # XVF3800 device probe
+├── wakewords                                    # Wake word models
+│   ├── alexa.json
+│   ├── alexa.tflite
+│   ├── choo_choo_homie.json
+│   ├── choo_choo_homie.tflite
+│   ├── hey_home_assistant.json
+│   ├── hey_home_assistant.tflite
+│   ├── hey_jarvis.json
+│   ├── hey_jarvis.tflite
+│   ├── hey_luna.json
+│   ├── hey_luna.tflite
+│   ├── hey_mycroft.json
+│   ├── hey_mycroft.tflite
+│   ├── okay_computer.json
+│   ├── okay_computer.tflite
+│   ├── okay_nabu.json
+│   ├── okay_nabu.tflite
+│   ├── openWakeWord
+│   │   ├── alexa_v0.1.json
+│   │   ├── alexa_v0.1.tflite
+│   │   ├── computer_v2.json
+│   │   ├── computer_v2.tflite
+│   │   ├── hal_v2.json
+│   │   ├── hal_v2.tflite
+│   │   ├── hey_jarvis_v0.1.json
+│   │   ├── hey_jarvis_v0.1.tflite
+│   │   ├── hey_Marvin.json
+│   │   ├── hey_Marvin.tflite
+│   │   ├── hey_mycroft_v0.1.json
+│   │   ├── hey_mycroft_v0.1.tflite
+│   │   ├── hey_nabu_v2.json
+│   │   ├── hey_nabu_v2.tflite
+│   │   ├── hey_rhasspy_v0.1.json
+│   │   ├── hey_rhasspy_v0.1.tflite
+│   │   ├── jarvis_v2.json
+│   │   ├── jarvis_v2.tflite
+│   │   ├── marvin_v2.json
+│   │   ├── marvin_v2.tflite
+│   │   ├── ok_jarvis.json
+│   │   ├── ok_jarvis.tflite
+│   │   ├── ok_nabu_v0.1.json
+│   │   └── ok_nabu_v0.1.tflite
+│   ├── stop.json
+│   └── stop.tflite
+└── XVF3800
+    └── 99-respeaker-xvf3800.rules                # XVF3800 USB permissions and disable power suspend UDEV rule
+```
+
+---
+
+## Development & Testing
+
+### Running Tests
+
+The project includes a comprehensive test suite covering the fork's new architecture:
+
+```bash
+# Install development dependencies
 ./script/setup --dev
-source .venv/bin/activate
+
+# Run all tests
+./script/test
+
+# Run specific test file
+./script/test test_event_bus.py
+
+# Run with coverage report
+pytest tests/ --cov=linux_voice_assistant --cov-report=html
+
+# Run specific test with verbose output
+pytest tests/test_event_bus.py -v
+
+# Run excluding hardware tests
+pytest tests/ -m "not hardware"
 ```
 
-### Linting Commands
+### Test Structure
 
-#### Run all linting checks
+- **Unit Tests**: Core architecture (EventBus, State, Configuration)
+- **Integration Tests**: Controllers and hardware abstractions
+- **Hardware Tests**: Physical device integration (XVF3800, ReSpeaker)
+- **End-to-End Tests**: Complete voice assistant workflows
 
-```sh
-./script/lint...
+### Current Test Status
+
+- **Total Tests**: 293
+- **Passing**: 291 (99.3%)
+- **Skipped**: 2 (hardware-dependent tests)
+- **Test Framework**: pytest 7.4.4 with asyncio, mock, and coverage support
+
+See [Testing Guide](docs/testing-guide.md) for detailed testing documentation and [tests/README.md](tests/README.md) for test-specific information.
+
+### Code Quality
+
+```bash
+# Format code
+black linux_voice_assistant/ tests/
+
+# Lint code
+flake8 linux_voice_assistant/ tests/
+
+# Type checking
+mypy linux_voice_assistant/
+
+# Run diagnostics
+python tests/diagnose_imports.py
 ```
 
-#### Individual linting commands (with auto-fix support)
-
-
-| Script                 | Description                              | Auto-fix Available?   |
-| ------------------------ | ------------------------------------------ | ----------------------- |
-| `./script/lint_black`  | Checks Python code formatting with Black | Yes, use`--auto` flag |
-| `./script/lint_flake8` | Runs style and syntax checks with flake8 | No                    |
-| `./script/lint_isort`  | Checks import sorting with isort         | Yes, use`--auto` flag |
-| `./script/lint_mypy`   | Runs static type analysis with mypy      | No                    |
-| `./script/lint_pylint` | Runs code quality checks with pylint     | Yes, use`--auto` flag |
-
-#### Examples
-
-Run a specific lint check:
-
-```sh
-./script/lint_black
-```
-
-Auto-fix formatting issues (Black + isort):
-
-```sh
-./script/lint_black --auto
-./script/lint_isort --auto
-```
-
-### Testing
-
-Run the test suite:
-``` sh
-./script/tests
-```
+---
 
 ## License
 
-This project is licensed under the Apache 2.0 License - see the [LICENSE](LICENSE) file for details.
+Licensed under the [Apache License 2.0](LICENSE.md).
+
+---
+
+<!-- Links -->
+
+[homeassistant]: https://www.home-assistant.io/
+[esphome]: https://esphome.io/
+[aioesphomeapi]: https://github.com/esphome/aioesphomeapi
+[ohf-voice]: https://github.com/OHF-Voice/linux-voice-assistant
+[music-assistant]: https://music-assistant.io/
+[wakewords-collection]: https://github.com/fwartner/home-assistant-wakewords-collection
