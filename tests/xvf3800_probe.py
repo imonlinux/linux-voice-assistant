@@ -35,13 +35,18 @@ def main():
     args = parser.parse_args()
 
     mics = sc.all_microphones()
+    try:
+        default_id = sc.default_microphone().id
+    except Exception:
+        default_id = None
     print("=== soundcard.all_microphones() ===")
     selected = None
     for idx, mic in enumerate(mics):
         flag = "*" if args.device in (mic.name, str(idx)) else " "
+        marker = " [system default]" if mic.id == default_id else ""
         print(
             f"{flag} [{idx}] {mic.name} "
-            f"(channels={mic.channels}, default={mic.isdefault})"
+            f"(channels={mic.channels}){marker}"
         )
         if flag == "*":
             selected = mic
