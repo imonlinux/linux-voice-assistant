@@ -18,14 +18,18 @@ if TYPE_CHECKING:
     from pyopen_wakeword import OpenWakeWord
 
     from .entity import (
+        AlarmDurationNumberEntity,
         ButtonEventSensorEntity,
         ESPHomeEntity,
+        EventSoundsSwitchEntity,
         LEDLightEntity,
         MediaPlayerEntity,
         MicSettingEntity,
         MuteSwitchEntity,
+        SoundSelectEntity,
         StopWordSensitivityNumberEntity,
         ThinkingSoundEntity,
+        ThinkingSoundLoopSwitchEntity,
         WakeWord1SensitivityNumberEntity,
         WakeWord2SensitivityNumberEntity,
     )
@@ -95,6 +99,35 @@ class Preferences:
     mic_auto_gain: int = 0
     mic_noise_suppression: int = 0
     mic_volume: int = 100  # 1–100, default maximum
+
+    # --- Fork: persisted state for fork features ---
+    # (older fork preferences.json files may carry these; the defensive
+    # loader in __main__ migrates legacy names and drops unknown keys)
+    # Persisted MAC address for stable device identity across reboots/NIC
+    # changes. Empty string = not yet persisted.
+    mac_address: str = ""
+    # Last-known Sendspin (Music Assistant) player volume 0-100, independent
+    # of the LVA master volume.
+    sendspin_volume: int = 100
+    # Number of addressable LEDs (consumed by the fork's LED controller).
+    num_leds: int = 3
+    # Timer alarm auto-stop duration in seconds. 0 = ring until interrupted.
+    alarm_duration_seconds: int = 0
+    # Selected sound filename per category ("" = use config/CLI default,
+    # "None" = category disabled). Resolved against sounds/<category>/.
+    selected_wakeup_sound: str = ""
+    selected_thinking_sound: str = ""
+    selected_timer_sound: str = ""
+    # "ON" / "OFF" explicit loop selection; "" = config default.
+    selected_thinking_sound_loop: str = ""
+    # Event sounds master toggle (wakeup + thinking; timer alarm unaffected).
+    # None = no explicit selection (use config default).
+    event_sounds_enabled: Optional[bool] = None
+    # Legacy fork preset name kept so old preferences round-trip; the numeric
+    # per-slot sensitivity entities superseded it.
+    wake_word_sensitivity: str = "Slightly sensitive"
+    # Persisted listen-during-wake-sound selection (fork default True).
+    listen_during_wake_sound: bool = True
 
 
 @dataclass
@@ -186,6 +219,21 @@ class ServerState:
     # Running asyncio loop; assigned in __main__ once the server is up.
     # Controllers running on their own threads use it to marshal calls.
     loop: Optional[asyncio.AbstractEventLoop] = None
+
+    # --- Fork: runtime state for fork entities and behaviors ---
+    # Master toggle for event sounds (wakeup + thinking). Timer alarm
+    # always plays regardless.
+    event_sounds_enabled: bool = True
+    # When True the thinking sound repeats until the pipeline leaves the
+    # thinking phase.
+    thinking_sound_loop: bool = False
+    # Available sound filenames per category (wakeup_sound/thinking_sound/
+    # timer_sound), scanned in __main__ and used by SoundSelectEntity.
+    sound_options: Dict[str, List[str]] = field(default_factory=dict)
+    event_sounds_entity: "Optional[EventSoundsSwitchEntity]" = None
+    thinking_sound_loop_entity: "Optional[ThinkingSoundLoopSwitchEntity]" = None
+    sound_select_entities: "Dict[str, SoundSelectEntity]" = field(default_factory=dict)
+    alarm_duration_entity: "Optional[AlarmDurationNumberEntity]" = None
 
     def broadcast(self, msgs: "Iterable[message.Message]") -> None:
         """Send messages to every connected API client.

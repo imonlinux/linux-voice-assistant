@@ -47,6 +47,107 @@ _PREFERENCE_ALIASES = {
 }
 
 
+# -----------------------------------------------------------------------------
+# Fork: sound file scanning / selection resolution
+# -----------------------------------------------------------------------------
+
+SOUND_EXTENSIONS = {".flac", ".wav", ".mp3"}
+
+# category key -> (scan_subdir, pref_field, allow_none)
+SOUND_CATEGORIES = {
+    "wakeup_sound": {
+        "scan_dir": "sounds/wakeup",
+        "pref_field": "selected_wakeup_sound",
+        "allow_none": True,
+    },
+    "thinking_sound": {
+        "scan_dir": "sounds/thinking",
+        "pref_field": "selected_thinking_sound",
+        "allow_none": True,
+    },
+    "timer_sound": {
+        "scan_dir": "sounds/timer",
+        "pref_field": "selected_timer_sound",
+        "allow_none": False,
+    },
+}
+
+
+def _scan_sound_files(repo_dir: Path) -> Dict[str, List[str]]:
+    """Scan sound subdirectories and return available filenames per category.
+
+    Auto-creates subdirectories if missing so users can drop files in.
+    """
+    result: Dict[str, List[str]] = {}
+    for cat_key, cat_info in SOUND_CATEGORIES.items():
+        scan_dir = repo_dir / cat_info["scan_dir"]
+        if not scan_dir.is_dir():
+            scan_dir.mkdir(parents=True, exist_ok=True)
+            _LOGGER.info("Created sound directory: %s — add .flac/.wav/.mp3 files here", scan_dir)
+        files = sorted(
+            f.name
+            for f in scan_dir.iterdir()
+            if f.is_file() and f.suffix.lower() in SOUND_EXTENSIONS
+        )
+        result[cat_key] = files
+    return result
+
+
+def _resolve_sound_path(repo_dir: Path, cat_key: str, pref_value: str, cli_value: str) -> str:
+    """Resolve which sound file a category uses.
+
+    Precedence: persisted selection (ESPHome entity) > CLI/config default.
+    Returns an absolute path string, or "" if disabled ("None").
+    """
+    cat_info = SOUND_CATEGORIES[cat_key]
+    subdir = cat_info["scan_dir"]
+
+    if pref_value == "None":
+        _LOGGER.debug("Sound '%s' disabled via selection (None)", cat_key)
+        return ""
+    if pref_value:
+        pref_path = repo_dir / subdir / pref_value
+        if pref_path.is_file():
+            return str(pref_path)
+        _LOGGER.warning(
+            "Persisted sound '%s' not found in %s, falling back to default",
+            pref_value,
+            subdir,
+        )
+
+    if not cli_value:
+        return ""
+    cli_path = Path(cli_value)
+    if not cli_path.is_absolute():
+        cli_path = repo_dir / cli_path
+    if cli_path.is_file():
+        return str(cli_path)
+
+    _LOGGER.warning("Sound file not found: %s", cli_path)
+    return ""
+
+
+def _resolve_event_sounds_enabled(preferences: Preferences, config_value: Optional[bool]) -> bool:
+    """Event sounds toggle precedence: preference > config.json > default (True)."""
+    if preferences.event_sounds_enabled is not None:
+        return bool(preferences.event_sounds_enabled)
+    if config_value is not None:
+        return bool(config_value)
+    return True
+
+
+def _resolve_thinking_sound_loop(preferences: Preferences, config_value: Optional[bool]) -> bool:
+    """Thinking loop precedence: preference > config.json > default (False)."""
+    pref = preferences.selected_thinking_sound_loop
+    if pref == "ON":
+        return True
+    if pref == "OFF":
+        return False
+    if config_value is not None:
+        return bool(config_value)
+    return False
+
+
 def _load_preferences(path: Path) -> Preferences:
     """Load preferences.json defensively.
 
@@ -479,10 +580,16 @@ async def main() -> None:
         stop_word=stop_model,
         music_player=MpvMediaPlayer(device=args.music_output_device or args.audio_output_device),
         tts_player=MpvMediaPlayer(device=args.audio_output_device),
-        wakeup_sound=args.wakeup_sound,
+        wakeup_sound=_resolve_sound_path(
+            _REPO_DIR, "wakeup_sound", preferences.selected_wakeup_sound, args.wakeup_sound
+        ),
         start_listening_sound=args.start_listening_sound,
-        timer_finished_sound=args.timer_finished_sound,
-        processing_sound=args.processing_sound,
+        timer_finished_sound=_resolve_sound_path(
+            _REPO_DIR, "timer_sound", preferences.selected_timer_sound, args.timer_finished_sound
+        ),
+        processing_sound=_resolve_sound_path(
+            _REPO_DIR, "thinking_sound", preferences.selected_thinking_sound, args.processing_sound
+        ),
         mute_sound=args.mute_sound,
         unmute_sound=args.unmute_sound,
         button_double_press_sound=args.button_double_press_sound,
@@ -502,6 +609,13 @@ async def main() -> None:
         audio_input_channels=args.audio_input_channels,
         timer_max_ring_seconds=args.timer_max_ring_seconds,
         listen_during_wake_sound=args.listen_during_wake_sound,
+        event_sounds_enabled=_resolve_event_sounds_enabled(
+            preferences, config.app.event_sounds_enabled if config else None
+        ),
+        thinking_sound_loop=_resolve_thinking_sound_loop(
+            preferences, config.app.thinking_sound_loop if config else None
+        ),
+        sound_options=_scan_sound_files(_REPO_DIR),
     )
 
     if fallback_used:

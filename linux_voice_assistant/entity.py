@@ -801,6 +801,243 @@ class ButtonEventSensorEntity(ESPHomeEntity):
         )
 
 
+class EventSoundsSwitchEntity(ESPHomeEntity):
+    """ESPHome switch for the fork's event sounds master toggle.
+
+    Controls ``ServerState.event_sounds_enabled`` — when disabled, wakeup
+    and thinking sounds are suppressed. The timer alarm is NOT affected
+    (it always plays as a functional alert).
+    """
+
+    def __init__(
+        self,
+        server: APIServer,
+        key: int,
+        name: str,
+        object_id: str,
+        get_enabled: Callable[[], bool],
+        set_enabled: Callable[[bool], None],
+    ) -> None:
+        ESPHomeEntity.__init__(self, server)
+
+        self.key = key
+        self.name = name
+        self.object_id = object_id
+        self._get_enabled = get_enabled
+        self._set_enabled = set_enabled
+        self._switch_state = self._get_enabled()
+
+    def update_get_enabled(self, get_enabled: Callable[[], bool]) -> None:
+        self._get_enabled = get_enabled
+
+    def update_set_enabled(self, set_enabled: Callable[[bool], None]) -> None:
+        self._set_enabled = set_enabled
+
+    def sync_with_state(self) -> None:
+        self._switch_state = self._get_enabled()
+
+    def handle_message(self, msg: message.Message) -> Iterable[message.Message]:
+        if isinstance(msg, SwitchCommandRequest) and (msg.key == self.key):
+            new_state = bool(msg.state)
+            self._switch_state = new_state
+            self._set_enabled(new_state)
+            yield SwitchStateResponse(key=self.key, state=self._switch_state)
+        elif isinstance(msg, ListEntitiesRequest):
+            yield ListEntitiesSwitchResponse(
+                object_id=self.object_id,
+                key=self.key,
+                name=self.name,
+                entity_category=EntityCategory.CONFIG,
+                icon="mdi:volume-off",
+            )
+        elif isinstance(msg, SubscribeHomeAssistantStatesRequest):
+            self.sync_with_state()
+            yield SwitchStateResponse(key=self.key, state=self._switch_state)
+
+
+class ThinkingSoundLoopSwitchEntity(ESPHomeEntity):
+    """ESPHome switch toggling whether the thinking sound loops (fork).
+
+    Companion to upstream's ``ThinkingSoundEntity`` (which gates whether the
+    sound plays at all): when this is on, the sound repeats until the
+    pipeline leaves the thinking phase.
+    """
+
+    def __init__(
+        self,
+        server: APIServer,
+        key: int,
+        name: str,
+        object_id: str,
+        get_enabled: Callable[[], bool],
+        set_enabled: Callable[[bool], None],
+    ) -> None:
+        ESPHomeEntity.__init__(self, server)
+
+        self.key = key
+        self.name = name
+        self.object_id = object_id
+        self._get_enabled = get_enabled
+        self._set_enabled = set_enabled
+        self._switch_state = self._get_enabled()
+
+    def update_get_enabled(self, get_enabled: Callable[[], bool]) -> None:
+        self._get_enabled = get_enabled
+
+    def update_set_enabled(self, set_enabled: Callable[[bool], None]) -> None:
+        self._set_enabled = set_enabled
+
+    def sync_with_state(self) -> None:
+        self._switch_state = self._get_enabled()
+
+    def handle_message(self, msg: message.Message) -> Iterable[message.Message]:
+        if isinstance(msg, SwitchCommandRequest) and (msg.key == self.key):
+            new_state = bool(msg.state)
+            self._switch_state = new_state
+            self._set_enabled(new_state)
+            yield SwitchStateResponse(key=self.key, state=self._switch_state)
+        elif isinstance(msg, ListEntitiesRequest):
+            yield ListEntitiesSwitchResponse(
+                object_id=self.object_id,
+                key=self.key,
+                name=self.name,
+                entity_category=EntityCategory.CONFIG,
+                icon="mdi:repeat",
+            )
+        elif isinstance(msg, SubscribeHomeAssistantStatesRequest):
+            self.sync_with_state()
+            yield SwitchStateResponse(key=self.key, state=self._switch_state)
+
+
+class SoundSelectEntity(ESPHomeEntity):
+    """ESPHome select for choosing an event sound file (fork).
+
+    One reusable class for the wakeup, thinking, and timer categories;
+    ``instance_id`` distinguishes instances during entity lifecycle lookups.
+    Options are the filenames scanned from the category's sound directory.
+    """
+
+    def __init__(
+        self,
+        server: APIServer,
+        key: int,
+        name: str,
+        object_id: str,
+        icon: str,
+        instance_id: str,
+        options: List[str],
+        get_selection: Callable[[], str],
+        set_selection: Callable[[str], None],
+    ) -> None:
+        ESPHomeEntity.__init__(self, server)
+
+        self.key = key
+        self.name = name
+        self.object_id = object_id
+        self.icon = icon
+        self.instance_id = instance_id
+        self.options = options
+        self._get_selection = get_selection
+        self._set_selection = set_selection
+        self._state = self._get_selection()
+
+    def update_get_selection(self, get_selection: Callable[[], str]) -> None:
+        self._get_selection = get_selection
+
+    def update_set_selection(self, set_selection: Callable[[str], None]) -> None:
+        self._set_selection = set_selection
+
+    def sync_with_state(self) -> None:
+        self._state = self._get_selection()
+
+    def handle_message(self, msg: message.Message) -> Iterable[message.Message]:
+        if isinstance(msg, SelectCommandRequest) and (msg.key == self.key):
+            if msg.state in self.options:
+                self._state = msg.state
+                self._set_selection(msg.state)
+            else:
+                _LOGGER.warning(
+                    "SoundSelectEntity '%s': unknown option '%s'",
+                    self.instance_id,
+                    msg.state,
+                )
+            yield SelectStateResponse(key=self.key, state=self._state, missing_state=False)
+        elif isinstance(msg, ListEntitiesRequest):
+            yield ListEntitiesSelectResponse(
+                object_id=self.object_id,
+                key=self.key,
+                name=self.name,
+                options=self.options,
+                entity_category=EntityCategory.CONFIG,
+                icon=self.icon,
+            )
+        elif isinstance(msg, SubscribeHomeAssistantStatesRequest):
+            self.sync_with_state()
+            yield SelectStateResponse(key=self.key, state=self._state, missing_state=False)
+
+
+class AlarmDurationNumberEntity(ESPHomeEntity):
+    """ESPHome number for the timer alarm auto-stop duration (fork).
+
+    Semantics: 0 = ring until interrupted by the Stop wake word;
+    >0 = auto-stop after this many seconds.
+    """
+
+    def __init__(
+        self,
+        server: APIServer,
+        key: int,
+        name: str,
+        object_id: str,
+        get_value: Callable[[], float],
+        set_value: Callable[[float], None],
+        min_value: float = 0.0,
+        max_value: float = 3600.0,
+        step: float = 1.0,
+    ) -> None:
+        ESPHomeEntity.__init__(self, server)
+
+        self.key = key
+        self.name = name
+        self.object_id = object_id
+        self._get_value = get_value
+        self._set_value = set_value
+        self.min_value = min_value
+        self.max_value = max_value
+        self.step = step
+        self._state = self._get_value()
+
+    def update_get_value(self, get_value: Callable[[], float]) -> None:
+        self._get_value = get_value
+
+    def update_set_value(self, set_value: Callable[[float], None]) -> None:
+        self._set_value = set_value
+
+    def sync_with_state(self) -> None:
+        self._state = self._get_value()
+
+    def handle_message(self, msg: message.Message) -> Iterable[message.Message]:
+        if isinstance(msg, NumberCommandRequest) and (msg.key == self.key):
+            self._state = max(self.min_value, min(self.max_value, float(msg.state)))
+            self._set_value(self._state)
+            yield NumberStateResponse(key=self.key, state=self._state, missing_state=False)
+        elif isinstance(msg, ListEntitiesRequest):
+            yield ListEntitiesNumberResponse(
+                object_id=self.object_id,
+                key=self.key,
+                name=self.name,
+                icon="mdi:timer",
+                entity_category=EntityCategory.CONFIG,
+                min_value=self.min_value,
+                max_value=self.max_value,
+                step=self.step,
+                unit_of_measurement="s",
+            )
+        elif isinstance(msg, SubscribeHomeAssistantStatesRequest):
+            self.sync_with_state()
+            yield NumberStateResponse(key=self.key, state=self._state, missing_state=False)
+
+
 # Backward compatibility export aliases
 __all__ = [
     "ESPHomeEntity",
@@ -812,6 +1049,10 @@ __all__ = [
     "WakeWord1SensitivityNumberEntity",
     "WakeWord2SensitivityNumberEntity",
     "StopWordSensitivityNumberEntity",
+    "EventSoundsSwitchEntity",
+    "ThinkingSoundLoopSwitchEntity",
+    "SoundSelectEntity",
+    "AlarmDurationNumberEntity",
     # Old class names for backward compatibility
     "WakeWordSensitivityNumberEntity",
     "SecondWakeWordSensitivityNumberEntity",
