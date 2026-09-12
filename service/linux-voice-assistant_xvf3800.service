@@ -1,0 +1,17 @@
+[Unit]
+Description=Linux Voice Assistant
+Wants=pipewire.service wireplumber.service pipewire-pulse.service
+After=pipewire.service wireplumber.service pipewire-pulse.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/pi/linux-voice-assistant
+Environment=PYTHONUNBUFFERED=1
+
+ExecStart=/home/pi/linux-voice-assistant/script/run
+
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target

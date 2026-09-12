@@ -44,6 +44,12 @@ from .led_controller import LedController
 from .mqtt_controller import MqttController
 from .xvf3800_button_controller import XVF3800ButtonController
 
+# Fork: Sendspin (optional — needs the sendspin extra)
+try:
+    from .sendspin.client import SendspinClient  # type: ignore
+except ImportError:
+    SendspinClient = None  # type: ignore[assignment,misc]
+
 _LOGGER = logging.getLogger(__name__)
 _MODULE_DIR = Path(__file__).parent
 _REPO_DIR = _MODULE_DIR.parent
@@ -188,6 +194,84 @@ class MicMuteBridge(EventHandler):
             loop.call_soon_threadsafe(satellite._set_muted, target)
         else:
             satellite._set_muted(target)
+
+
+class SendspinPreferencesHandler(EventHandler):
+    """Persists Sendspin player volume (0-100) into preferences.json.
+
+    Expects SendspinClient to publish:
+        event_bus.publish("sendspin_volume_changed", {"volume": <0-100>})
+    """
+
+    def __init__(self, event_bus: EventBus, state: ServerState) -> None:
+        super().__init__(event_bus)
+        self.state = state
+        self._subscribe_all_methods()
+
+    @subscribe
+    def sendspin_volume_changed(self, data: dict) -> None:
+        try:
+            v = int(data.get("volume", 100))
+        except (TypeError, ValueError):
+            _LOGGER.warning("Invalid sendspin volume received: %r", data)
+            return
+        v = max(0, min(100, v))
+        current = int(getattr(self.state.preferences, "sendspin_volume", 100))
+        if v != current:
+            self.state.preferences.sendspin_volume = v
+            self.state.save_preferences()
+            _LOGGER.debug("Saved sendspin_volume=%s to preferences.json", v)
+
+
+def _start_sendspin(
+    loop: asyncio.AbstractEventLoop,
+    state: ServerState,
+    config: Optional[Config],
+) -> tuple:
+    """Start the Sendspin (Music Assistant multiroom) subsystem if enabled.
+
+    Returns (client, task); either may be None when disabled.
+    """
+    client = None
+    task = None
+    try:
+        if config is None or not config.sendspin.enabled:
+            _LOGGER.debug("Sendspin subsystem disabled (sendspin.enabled=false or no config)")
+            return None, None
+
+        if SendspinClient is None:
+            _LOGGER.warning(
+                "Sendspin enabled in config but the sendspin extra is not installed. "
+                "Run 'pip install -e .[sendspin]' to enable Sendspin support."
+            )
+            return None, None
+
+        # Serialize the typed config for the client (it consumes a plain dict)
+        import dataclasses as _dc
+
+        sendspin_cfg = _dc.asdict(config.sendspin)
+        # Seed the initial player volume from preferences so the first
+        # state after handshake reflects the last known Music Assistant volume.
+        sendspin_cfg["initial"] = {
+            "volume": int(getattr(state.preferences, "sendspin_volume", 100))
+        }
+
+        client_id = f"lva-{state.mac_address}"
+        client = SendspinClient(
+            loop=loop,
+            event_bus=state.event_bus,
+            config=sendspin_cfg,
+            client_id=client_id,
+            client_name=config.app.name,
+        )
+        state.sendspin_client = client  # type: ignore[attr-defined]
+        SendspinPreferencesHandler(event_bus=state.event_bus, state=state)
+        task = loop.create_task(client.run())
+        _LOGGER.info("Sendspin subsystem started (enabled=true)")
+    except Exception:  # pylint: disable=broad-except
+        _LOGGER.exception("Failed to start Sendspin subsystem")
+        client, task = None, None
+    return client, task
 
 
 def _xvf3800_startup_preflight(config: Optional[Config]) -> None:
@@ -865,6 +949,9 @@ async def main() -> None:
     # ------------------------------------------------------------------
     _init_fork_controllers(loop, state, config)
 
+    # Fork: Sendspin multiroom client (optional)
+    sendspin_client, sendspin_task = _start_sendspin(loop, state, config)
+
     if config is not None and config.audio.volume_sync:
         # Fork: align the OS sink volume with the persisted LVA volume.
         # mpv's per-player volume handles ducking; the user-visible volume
@@ -984,6 +1071,16 @@ async def main() -> None:
         process_audio_thread.join()
         if peripheral_api is not None:
             await peripheral_api.stop()
+        # Fork: shut down the Sendspin subsystem cleanly
+        try:
+            if sendspin_client is not None:
+                sendspin_client.stop()
+                await sendspin_client.disconnect(reason="shutdown")
+            if sendspin_task is not None:
+                sendspin_task.cancel()
+        except Exception:  # pylint: disable=broad-except
+            _LOGGER.debug("Sendspin shutdown cleanup failed", exc_info=True)
+        state.shutdown = True
 
     _LOGGER.debug("Server stopped")
 

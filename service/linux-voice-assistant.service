@@ -1,0 +1,15 @@
+[Unit]
+Description=Linux Voice Assistant
+
+[Service]
+Type=simple
+WorkingDirectory=/home/pi/linux-voice-assistant
+Environment=PYTHONUNBUFFERED=1
+
+ExecStart=/home/pi/linux-voice-assistant/script/run
+
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target
