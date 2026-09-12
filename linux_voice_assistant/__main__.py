@@ -552,6 +552,13 @@ async def main() -> None:
     if args.mic_noise_suppression > 0:
         preferences.mic_noise_suppression = args.mic_noise_suppression
 
+    # Fork: global OpenWakeWord threshold tier — applies to models without an
+    # explicit per-model threshold. Precedence: --wake-word-threshold CLI >
+    # config.json wake_word.openwakeword_threshold > upstream default (0.7).
+    oww_global_threshold = config.wake_word.openwakeword_threshold if config is not None else 0.7
+    if args.wake_word_threshold is not None:
+        oww_global_threshold = max(0.0, min(1.0, float(args.wake_word_threshold)))
+
     # Load wake/stop models
     wake_models, active_wake_words, fallback_used = load_wake_models(
         available_wake_words,
@@ -603,6 +610,7 @@ async def main() -> None:
         download_dir=args.download_dir,
         volume=initial_volume,
         stop_word_threshold=initial_threshold,
+        oww_global_threshold=oww_global_threshold,
         mic_volume=preferences.mic_volume,
         mic_auto_gain=preferences.mic_auto_gain,
         mic_noise_suppression=preferences.mic_noise_suppression,
@@ -858,8 +866,7 @@ def process_audio(state: ServerState, mic, block_size: int):
                         # Load default threshold from model json
                         wake_word_id = wake_word.id if hasattr(wake_word, "id") else next(iter(state.wake_words.keys()))
                         available_word = state.available_wake_words.get(wake_word_id)
-                        # _LOGGER.debug("word= %s", state.available_wake_words.get(wake_word_id))
-                        default_threshold = available_word.probability_cutoff if available_word else 0.7
+                        default_threshold = available_word.probability_cutoff if available_word else state.oww_global_threshold
                         _LOGGER.debug("Using default threshold %.3f for wake word '%s' from model config", default_threshold, wake_word_id)
                         # Check preferences override
                         if idx == 0:

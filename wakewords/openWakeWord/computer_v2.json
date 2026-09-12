@@ -1,0 +1,5 @@
+{
+  "type": "openWakeWord",
+  "wake_word": "Computer",
+  "model": "computer_v2.tflite"
+}
