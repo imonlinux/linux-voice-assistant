@@ -27,6 +27,7 @@ class MpvMediaPlayer:
         url: Union[str, List[str]],
         done_callback: Optional[Callable[[], None]] = None,
         stop_first: bool = False,
+        volume_override: Optional[float] = None,
     ) -> None:
         """
         Play a media URL.
@@ -35,6 +36,9 @@ class MpvMediaPlayer:
             url: Media URL or list of URLs for sequential playback.
             done_callback: Optional callback invoked when playback finishes.
             stop_first: Kept for API compatibility.
+            volume_override: Fork — play this media at a fixed volume
+                (0.0-100.0) instead of the current user volume; restored
+                when playback ends or is stopped.
         """
         # Handle single URL vs list
         if isinstance(url, str):
@@ -61,7 +65,12 @@ class MpvMediaPlayer:
 
         # Start playing first URL
         next_url = self._playlist.pop(0)
-        self._player.play(next_url, done_callback=self._on_track_finished, stop_first=stop_first)
+        self._player.play(
+            next_url,
+            done_callback=self._on_track_finished,
+            stop_first=stop_first,
+            volume_override=volume_override,
+        )
 
     def _on_track_finished(self) -> None:
         """Called when a track finishes - plays next or invokes done callback."""

@@ -1075,13 +1075,15 @@ class VoiceSatelliteProtocol(APIServer):
         if self.state.listen_during_wake_sound:
             _LOGGER.debug("Starting audio streaming immediately (listen_during_wake_sound enabled)")
             # Fork: wakeup sound is gated by the Event Sounds master toggle
+            # and always plays at full volume (fork volume_override behavior)
             if self.state.event_sounds_enabled and self.state.wakeup_sound:
-                self.state.tts_player.play(self.state.wakeup_sound)
+                self.state.tts_player.play(self.state.wakeup_sound, volume_override=100)
             self._start_audio_streaming(wake_word_phrase)
         else:
             if self.state.event_sounds_enabled and self.state.wakeup_sound:
                 self.state.tts_player.play(
                     self.state.wakeup_sound,
+                    volume_override=100,
                     done_callback=lambda: self._on_wakeup_sound_finished(wake_word_phrase),
                 )
             else:

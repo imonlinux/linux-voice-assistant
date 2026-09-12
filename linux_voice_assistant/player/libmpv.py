@@ -26,6 +26,9 @@ class LibMpvPlayer(AudioPlayer):
         # Volume handling
         self._user_volume: float = 100.0  # 0.0 – 100.0
         self._duck_factor: float = 1.0  # 0.0 – 1.0
+        # Fork: per-playback volume override (e.g. wake chime at 100% while
+        # master volume is low). None = follow the user volume.
+        self._volume_override: Optional[float] = None
 
         # mpv setup
         self._mpv = mpv.MPV(
@@ -67,6 +70,7 @@ class LibMpvPlayer(AudioPlayer):
         url: str,
         done_callback: Optional[Callable[[], None]] = None,
         stop_first: bool = True,
+        volume_override: Optional[float] = None,
     ) -> None:
         """
         Start playback of a media URL.
@@ -75,10 +79,18 @@ class LibMpvPlayer(AudioPlayer):
             url: Media URL or local file path.
             done_callback: Optional callback invoked when playback finishes.
             stop_first: If True, start playback in paused state.
+            volume_override: Fork — play this track at a fixed volume
+                (0.0–100.0) instead of the user volume; restored when the
+                track ends or is stopped.
         """
         with self._state_lock:
             self._log.debug("play: current_state=%s", self._state)
             self._done_callback = done_callback
+            if volume_override is not None:
+                self._volume_override = max(0.0, min(100.0, float(volume_override)))
+            else:
+                self._volume_override = None
+            self._apply_volume()
             self._set_state(PlayerState.LOADING)
         self._mpv.pause = stop_first
         self._mpv.play(url)
@@ -108,6 +120,10 @@ class LibMpvPlayer(AudioPlayer):
             if for_replacement:
                 # Clear callback to prevent invocation during track transition
                 self._done_callback = None
+            # Fork: a stopped track must not leave a volume override behind
+            if self._volume_override is not None:
+                self._volume_override = None
+                self._apply_volume()
             self._mpv.stop()
 
     def state(self) -> PlayerState:
@@ -151,9 +167,10 @@ class LibMpvPlayer(AudioPlayer):
     # -------- Internal helpers --------
 
     def _apply_volume(self) -> None:
-        """Apply effective volume (user volume × duck factor) to mpv."""
+        """Apply effective volume (override or user volume × duck factor) to mpv."""
         self._log.debug("unduck() called")
-        effective = self._user_volume * self._duck_factor
+        base = self._volume_override if self._volume_override is not None else self._user_volume
+        effective = base * self._duck_factor
         self._mpv.volume = max(0.0, min(100.0, effective))
 
     def _on_end_file(self, event) -> None:
@@ -176,6 +193,11 @@ class LibMpvPlayer(AudioPlayer):
                 self._state,
                 self._done_callback is not None,
             )
+
+            # Fork: restore the user volume once an overridden track ends.
+            if is_eof and self._volume_override is not None:
+                self._volume_override = None
+                self._apply_volume()
 
             # Only process "eof" (reason=0) events as actual track completion.
             # Other reasons are from track changes, stops, or errors.
