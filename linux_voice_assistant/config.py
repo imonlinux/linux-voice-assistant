@@ -268,6 +268,12 @@ class ButtonConfig:
     # Press duration (in seconds) to be considered a "long press" (gpio mode).
     long_press_seconds: float = 2.0
 
+    # Button state polling interval in seconds (xvf3800 mode; the GPIO
+    # controller uses edge interrupts). The XVF3800 controller defaults to
+    # 0.05 (20 Hz) when absent; 0.15 trades a little latency for less USB
+    # traffic on slower boards.
+    poll_interval_seconds: float = 0.05
+
 @dataclass
 class TrayConfig:
     """Settings for the tray client."""
