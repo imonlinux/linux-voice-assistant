@@ -7,6 +7,7 @@ import logging
 import sys
 import threading
 import time
+from dataclasses import fields as dataclass_fields
 from pathlib import Path
 from queue import Queue
 from typing import List, Optional, Union
@@ -18,6 +19,7 @@ from getmac import get_mac_address  # type: ignore
 from pymicro_wakeword import MicroWakeWord, MicroWakeWordFeatures
 from pyopen_wakeword import OpenWakeWord, OpenWakeWordFeatures
 
+from .config import Config, apply_config_defaults, load_config_from_json
 from .models import Preferences, ServerState, WakeWordType, initial_stop_word_threshold
 from .mpv_player import MpvMediaPlayer
 from .peripheral_api import LVAEvent, PeripheralAPIServer
@@ -38,12 +40,43 @@ _REPO_DIR = _MODULE_DIR.parent
 _WAKEWORDS_DIR = _REPO_DIR / "wakewords"
 _SOUNDS_DIR = _REPO_DIR / "sounds"
 
+# Legacy preference keys written by earlier fork releases, mapped to the
+# current field names so existing preferences.json files keep working.
+_PREFERENCE_ALIASES = {
+    "volume_level": "volume",
+}
+
+
+def _load_preferences(path: Path) -> Preferences:
+    """Load preferences.json defensively.
+
+    Unknown keys (from newer/older releases) are ignored with a warning
+    instead of crashing startup, and legacy key names are migrated.
+    """
+    with open(path, "r", encoding="utf-8") as preferences_file:
+        preferences_dict = json.load(preferences_file)
+
+    known = {f.name for f in dataclass_fields(Preferences)}
+    filtered: dict = {}
+    for key, value in preferences_dict.items():
+        mapped = _PREFERENCE_ALIASES.get(key, key)
+        if mapped in known:
+            filtered[mapped] = value
+        else:
+            _LOGGER.warning("Ignoring unknown preference key: %s", key)
+    return Preferences(**filtered)
+
 
 # -----------------------------------------------------------------------------
 
 
 async def main() -> None:
     parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--config",
+        default=str(_MODULE_DIR / "config.json"),
+        help="JSON(C) configuration file providing CLI defaults and fork-subsystem settings (absent file = pure CLI mode)",
+    )
     parser.add_argument(
         "--name",
         help="Real name for the device",
@@ -111,6 +144,12 @@ async def main() -> None:
         default=2.0,
         type=float,
         help="Seconds before wake word can be activated again",
+    )
+    parser.add_argument(
+        "--wake-word-threshold",
+        type=float,
+        default=None,
+        help="Global OpenWakeWord activation threshold override (0.0-1.0); per-model JSON thresholds take precedence",
     )
     parser.add_argument(
         "--continue-conversation-delay",
@@ -248,6 +287,19 @@ async def main() -> None:
         action="store_true",
         help="Enable output only mode",
     )
+
+    # ------------------------------------------------------------------
+    # Fork: load config.json (if present) and inject its values as CLI
+    # defaults, so explicit flags still win. Absent file = pure CLI mode.
+    # ------------------------------------------------------------------
+    pre_args, _ = parser.parse_known_args()
+    config: Optional[Config] = None
+    config_path = Path(pre_args.config) if pre_args.config else None
+    if config_path is not None and config_path.exists():
+        config = load_config_from_json(config_path)
+        apply_config_defaults(parser, config)
+        _LOGGER.debug("Loaded configuration from %s", config_path)
+
     args = parser.parse_args()
 
     if args.colored_debug:
@@ -368,9 +420,7 @@ async def main() -> None:
     preferences_path = Path(args.preferences_file)
     if preferences_path.exists():
         _LOGGER.debug("Loading preferences: %s", preferences_path)
-        with open(preferences_path, "r", encoding="utf-8") as preferences_file:
-            preferences_dict = json.load(preferences_file)
-            preferences = Preferences(**preferences_dict)
+        preferences = _load_preferences(preferences_path)
     else:
         preferences = Preferences()
 

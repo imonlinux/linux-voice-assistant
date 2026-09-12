@@ -1,0 +1,412 @@
+{
+  // =============================================================================
+  // Linux Voice Assistant (LVA) — Configuration Example
+  //
+  // Notes:
+  // - This file uses JSON-with-comments (jsonc). Your editor may support it.
+  // - The app loads config via linux_voice_assistant.config.load_config_from_json().
+  // - Some behavior can be overridden by CLI flags (e.g., --debug).
+  // =============================================================================
+
+  // ---------------------------------------------------------------------------
+  // Required
+  // ---------------------------------------------------------------------------
+  "app": {
+    // Required: Friendly name for this LVA instance
+    "name": "My Linux Voice Assistant",
+
+    // Optional: Wake word triggered sound (relative to repo root).
+    // This is the default used when no MQTT sound selection has been made.
+    // Place additional .flac/.wav/.mp3 files in sounds/wakeup/ to make
+    // them available as options in the Home Assistant MQTT select entity.
+    "wakeup_sound": "sounds/wakeup/wake_word_triggered.flac",
+
+    // Optional: Sound played when the assistant enters the Thinking state
+    // (after speech-to-text ends and before the TTS response arrives).
+    // Relative to repo root. Same subdirectory convention: sounds/thinking/
+    "thinking_sound": "sounds/thinking/nothing.flac",
+    
+    // Optional: If true, the thinking sound loops until the assistant
+    // transitions out of the Thinking state. If false, it plays once.
+    //
+    // Default: false
+    "thinking_sound_loop": false,
+
+    // Optional: Timer finished sound (relative to repo root).
+    // Same subdirectory convention: sounds/timer/
+    "timer_finished_sound": "sounds/timer/timer_finished.flac",
+
+    // Optional: Master toggle for event sounds (wakeup + thinking).
+    //
+    // When false, the wakeup and thinking sounds are suppressed.
+    // The timer alarm is NOT affected — it always plays regardless of this
+    // setting because it is a functional alert, not UX feedback.
+    //
+    // Default: true
+    "event_sounds_enabled": true,
+
+    // Optional: Preferences file used to persist state like volume/num_leds
+    // (relative to repo root)
+    "preferences_file": "preferences.json",
+
+    // Optional: Enables debug logging by default
+    // Note: can also be enabled via CLI flag --debug
+    "debug": false
+
+    // Optional: When true, audio streaming to HA starts immediately
+    // after wake word detection — the wakeup sound plays concurrently
+    // with listening. When false, LVA waits for the wakeup sound to
+    // finish before streaming audio.
+    //
+    // Set to false if STT accuracy suffers from the wakeup sound
+    // bleeding into the microphone (requires Acoustic Echo Cancellation).
+    //
+    // Default: true
+    "listen_during_wake_sound": true,
+  },
+
+  // ---------------------------------------------------------------------------
+  // Optional: Audio I/O + Output Volume Sync
+  // ---------------------------------------------------------------------------
+  "audio": {
+    // Optional:
+    // - null/omit => default microphone
+    // - string name => exact device name (soundcard backend)
+    // - string number => index into soundcard device list (e.g. "0", "1", ...)
+    "input_device": null,
+
+    // Optional: audio capture block size
+    "input_block_size": 1024,
+
+    // Optional:
+    // - null/omit => mpv chooses default output
+    // - string => mpv audio-device (e.g. "pulse/alsa_output....")
+    "output_device": null,
+
+    // Optional: Sync the host OS output volume at startup to match the volume
+    // stored in preferences.json (LVA MediaPlayer volume).
+    //
+    // When enabled, LVA will attempt (in order): wpctl -> pactl -> amixer.
+    //
+    // Default: false
+    "volume_sync": false,
+
+    // Optional: Maximum output volume percent for the underlying sink.
+    //
+    // Default: 100
+    "max_volume_percent": 100
+  },
+
+  // ---------------------------------------------------------------------------
+  // Optional: Wake word config
+  // ---------------------------------------------------------------------------
+  "wake_word": {
+    // Optional: If omitted/empty, code falls back to defaults:
+    // ["wakewords", "wakewords/openWakeWord"]
+    //
+    // Paths are relative to repo root.
+    "directories": [],
+
+    // Optional: default wake word model id
+    "model": "okay_nabu",
+
+    // Optional: stop model id (micro wake word)
+    "stop_model": "stop",
+
+    // Optional: debounce/refractory window after wake word triggers
+    "refractory_seconds": 2.0,
+
+    // Optional: directory for downloaded models (relative to repo root)
+    "download_dir": "local",
+
+    // Optional: OpenWakeWord activation threshold.
+    //
+    // OpenWakeWord triggers if its model probability exceeds this value.
+    // Range: 0.0 - 1.0
+    //
+    // Default: 0.5 (matches previous hardcoded behavior)
+    "openwakeword_threshold": 0.5
+  },
+
+  // ---------------------------------------------------------------------------
+  // Optional: ESPHome protocol server settings (the LVA exposes an ESPHome API)
+  // ---------------------------------------------------------------------------
+  "esphome": {
+    // Default: "0.0.0.0" (listen on all interfaces)
+    "host": "0.0.0.0",
+
+    // Default: 6053
+    "port": 6053
+  },
+
+  // ---------------------------------------------------------------------------
+  // Optional: LEDs
+  // ---------------------------------------------------------------------------
+  "led": {
+    // Optional: if false, LED controller runs in no-op mode
+    "enabled": true,
+
+    // "dotstar" | "neopixel" | "xvf3800"
+    "led_type": "dotstar",
+
+    // "spi" | "gpio" | "usb"
+    // - dotstar: "spi" or "gpio"
+    // - neopixel: "spi" or "gpio"
+    // - xvf3800: "usb"
+    "interface": "spi",
+
+    // GPIO pins — used when interface="gpio"
+    // For DotStar GPIO: both clock_pin + data_pin are used
+    // For NeoPixel GPIO: only data_pin is used (clock_pin ignored)
+    // For XVF3800: unused and ignored
+    "clock_pin": 13,
+    "data_pin": 12,
+
+    // Default number of LEDs (may be overridden by preferences.json after first run)
+    "num_leds": 3
+  },
+
+  // ---------------------------------------------------------------------------
+  // Optional: MQTT
+  //
+  // IMPORTANT for Tray Client:
+  // - The tray client requires MQTT enabled AND mqtt.host set.
+  // - If mqtt.host is null/empty, tray client will refuse to start.
+  // ---------------------------------------------------------------------------
+  "mqtt": {
+    // If set, mqtt.enabled becomes true automatically
+    "host": null,
+
+    "port": 1883,
+    "username": null,
+    "password": null
+  },
+
+  // ---------------------------------------------------------------------------
+  // Optional: Button controller
+  // ---------------------------------------------------------------------------
+  "button": {
+    // Master enable
+    "enabled": false,
+
+    // "gpio" | "xvf3800"
+    // - gpio: short/long press logic (pin + long_press_seconds)
+    // - xvf3800: uses the XVF3800 built-in mute button as a mute toggle
+    "mode": "gpio",
+
+    // gpio mode only
+    "pin": 17,
+    "long_press_seconds": 1.0,
+
+    // Polling interval (used by both gpio + xvf3800 button controllers)
+    "poll_interval_seconds": 0.01
+  },
+
+  // ---------------------------------------------------------------------------
+  // Optional: Desktop Tray Client
+  // ---------------------------------------------------------------------------
+  "tray": {
+    // The systemd --user unit name the tray client controls (start/stop/restart).
+    //
+    // The tray client default (if omitted): "linux-voice-assistant.service"
+    //
+    // If you renamed the LVA unit, set it here so the tray menu controls
+    // the correct service.
+    "systemd_service_name": "linux-voice-assistant.service"
+  },
+
+  // ---------------------------------------------------------------------------
+  // Sendspin client configuration (LVA -> Music Assistant)
+  //
+  // Notes:
+  // - This file is JSON-with-comments (JSONC). If your JSON loader does NOT
+  //   support comments, remove lines starting with //.
+  // - All times are seconds unless the key name ends with _ms.
+  // ---------------------------------------------------------------------------
+
+  "sendspin": {
+    // Enable/disable the Sendspin client feature.
+    "enabled": true,
+
+    // -----------------------------------------------------------------------
+    // Client identity / capabilities
+    // -----------------------------------------------------------------------
+    "client": {
+      // Name shown in Music Assistant / Sendspin UI.
+      "name": "LVA Sendspin Client",
+
+      // Optional extra info that MA may display (safe to omit).
+      "device_info": {
+        "manufacturer": "OHF-Voice",
+        "model": "Linux Voice Assistant",
+        "sw_version": "dev"
+      }
+    },
+
+    // Which Sendspin roles this client will advertise. Most installs can leave
+    // these defaults as-is.
+    "roles": {
+      "player": true,
+      "metadata": true,
+      "controller": true
+    },
+
+    // -----------------------------------------------------------------------
+    // Startup state (seeded from preferences.json by LVA __main__.py)
+    // If you don't have preferences.json yet, these values provide defaults.
+    // -----------------------------------------------------------------------
+    "initial": {
+      // User volume (0–100). This is the *saved* volume shown in MA.
+      "volume": 50,
+
+      // Whether the client starts muted.
+      "muted": false
+    },
+
+    // -----------------------------------------------------------------------
+    // Connection / discovery / keepalive / clock sync
+    // -----------------------------------------------------------------------
+    "connection": {
+      // If true, use mDNS discovery to find the MA Sendspin server.
+      // If you set server_host, discovery is bypassed.
+      "mdns": true,
+
+      // Optional static connection (recommended if you want to avoid discovery):
+      // "server_host": "192.168.0.100",
+      // "server_port": 8927,
+      // "server_path": "/sendspin",
+
+      // Time to wait for server/hello after connecting.
+      "hello_timeout_seconds": 8.0,
+
+      // WebSocket protocol keepalive pings.
+      // IMPORTANT: Some MA/Sendspin servers mis-handle protocol pings while idle
+      // (e.g., after stream/end on FLAC). Set either value to 0 to disable pings.
+      "ping_interval_seconds": 0,
+      "ping_timeout_seconds": 0,
+
+      // ---------------------------------------------------------------------
+      // Clock sync (client/time <-> server/time)
+      // ---------------------------------------------------------------------
+
+      // How often the client sends `client/time` for clock sync.
+      //
+      // - If time_sync_adaptive=false: this is the fixed interval.
+      // - If time_sync_adaptive=true: this is the base interval that adaptive logic
+      //   will start from, then adjust within [time_sync_min_interval_seconds,
+      //   time_sync_max_interval_seconds].
+      //
+      // Lower values converge faster but increase network chatter.
+      //
+      // Default: 5.0
+      "time_sync_interval_seconds": 5.0,
+
+      // Enable adaptive time-sync interval based on observed clock / network quality.
+      //
+      // Default: true
+      "time_sync_adaptive": true,
+
+      // Bounds for adaptive polling interval.
+      //
+      // Defaults: min=0.5, max=5.0
+      "time_sync_min_interval_seconds": 0.5,
+      "time_sync_max_interval_seconds": 5.0,
+
+      // Burst probing: send N `client/time` probes in quick succession and use the
+      // best (lowest-RTT) sample to update the clock sync filter.
+      //
+      // Default: 3
+      "time_sync_burst_count": 3,
+
+      // Delay between burst probes (seconds).
+      //
+      // Default: 0.15
+      "time_sync_burst_delay_seconds": 0.15
+    },
+
+    // -----------------------------------------------------------------------
+    // Player settings (codec negotiation, buffering, local playback)
+    // -----------------------------------------------------------------------
+    "player": {
+      // Preferred codec to request from MA/Sendspin.
+      // "pcm" is universally supported; "flac" or "opus" if supported.
+      "preferred_codec": "pcm",
+
+      // All codecs the client can decode.
+      "supported_codecs": ["pcm"],
+
+      // Audio format parameters (negotiated with the server).
+      "sample_rate": 48000,
+      "channels": 2,
+      "bit_depth": 16,
+
+      // Sync / jitter-buffer tuning
+      //
+      // Higher = more resilient to Wi-Fi jitter, but more delay.
+      // Typical: 150–300ms for LAN, 300–500ms for noisier networks.
+      "sync_target_latency_ms": 250,
+
+      // Late frame drop threshold (ms).
+      // If a chunk arrives "too late" (its target playout time is already in the past
+      // by more than this window), it is dropped rather than played late.
+      //
+      // Typical: 60–200ms (LAN is usually fine at 100–150ms).
+      // Default: 150
+      "sync_late_drop_ms": 150,
+
+      // Per-device latency compensation (ms).
+      //
+      // This shifts the *scheduled playout time* used by the jitter buffer.
+      // It does NOT change MPV's internal buffering directly; it simply makes us
+      // aim earlier or later relative to the server timestamps.
+      //
+      // Important notes:
+      // - Negative values are allowed and are often what you want.
+      //   Many audio stacks (PulseAudio/PipeWire/ALSA) add output buffering; a
+      //   negative value compensates by scheduling earlier.
+      // - If THIS client plays EARLIER than others, make this MORE POSITIVE (add delay).
+      // - If THIS client plays LATER than others, make this MORE NEGATIVE (play earlier).
+      //
+      // Typical: -50 to -300ms depending on hardware/stack; measure and tune.
+      // Default: 0
+      "output_latency_ms": 0,
+
+      // Stream clear handling window (ms).
+      //
+      // When the server sends `stream/clear` (e.g., seeking), the client drops
+      // any queued chunks whose timestamps fall within this window ahead of the
+      // clear moment, to avoid briefly playing old audio after a seek.
+      //
+      // Default: 2000
+      "clear_drop_window_ms": 2000,
+
+      // Advertised buffer capacity to MA (bytes). This does not directly change
+      // mpv's internal queue, but helps MA size bursts.
+      "buffer_capacity_bytes": 1048576,
+
+      // Player-side commands the client will accept from MA.
+      "supported_commands": ["volume", "mute"]
+    },
+
+    // -----------------------------------------------------------------------
+    // Coordination with voice assistant states (ducking)
+    // -----------------------------------------------------------------------
+    "coordination": {
+      // If true, reduce (duck) Sendspin playback while LVA is speaking/listening.
+      "duck_during_voice": true,
+      // Ducking amount while voice is active (if coordination.duck_during_voice is true) 0.2 = 20% of volume.
+      "duck_gain": 0.2
+    },
+
+    // -----------------------------------------------------------------------
+    // Debug logging toggles
+    // -----------------------------------------------------------------------
+    "logging": {
+      // Log message types (rx/tx).
+      "debug_protocol": false,
+
+      // Log full JSON payloads (verbose).
+      "debug_payloads": false
+    }
+  }
+}
