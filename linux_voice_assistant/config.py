@@ -699,7 +699,10 @@ def apply_config_defaults(parser: "argparse.ArgumentParser", config: Config) -> 
         defaults["download_dir"] = _resolve_repo_path(config.wake_word.download_dir)
 
     # --- esphome ---
-    if config.esphome.host:
+    # A wildcard host (0.0.0.0 / ::) means "auto-detect" here: upstream uses
+    # --host for BOTH the TCP bind and the zeroconf advertisement, and
+    # advertising 0.0.0.0 makes the device undiscoverable by Home Assistant.
+    if config.esphome.host and config.esphome.host not in ("0.0.0.0", "::"):
         defaults["host"] = config.esphome.host
     if config.esphome.port:
         defaults["port"] = config.esphome.port

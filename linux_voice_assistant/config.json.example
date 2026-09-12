@@ -132,7 +132,9 @@
   // Optional: ESPHome protocol server settings (the LVA exposes an ESPHome API)
   // ---------------------------------------------------------------------------
   "esphome": {
-    // Default: "0.0.0.0" (listen on all interfaces)
+    // Optional: host/IP to bind AND advertise. "0.0.0.0" or omitting this
+    // key means auto-detect the interface IP (recommended — advertising
+    // 0.0.0.0 makes the device undiscoverable by Home Assistant).
     "host": "0.0.0.0",
 
     // Default: 6053
