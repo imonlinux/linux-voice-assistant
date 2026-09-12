@@ -4,6 +4,7 @@ import asyncio
 import errno
 import json
 import logging
+import os
 import sys
 import threading
 import time
@@ -25,6 +26,7 @@ from .mpv_player import MpvMediaPlayer
 from .peripheral_api import LVAEvent, PeripheralAPIServer
 from .satellite import VoiceSatelliteProtocol
 from .util import (
+    format_mac,
     get_default_interface,
     get_default_ipv4,
     get_esphome_version,
@@ -33,6 +35,14 @@ from .util import (
 from .wake_word import find_available_wake_words, load_stop_model, load_wake_models
 from .webrtc import WebRTCProcessor
 from .zeroconf import HomeAssistantZeroconf
+
+# Fork: hardware controllers and subsystems (all optional, config-gated)
+from .audio_volume import ensure_output_volume
+from .button_controller import ButtonController
+from .event_bus import EventBus, EventHandler, subscribe
+from .led_controller import LedController
+from .mqtt_controller import MqttController
+from .xvf3800_button_controller import XVF3800ButtonController
 
 _LOGGER = logging.getLogger(__name__)
 _MODULE_DIR = Path(__file__).parent
@@ -146,6 +156,175 @@ def _resolve_thinking_sound_loop(preferences: Preferences, config_value: Optiona
     if config_value is not None:
         return bool(config_value)
     return False
+
+
+# -----------------------------------------------------------------------------
+# Fork: hardware controller wiring
+# -----------------------------------------------------------------------------
+
+class MicMuteBridge(EventHandler):
+    """Routes hardware mute requests into the upstream mute pipeline.
+
+    Button controllers (GPIO, XVF3800) publish ``set_mic_mute`` on the event
+    bus from their own threads; this bridge marshals the request onto the
+    asyncio loop and drives ``VoiceSatelliteProtocol._set_muted`` so the HA
+    mute switch, event-bus mirroring and mute sound all stay in sync.
+    """
+
+    def __init__(self, event_bus: EventBus, state: ServerState) -> None:
+        super().__init__(event_bus)
+        self.state = state
+        self._subscribe_all_methods()
+
+    @subscribe
+    def set_mic_mute(self, data: dict) -> None:
+        target = bool(data.get("state", False))
+        satellite = self.state.satellite
+        loop = self.state.loop
+        if satellite is None or loop is None:
+            _LOGGER.debug("MicMuteBridge: satellite/loop not ready; dropping mute request")
+            return
+        if loop.is_running():
+            loop.call_soon_threadsafe(satellite._set_muted, target)
+        else:
+            satellite._set_muted(target)
+
+
+def _xvf3800_startup_preflight(config: Optional[Config]) -> None:
+    """Best-effort XVF3800 USB preflight (reboot + audio routing fixups)."""
+    try:
+        led_cfg = getattr(config, "led", None) if config else None
+        btn_cfg = getattr(config, "button", None) if config else None
+        aud_cfg = getattr(config, "audio", None) if config else None
+
+        uses_xvf = False
+        if led_cfg and getattr(led_cfg, "led_type", "").lower() == "xvf3800":
+            uses_xvf = True
+        if btn_cfg and getattr(btn_cfg, "enabled", False) and getattr(btn_cfg, "mode", "").lower() == "xvf3800":
+            uses_xvf = True
+        if aud_cfg and isinstance(getattr(aud_cfg, "input_device", None), str) and "xvf3800" in aud_cfg.input_device.lower():
+            uses_xvf = True
+
+        if not uses_xvf:
+            return
+
+        do_reboot = os.environ.get("LVA_XVF3800_STARTUP_REBOOT", "1").strip().lower() not in ("0", "false", "no", "off")
+        do_route = os.environ.get("LVA_XVF3800_STARTUP_SET_ASR3", "1").strip().lower() not in ("0", "false", "no", "off")
+        do_save = os.environ.get("LVA_XVF3800_STARTUP_SAVE_CONFIG", "0").strip().lower() in ("1", "true", "yes", "on")
+
+        if not (do_reboot or do_route):
+            return
+
+        from .xvf3800_led_backend import XVF3800USBDevice
+
+        _LOGGER.info("XVF3800 startup preflight: begin (reboot=%s, set_asr3=%s, save=%s)", do_reboot, do_route, do_save)
+
+        if do_reboot:
+            dev = None
+            try:
+                dev = XVF3800USBDevice()
+                _LOGGER.info("XVF3800 startup preflight: issuing REBOOT to USB device")
+                dev.reboot()
+            finally:
+                try:
+                    if dev is not None:
+                        dev.close()
+                except Exception:
+                    pass
+            XVF3800USBDevice.wait_for_reenumeration(timeout_s=12.0, settle_s=1.0)
+
+        if do_route:
+            dev2 = XVF3800USBDevice()
+            try:
+                _LOGGER.info("XVF3800 startup preflight: setting AUDIO_MGR_OP_L and AUDIO_MGR_OP_R to (7, 3)")
+                dev2.set_audio_mgr_op_l(7, 3)
+                dev2.set_audio_mgr_op_r(7, 3)
+                if do_save:
+                    _LOGGER.info("XVF3800 startup preflight: saving configuration to flash")
+                    dev2.save_configuration()
+            finally:
+                dev2.close()
+
+        _LOGGER.info("XVF3800 startup preflight: done")
+
+    except Exception as e:  # pylint: disable=broad-except
+        _LOGGER.warning("XVF3800 startup preflight failed (continuing): %s", e)
+
+
+def _init_fork_controllers(
+    loop: asyncio.AbstractEventLoop,
+    state: ServerState,
+    config: Optional[Config],
+) -> None:
+    """Initialize the fork's config-gated hardware controllers."""
+    if config is None:
+        _LOGGER.debug("No config.json — fork controllers disabled")
+        return
+
+    preferences = state.preferences
+
+    # LED controller (DotStar/NeoPixel SPI/GPIO or XVF3800 USB backend)
+    try:
+        led_controller = LedController(
+            loop=loop,
+            event_bus=state.event_bus,
+            config=config.led,
+            preferences=preferences,
+        )
+        state.led_controller = led_controller  # type: ignore[attr-defined]
+    except Exception:  # pylint: disable=broad-except
+        _LOGGER.exception("Failed to initialize LED controller")
+
+    # MQTT (LED controls + tray transport)
+    mqtt_controller: Optional[MqttController] = None
+    if config.mqtt.enabled:
+        try:
+            mqtt_controller = MqttController(
+                loop=loop,
+                event_bus=state.event_bus,
+                config=config.mqtt,
+                app_name=config.app.name,
+                mac_address=state.mac_address,
+                preferences=preferences,
+            )
+            state.mqtt_controller = mqtt_controller  # type: ignore[attr-defined]
+            mqtt_controller.start()
+        except Exception:  # pylint: disable=broad-except
+            _LOGGER.exception("Failed to initialize MQTT controller")
+
+    # Hardware mute bridge (button events -> satellite mute pipeline)
+    try:
+        MicMuteBridge(event_bus=state.event_bus, state=state)
+    except Exception:  # pylint: disable=broad-except
+        _LOGGER.exception("Failed to initialize mic mute bridge")
+
+    # Hardware buttons
+    try:
+        button_cfg = config.button
+        if button_cfg.enabled:
+            mode = getattr(button_cfg, "mode", "gpio").lower()
+            if mode == "xvf3800":
+                _LOGGER.info("Initializing XVF3800ButtonController (mode=xvf3800)")
+                xvf_btn = XVF3800ButtonController(
+                    loop=loop,
+                    event_bus=state.event_bus,
+                    state=state,
+                    button_config=button_cfg,
+                )
+                state.xvf3800_button_controller = xvf_btn  # type: ignore[attr-defined]
+            else:
+                _LOGGER.info("Initializing GPIO ButtonController (mode=gpio)")
+                button_controller = ButtonController(
+                    loop=loop,
+                    event_bus=state.event_bus,
+                    state=state,
+                    config=button_cfg,
+                )
+                state.button_controller = button_controller  # type: ignore[attr-defined]
+        else:
+            _LOGGER.debug("Button controller not enabled in config; skipping")
+    except Exception:  # pylint: disable=broad-except
+        _LOGGER.exception("Failed to initialize button controller(s)")
 
 
 def _load_preferences(path: Path) -> Preferences:
@@ -412,6 +591,11 @@ async def main() -> None:
         logging.basicConfig(level=logging.INFO)
 
     _LOGGER.debug(args)
+
+    # Fork: XVF3800 USB preflight (reboot + audio routing) before opening
+    # the microphone so the re-enumerated device is the one we capture.
+    _xvf3800_startup_preflight(config)
+
     if args.list_input_devices:
         print("Audio Input devices:")
         print("=" * 13)
@@ -450,10 +634,33 @@ async def main() -> None:
         print(f"Using host: {args.host}")
         host_ip_address = args.host
 
+    # Fork: load preferences before MAC resolution so the persisted MAC can
+    # provide a stable device identity across NIC changes.
+    preferences_path = Path(args.preferences_file)
+    if preferences_path.exists():
+        _LOGGER.debug("Loading preferences: %s", preferences_path)
+        preferences = _load_preferences(preferences_path)
+    else:
+        preferences = Preferences()
+
     # Resolve mac
     if not (mac_address := get_mac_address(interface=network_interface)):
         print("No Mac address was found, app stopped.")
         sys.exit(1)
+
+    # Fork: stable device identity — persist the MAC on first boot and
+    # prefer it afterwards so the HA device survives NIC changes, VM
+    # re-provisioning, or NetworkManager MAC randomization. Reset by
+    # removing the mac_address field from preferences.json.
+    if not preferences.mac_address:
+        preferences.mac_address = mac_address
+    elif preferences.mac_address != mac_address:
+        _LOGGER.info(
+            "Using persisted MAC %s (interface MAC %s differs)",
+            format_mac(preferences.mac_address),
+            mac_address,
+        )
+        mac_address = preferences.mac_address
     mac_address_clean = mac_address.replace(":", "").lower()
 
     # Resolve name
@@ -516,14 +723,6 @@ async def main() -> None:
 
     wake_word_dirs.append(args.download_dir / "external_wake_words")
     available_wake_words = find_available_wake_words(wake_word_dirs, args.stop_model)
-
-    # Load preferences
-    preferences_path = Path(args.preferences_file)
-    if preferences_path.exists():
-        _LOGGER.debug("Loading preferences: %s", preferences_path)
-        preferences = _load_preferences(preferences_path)
-    else:
-        preferences = Preferences()
 
     # Load volume from preferences on startup, and ensure it's between 0.0 and 1.0
     initial_volume = preferences.volume if preferences.volume is not None else 1.0
@@ -660,6 +859,27 @@ async def main() -> None:
     # ------------------------------------------------------------------
     loop = asyncio.get_running_loop()
     state.loop = loop
+
+    # ------------------------------------------------------------------
+    # Fork: hardware controllers (LED, MQTT, buttons) + volume sync
+    # ------------------------------------------------------------------
+    _init_fork_controllers(loop, state, config)
+
+    if config is not None and config.audio.volume_sync:
+        # Fork: align the OS sink volume with the persisted LVA volume.
+        # mpv's per-player volume handles ducking; the user-visible volume
+        # maps to the OS output (PipeWire/Pulse/ALSA).
+        loop.create_task(
+            ensure_output_volume(
+                volume=initial_volume,
+                output_device=config.audio.output_device,
+                max_volume_percent=config.audio.max_volume_percent,
+                attempts=20,
+                delay_seconds=0.5,
+            )
+        )
+    else:
+        _LOGGER.debug("Output volume sync disabled (audio.volume_sync=false)")
     max_attempts = 15
     attempt = 1
     server = None

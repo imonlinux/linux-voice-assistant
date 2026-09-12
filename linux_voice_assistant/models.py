@@ -44,6 +44,17 @@ class WakeWordType(str, Enum):
     OPEN_WAKE_WORD = "openWakeWord"
 
 
+class SatelliteState(str, Enum):
+    """Voice satellite state (fork; used by MQTT state topics and LEDs)."""
+
+    STARTING = "starting"
+    IDLE = "idle"
+    LISTENING = "listening"
+    THINKING = "thinking"
+    RESPONDING = "responding"
+    ERROR = "error"
+
+
 @dataclass
 class AvailableWakeWord:
     id: str
@@ -198,6 +209,8 @@ class ServerState:
     output_only: bool = False
     muted: bool = False
     connected: bool = False
+    # Fork: set on shutdown so controller poll loops exit promptly.
+    shutdown: bool = False
     volume: float = 1.0
     oww_probability_cutoff: float = 0.7  # Dynamic threshold for OpenWakeWord
     oww_second_probability_cutoff: float = 0.7  # Dynamic threshold for second OpenWakeWord

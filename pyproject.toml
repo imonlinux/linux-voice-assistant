@@ -34,6 +34,15 @@ dependencies = [
     "types-protobuf",
     "websockets==12",
     "webrtc-noise-gain>=1,<2",
+    # Fork: hardware controllers + MQTT + tray transport
+    "paho-mqtt",
+    "adafruit-circuitpython-dotstar",
+    "adafruit-circuitpython-neopixel",
+    "adafruit-circuitpython-neopixel-spi",
+    "RPi.GPIO",
+    "gpiozero",
+    "spidev",
+    "pyusb",
 ]
 dynamic = ["version"]
 
@@ -47,10 +56,25 @@ dev = [
     "isort",
     "autopep8",
     "pytest-asyncio",
+    "pytest-cov",
+    "pytest-mock",
+    "pytest-benchmark",
+]
+
+# Optional GUI/tray dependencies (fork)
+tray = [
+    "PyQt5>=5.15",
+]
+
+# Optional Sendspin client support (fork)
+sendspin = [
+    "aiosendspin>=3,<4",
+    "opuslib",
 ]
 
 [project.scripts]
 linux-voice-assistant = "linux_voice_assistant.__main__:run"
+lva-tray = "linux_voice_assistant.tray_client.client:main"
 
 [project.urls]
 "Source Code" = "http://github.com/OHF-Voice/linux-voice-assistant"
@@ -137,3 +161,10 @@ expected-line-ending-format = "LF"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+addopts = "--tb=short --strict-markers"
+markers = [
+    "hardware: marks tests as requiring hardware",
+    "slow: marks tests as slow running",
+    "integration: marks tests as integration tests",
+    "benchmark: marks tests as performance benchmarks",
+]

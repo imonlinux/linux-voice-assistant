@@ -71,6 +71,17 @@ def call_all(*callables: Optional[Callable[[], None]]) -> None:
         item()
 
 
+def format_mac(mac: str) -> str:
+    """Format a hex MAC string with colons (e.g. aa:bb:cc:dd:ee:ff)."""
+    clean_mac = mac.replace(":", "").replace("-", "").replace(".", "")
+    return ":".join(clean_mac[i : i + 2] for i in range(0, 12, 2))
+
+
+def slugify_device_id(name: str) -> str:
+    """Convert a display name to a consistent device_id."""
+    return name.strip().lower().replace(" ", "_")
+
+
 def get_default_interface():
     """Return the default network interface name, or None if not found."""
     default_gateway = netifaces.default_gateway()
