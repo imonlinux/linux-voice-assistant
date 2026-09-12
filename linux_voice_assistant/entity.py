@@ -142,8 +142,9 @@ class MediaPlayerEntity(ESPHomeEntity):
     def handle_message(self, msg: message.Message) -> Iterable[message.Message]:
         self._log.debug("handle_message called with msg: %s", msg)
 
-        # Suppress warning for irrelevant NumberCommandRequest
-        if isinstance(msg, (NumberCommandRequest, SelectCommandRequest)):
+        # Suppress warnings for commands belonging to other entities
+        # (HA broadcasts some request types to every entity)
+        if isinstance(msg, (NumberCommandRequest, SelectCommandRequest, SwitchCommandRequest)):
             return
 
         if isinstance(msg, MediaPlayerCommandRequest) and (msg.key == self.key):

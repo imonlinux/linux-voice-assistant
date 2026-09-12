@@ -38,6 +38,12 @@ class LibMpvPlayer(AudioPlayer):
             cache="yes",
             demuxer_max_bytes="32MiB",
             cache_secs="20",
+            # Fork: never route URLs through youtube-dl/yt-dlp. HA's TTS and
+            # connection-test URLs are plain HTTP with auth signatures;
+            # with ytdl enabled mpv hands them to an external resolver that
+            # may not exist, so TTS playback silently fails and the
+            # satellite sticks in the responding state.
+            ytdl=False,
         )
 
         if device:
