@@ -11,7 +11,7 @@ import time
 from dataclasses import fields as dataclass_fields
 from pathlib import Path
 from queue import Queue
-from typing import List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 import numpy as np
 import soundcard as sc
