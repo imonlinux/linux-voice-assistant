@@ -367,6 +367,48 @@ class VoiceSatelliteProtocol(APIServer):
         api = self.state.peripheral_api
         if api is not None:
             api.emit_event_sync(event, data)
+        self._publish_to_event_bus(event, data)
+
+    # ------------------------------------------------------------------
+    # Fork: internal event bus bridge
+    #
+    # The fork's hardware controllers (LED, buttons, XVF3800, MQTT) and the
+    # Sendspin client consume voice-state changes through the EventBus rather
+    # than the peripheral WebSocket API. Every peripheral-API emission is
+    # mirrored onto the bus with the fork's topic vocabulary, so in-daemon
+    # hardware stays wired to the same upstream seams.
+    # ------------------------------------------------------------------
+
+    _EVENT_BUS_MAP = {
+        LVAEvent.IDLE: "voice_idle",
+        LVAEvent.LISTENING: "voice_listen",
+        LVAEvent.THINKING: "voice_thinking",
+        LVAEvent.TTS_SPEAKING: "voice_responding",
+        LVAEvent.PIPELINE_ERROR: "voice_error",
+        LVAEvent.WAKE_WORD_DETECTED: "wake_word_detected",
+        LVAEvent.MEDIA_PLAYER_PLAYING: "media_player_playing",
+        LVAEvent.TIMER_TICKING: "timer_ticking",
+        LVAEvent.TIMER_UPDATED: "timer_updated",
+        LVAEvent.TIMER_RINGING: "timer_ringing",
+        LVAEvent.TTS_FINISHED: "tts_finished",
+        LVAEvent.DISCONNECTED: "ha_disconnected",
+    }
+
+    def _publish_to_event_bus(
+        self,
+        event: LVAEvent,
+        data: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Mirror a peripheral-API event onto the fork's EventBus."""
+        try:
+            topic = self._EVENT_BUS_MAP.get(event)
+            if topic is not None:
+                self.state.event_bus.publish(topic, dict(data or {}))
+            elif event == LVAEvent.MUTED:
+                muted = bool((data or {}).get("muted"))
+                self.state.event_bus.publish("mic_muted" if muted else "mic_unmuted")
+        except Exception:  # pylint: disable=broad-except
+            _LOGGER.exception("Failed to publish %s to event bus", event)
 
     def register_pending_lights(self) -> None:
         """Materialise LightEntities for peripheral registered lights.
@@ -1079,6 +1121,7 @@ class VoiceSatelliteProtocol(APIServer):
         if msg_type == PROTO_TO_MESSAGE_TYPE[AuthenticationRequest]:
             self.state.connected = True
             _LOGGER.debug("Authentication successful, connected to Home Assistant")
+            self.state.event_bus.publish("ha_connected")
 
             # Send states after connect
             states: List[message.Message] = []

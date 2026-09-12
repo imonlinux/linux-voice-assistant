@@ -537,6 +537,7 @@ async def main() -> None:
     # ESPHome TCP server (with retry on EADDRINUSE)
     # ------------------------------------------------------------------
     loop = asyncio.get_running_loop()
+    state.loop = loop
     max_attempts = 15
     attempt = 1
     server = None

@@ -1,5 +1,6 @@
 """Shared models."""
 
+import asyncio
 import json
 import logging
 from collections.abc import Iterable
@@ -8,6 +9,8 @@ from enum import Enum
 from pathlib import Path
 from queue import Queue
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Union
+
+from .event_bus import EventBus
 
 if TYPE_CHECKING:
     from google.protobuf import message
@@ -175,6 +178,14 @@ class ServerState:
     audio_input_channels: int = 2  # number of mic channels to stream
     timer_max_ring_seconds: float = 900.0
     listen_during_wake_sound: bool = False
+
+    # --- Fork: internal pub/sub for hardware controllers and subsystems ---
+    # Voice-state / mute / timer events are published here (see satellite
+    # _emit) and consumed by the LED, button, XVF3800 and MQTT controllers.
+    event_bus: EventBus = field(default_factory=EventBus)
+    # Running asyncio loop; assigned in __main__ once the server is up.
+    # Controllers running on their own threads use it to marshal calls.
+    loop: Optional[asyncio.AbstractEventLoop] = None
 
     def broadcast(self, msgs: "Iterable[message.Message]") -> None:
         """Send messages to every connected API client.
