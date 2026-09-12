@@ -738,12 +738,19 @@ async def main() -> None:
     # removing the mac_address field from preferences.json.
     if not preferences.mac_address:
         preferences.mac_address = mac_address
-    elif preferences.mac_address != mac_address:
-        _LOGGER.info(
-            "Using persisted MAC %s (interface MAC %s differs)",
-            format_mac(preferences.mac_address),
-            mac_address,
+    else:
+        # Compare format-insensitively: older releases persisted the MAC
+        # without colon separators.
+        same_mac = (
+            preferences.mac_address.replace(":", "").lower()
+            == mac_address.replace(":", "").lower()
         )
+        if not same_mac:
+            _LOGGER.info(
+                "Using persisted MAC %s (interface MAC %s differs)",
+                format_mac(preferences.mac_address),
+                mac_address,
+            )
         mac_address = preferences.mac_address
     mac_address_clean = mac_address.replace(":", "").lower()
 
