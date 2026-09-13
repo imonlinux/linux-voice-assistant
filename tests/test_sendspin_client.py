@@ -91,11 +91,19 @@ def test_server_volume_command_applies_and_publishes(tmp_path: Path) -> None:
 
     output = MagicMock()
     client._output = output
+    echo_tasks = []
+    client.loop = MagicMock()
+    client.loop.is_running.return_value = True
+    client.loop.create_task = echo_tasks.append
+    client._connected = True
+    client._client = MagicMock()
+
     client._on_server_command(
         SimpleNamespace(player=SimpleNamespace(command=PlayerCommand.VOLUME, volume=42))
     )
 
     output.set_volume.assert_called_once_with(42, muted=False)
+    assert len(echo_tasks) == 1, "volume command must be echoed via client/state"
     topics = [t for t, _ in event_bus.events_received]
     assert "sendspin_volume_changed" in topics
     assert client._user_volume == 42
@@ -113,11 +121,19 @@ def test_server_mute_command_applies(tmp_path: Path) -> None:
 
     output = MagicMock()
     client._output = output
+    echo_tasks = []
+    client.loop = MagicMock()
+    client.loop.is_running.return_value = True
+    client.loop.create_task = echo_tasks.append
+    client._connected = True
+    client._client = MagicMock()
+
     client._on_server_command(
         SimpleNamespace(player=SimpleNamespace(command=PlayerCommand.MUTE, mute=True))
     )
 
     output.set_volume.assert_called_once_with(100, muted=True)
+    assert len(echo_tasks) == 1, "mute command must also be echoed via client/state"
     # mute must not publish a volume-change event
     topics = [t for t, _ in event_bus.events_received]
     assert "sendspin_volume_changed" not in topics

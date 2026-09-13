@@ -269,6 +269,28 @@ class LVASendspinClient:
         self._output.set_volume(self._user_volume, muted=self._muted)
         self._output.set_duck_gain(self._duck_gain if self._ducked else 1.0)
 
+    def _report_state(self) -> None:
+        """Report player volume/mute back to the server (client/state).
+
+        MA renders the last reported state, so every applied command must be
+        echoed or the MA volume slider desyncs from the device.
+        """
+        client = self._client
+        if client is None or not self._connected:
+            return
+        if not self.loop.is_running():
+            return
+        try:
+            self.loop.create_task(
+                client.send_player_state(
+                    available=True,
+                    volume=self._user_volume,
+                    muted=self._muted,
+                )
+            )
+        except Exception:  # pylint: disable=broad-except
+            _LOGGER.debug("Sendspin: failed to report player state", exc_info=True)
+
     def _on_audio_chunk(self, server_timestamp_us: int, audio_data: bytes, fmt: AudioFormat) -> None:
         if self._output is None:
             return
@@ -329,6 +351,10 @@ class LVASendspinClient:
         self._apply_output_volume()
         if command == PlayerCommand.VOLUME:
             self.event_bus.publish("sendspin_volume_changed", {"volume": self._user_volume})
+        # Echo the applied state back: MA's UI displays the volume/mute last
+        # reported via client/state, not what it commanded. Without this the
+        # slider desyncs after a mute cycle.
+        self._report_state()
 
     def _on_disconnect(self) -> None:
         self._connected = False
