@@ -18,6 +18,8 @@ from __future__ import annotations
 import asyncio
 import copy
 import logging
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Any, Optional, Union
 
@@ -98,6 +100,9 @@ class LVASendspinClient:
         self._ducked = False
 
         self._static_pin = _cfg_get(pairing_cfg, "pin", None)
+        self._speak_pin = bool(_cfg_get(pairing_cfg, "speak_pin", True))
+        self._pairing_voice = _cfg_get(pairing_cfg, "voice", None)
+        self._pin_speech_procs: tuple = (None, None)
         self._identity_path = Path(identity_path)
         self._pairing_path = Path(pairing_path)
 
@@ -169,6 +174,7 @@ class LVASendspinClient:
             pairing_support=PairingSupport(
                 gesture_prompt=self._on_pairing_gesture,
                 pin_display=self._on_pairing_pin,
+                pin_speaker=self._on_pairing_speak_pin,
                 offer_static_pin=self._static_pin is not None,
             ),
             player_support=ClientHelloPlayerSupport(
@@ -241,6 +247,7 @@ class LVASendspinClient:
     async def disconnect(self, reason: str = "shutdown") -> None:  # noqa: ARG002
         self._stopping = True
         self._connected = False
+        self._stop_pin_speech()
         client = self._client
         self._client = None
         if client is None:
@@ -428,6 +435,74 @@ class LVASendspinClient:
 
     def _on_pairing_abort(self, reason: Any) -> None:
         _LOGGER.info("Sendspin: pairing attempt aborted (%s)", getattr(reason, "value", reason))
+
+    def _find_espeak(self) -> Optional[str]:
+        for name in ("espeak-ng", "espeak"):
+            path = shutil.which(name)
+            if path:
+                return path
+        return None
+
+    def _stop_pin_speech(self) -> None:
+        """Terminate a running PIN announcement (pairing ended or re-announce)."""
+        for proc in self._pin_speech_procs:
+            if proc is not None and proc.poll() is None:
+                proc.terminate()
+        self._pin_speech_procs = (None, None)
+
+    async def _on_pairing_speak_pin(
+        self,
+        pin: Optional[str],
+        *,
+        languages: tuple[str, ...] = (),
+    ) -> None:
+        """PinSpeaker out-channel: announce the pairing PIN via espeak-ng.
+
+        Contract (aiosendspin): return once emission has *started* — the
+        pairing exchange is blocked while this runs, so playback proceeds in
+        background processes. ``pin=None`` stops the current announcement.
+        """
+        if not self._speak_pin:
+            return
+        espeak = self._find_espeak()
+        if espeak is None:
+            _LOGGER.info(
+                "Sendspin: espeak-ng not installed — cannot speak the pairing "
+                "PIN (install espeak-ng for spoken pairing); the PIN is in the log"
+            )
+            return
+
+        self._stop_pin_speech()
+        if pin is None:
+            return
+
+        spaced = " ".join(pin)  # read digits individually
+        voice = self._pairing_voice or next(
+            (lang.replace("_", "-") for lang in languages if lang), None
+        )
+        cmd = [espeak, "--stdout"]
+        if voice:
+            cmd += ["-v", voice]
+        cmd.append(spaced)
+        try:
+            espeak_proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
+            )
+            # mpv plays the WAV from espeak's stdout using the system audio
+            # stack, consistent with the rest of LVA playback.
+            mpv_proc = subprocess.Popen(
+                ["mpv", "--no-video", "--really-quiet", "--audio-display=no", "-"],
+                stdin=espeak_proc.stdout,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            espeak_proc.stdout.close()
+            self._pin_speech_procs = (espeak_proc, mpv_proc)
+            _LOGGER.info("Sendspin: speaking pairing PIN")
+        except Exception:  # pylint: disable=broad-except
+            _LOGGER.warning(
+                "Sendspin: failed to speak the pairing PIN", exc_info=True
+            )
 
     async def _on_pairing_pin(self, pin: Optional[str]) -> None:
         """PinDisplay out-channel: the PIN goes to the daemon log."""

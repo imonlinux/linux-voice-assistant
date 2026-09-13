@@ -24,3 +24,9 @@ venv/
 dev.env
 version.txt
 version_githash.txt
+# Sendspin player credentials (private key + pairing PSKs)
+sendspin_identity.json
+sendspin_pairing.json
+
+# editor backups
+*~

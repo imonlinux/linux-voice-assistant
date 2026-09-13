@@ -239,7 +239,12 @@
     // sendspin_identity.json / sendspin_pairing.json next to
     // preferences.json, so reboots never need re-pairing.
     "pairing": {
-      "pin": null
+      "pin": null,
+
+      // Speak the pairing PIN through the device speaker (requires
+      // espeak-ng; falls back to log-only if not installed).
+      "speak_pin": true,
+      "voice": null
     },
 
     "connection": {

@@ -43,6 +43,8 @@ synchronized output stage.
 | `connection.server_host` | *(required)* | Music Assistant server address. There is no discovery — this must be set. |
 | `connection.server_port` / `server_path` | 8927 / `/sendspin` | Where to connect. |
 | `pairing.pin` | *(none)* | Fixed code to enter in MA when pairing. If unset, a dynamic PIN is written to the daemon log. |
+| `pairing.speak_pin` | true | Announce the PIN through the device speaker via **espeak-ng** (`sudo apt install espeak-ng`); falls back to log-only if not installed. |
+| `pairing.voice` | *(server preference)* | espeak-ng voice override (e.g. `en-us`, `de`). |
 | `player.sync_target_latency_ms` | 250 | Audio the server keeps buffered at this player. Also the playback start gate. Higher = more jitter headroom, more startup latency. |
 | `player.output_latency_ms` | 0 | Static delay compensation, clamped to 0–5000 ms. Raise only if this device consistently plays early relative to others in the group. |
 | `player.output_device` | *(system default)* | sounddevice output device name. |
@@ -56,7 +58,8 @@ synchronized output stage.
    `Sendspin: server not yet paired — pairing window open`.
 2. In Music Assistant, select the player, press **Setup**, and start pairing.
 3. LVA logs `Sendspin: PAIRING PIN — enter this in Music Assistant: <code>`
-   (or use your configured static pin). Enter it in MA.
+   (or use your configured static pin) **and speaks the code through its
+   speaker** when espeak-ng is installed. Enter it in MA.
 4. Pairing credentials persist in `sendspin_pairing.json` next to
    `preferences.json`, together with the player identity in
    `sendspin_identity.json`. Reboots reconnect without re-pairing.

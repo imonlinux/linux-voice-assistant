@@ -363,3 +363,98 @@ def test_start_gate_respects_configured_buffer_target(tmp_path: Path) -> None:
     for _ in range(6):
         chunk(25)
     assert player._stream_started is True
+
+
+# --------------------------------------------------------------------------- #
+# Spoken pairing PIN (espeak-ng)
+# --------------------------------------------------------------------------- #
+
+def make_speaker_client(tmp_path: Path, **pairing_kwargs) -> LVASendspinClient:
+    from linux_voice_assistant.config import SendspinPairingConfig
+
+    sendspin = make_config(pairing=SendspinPairingConfig(**pairing_kwargs))
+    return make_client(tmp_path, sendspin, EventBus(track_events=True))
+
+
+def test_speak_pin_builds_espeak_command(tmp_path: Path) -> None:
+    """Digits are spaced for individual pronunciation; voice from server languages."""
+    from unittest.mock import patch
+
+    client = make_speaker_client(tmp_path)
+    espeak_proc = MagicMock()
+    mpv_proc = MagicMock()
+    commands = []
+
+    def fake_popen(cmd, **kwargs):
+        commands.append(cmd)
+        if "mpv" in cmd[0]:
+            return mpv_proc
+        return espeak_proc
+
+    with patch("linux_voice_assistant.sendspin.client.shutil.which", return_value="/usr/bin/espeak-ng"), \
+         patch("linux_voice_assistant.sendspin.client.subprocess.Popen", side_effect=fake_popen):
+        asyncio.run(client._on_pairing_speak_pin("900984", languages=("en-US",)))
+
+    # first Popen is espeak (WAV to stdout), second is mpv reading stdin
+    assert commands[0] == [
+        "/usr/bin/espeak-ng", "--stdout", "-v", "en-US", "9 0 0 9 8 4"
+    ]
+    assert commands[1][:4] == ["mpv", "--no-video", "--really-quiet", "--audio-display=no"]
+    # mpv chained on espeak stdout, both processes retained for stop()
+    espeak_proc.stdout.close.assert_called_once()
+
+
+def test_speak_pin_none_stops_previous_announcement(tmp_path: Path) -> None:
+    from unittest.mock import patch
+
+    client = make_speaker_client(tmp_path)
+    espeak_proc = MagicMock()
+    espeak_proc.poll.return_value = None
+    client._pin_speech_procs = (espeak_proc, None)
+
+    with patch("linux_voice_assistant.sendspin.client.shutil.which", return_value="/usr/bin/espeak-ng"), \
+         patch("linux_voice_assistant.sendspin.client.subprocess.Popen") as mock_popen:
+        asyncio.run(client._on_pairing_speak_pin(None, languages=()))
+
+    espeak_proc.terminate.assert_called_once()
+    mock_popen.assert_not_called()
+    assert client._pin_speech_procs == (None, None)
+
+
+def test_speak_pin_disabled_by_config(tmp_path: Path) -> None:
+    from unittest.mock import patch
+
+    client = make_speaker_client(tmp_path, speak_pin=False)
+    with patch("linux_voice_assistant.sendspin.client.shutil.which", return_value="/usr/bin/espeak-ng"), \
+         patch("linux_voice_assistant.sendspin.client.subprocess.Popen") as mock_popen:
+        asyncio.run(client._on_pairing_speak_pin("1234", languages=()))
+    mock_popen.assert_not_called()
+
+
+def test_speak_pin_missing_espeak_degrades_gracefully(tmp_path: Path) -> None:
+    from unittest.mock import patch
+
+    client = make_speaker_client(tmp_path)
+    with patch("linux_voice_assistant.sendspin.client.shutil.which", return_value=None), \
+         patch("linux_voice_assistant.sendspin.client.subprocess.Popen") as mock_popen:
+        asyncio.run(client._on_pairing_speak_pin("1234", languages=()))
+    mock_popen.assert_not_called()
+
+
+def test_config_voice_overrides_server_languages(tmp_path: Path) -> None:
+    from unittest.mock import patch
+
+    client = make_speaker_client(tmp_path, voice="de")
+    captured = {}
+
+    commands = []
+
+    def fake_popen(cmd, **kwargs):
+        commands.append(cmd)
+        return MagicMock()
+
+    with patch("linux_voice_assistant.sendspin.client.shutil.which", return_value="/usr/bin/espeak-ng"), \
+         patch("linux_voice_assistant.sendspin.client.subprocess.Popen", side_effect=fake_popen):
+        asyncio.run(client._on_pairing_speak_pin("123456", languages=("en-US",)))
+
+    assert commands[0][2:4] == ["-v", "de"]

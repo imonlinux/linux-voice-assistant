@@ -462,6 +462,15 @@ class SendspinPairingConfig:
     # written to the daemon log (journalctl).
     pin: Optional[str] = None
 
+    # Speak the pairing PIN through the device speaker via espeak-ng
+    # (Voice-PE style pairing). Falls back to log-only when espeak-ng
+    # is not installed.
+    speak_pin: bool = True
+
+    # Optional espeak-ng voice override (e.g. "en-us"). When unset, the
+    # voice is chosen from the language preferences the server reports.
+    voice: Optional[str] = None
+
 
 @dataclass
 class SendspinConfig:
