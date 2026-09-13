@@ -178,6 +178,7 @@ class LVASendspinClient:
                 supported_commands=[PlayerCommand.VOLUME, PlayerCommand.MUTE],
             ),
             min_buffer_ms=self._min_buffer_ms,
+            static_delay_ms=self._static_delay_ms,
             initial_volume=self._user_volume,
             initial_muted=self._muted,
         )
