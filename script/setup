@@ -7,10 +7,12 @@ from pathlib import Path
 _DIR = Path(__file__).parent
 _PROGRAM_DIR = _DIR.parent
 _VENV_DIR = _PROGRAM_DIR / ".venv"
+_PIPER_VOICES_DIR = _PROGRAM_DIR / "piper_voices"
+_PIPER_MODEL = "en_US-lessac-medium"
 
 
-def run(cmd: list[str]) -> None:
-    subprocess.check_call(cmd)
+def run(cmd: list[str], **kwargs) -> None:
+    subprocess.check_call(cmd, **kwargs)
 
 
 parser = argparse.ArgumentParser()
@@ -43,3 +45,20 @@ if extras:
     run(pip + ["install", "-e", f"{_PROGRAM_DIR}[{extras_str}]"])
 else:
     run(pip + ["install", "-e", str(_PROGRAM_DIR)])
+
+# Pre-download piper voice model so the first pairing is instant
+if args.sendspin:
+    model_file = _PIPER_VOICES_DIR / f"{_PIPER_MODEL}.onnx"
+    if model_file.exists():
+        print("Piper voice model already present.")
+    else:
+        print(f"Pre-downloading piper voice model ({_PIPER_MODEL}, ~60 MB)…")
+        _PIPER_VOICES_DIR.mkdir(parents=True, exist_ok=True)
+        run(
+            [str(context.env_exe), "-m", "piper.download_voices", _PIPER_MODEL],
+            cwd=str(_PIPER_VOICES_DIR),
+        )
+        if model_file.exists():
+            print("Piper voice model ready.")
+        else:
+            print("Warning: piper voice model not found after download.")

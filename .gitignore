@@ -35,3 +35,6 @@ sendspin_pairing.json
 en_US-*.onnx
 en_US-*.onnx.json
 *.onnx.json
+
+# piper voice models (downloaded on demand)
+piper_voices/
