@@ -260,7 +260,11 @@ class LVASendspinClient:
             return
         self._ducked = ducked
         self._apply_output_volume()
-        _LOGGER.debug("Sendspin: ducked=%s", ducked)
+        _LOGGER.info(
+            "Sendspin: music %s (gain %.2f)",
+            "ducked" if ducked else "restored",
+            self._duck_gain if ducked else 1.0,
+        )
 
     async def send_controller_command(
         self,
