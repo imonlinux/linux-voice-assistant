@@ -857,6 +857,17 @@ Look for `Sendspin: connected` and, after pairing, `Stream started with codec pc
 
 ## 6. Connect to Home Assistant
 
+### Known quirk: the first registration attempt may show a connection-test error
+
+When registering a **voice assistant** LVA for the first time, Home Assistant
+plays a short connection-test sound to the satellite. On the first attempt this
+can time out with the dialog *"The voice assistant is unable to connect to Home
+Assistant …"* even though the device fetched and played the test file correctly
+(verified to the same second on the device side). This is a race in Home
+Assistant's connection-test announcement path — simply submit the registration a
+second time and it succeeds. Enabling debug logging for the `esphome`
+integration in HA also masks it.
+
 ### If HA does not discover the new LVA:
 
 1. In Home Assistant, go to "Settings" -> "Device & services"
