@@ -72,6 +72,7 @@ tray = [
 sendspin = [
     "aiosendspin>=9,<10; python_version>='3.12'",
     "sounddevice>=0.4.6; python_version>='3.12'",
+    "piper-tts>=1.8; python_version>='3.12'",
 ]
 
 [project.scripts]

@@ -18,11 +18,14 @@ from aiosendspin.client import client as aio_client_mod
 
 
 def make_config(**kwargs) -> SendspinConfig:
-    from linux_voice_assistant.config import SendspinConnectionConfig
+    from linux_voice_assistant.config import SendspinConnectionConfig, SendspinPairingConfig
 
     kwargs.setdefault(
         "connection", SendspinConnectionConfig(server_host="192.168.0.100", server_port=8927)
     )
+    # Default to the explicit espeak engine so tests don't hit the piper
+    # model download path; piper-specific tests override this.
+    kwargs.setdefault("pairing", SendspinPairingConfig(voice_engine="espeak-ng"))
     return SendspinConfig(**kwargs)
 
 
@@ -372,6 +375,9 @@ def test_start_gate_respects_configured_buffer_target(tmp_path: Path) -> None:
 def make_speaker_client(tmp_path: Path, **pairing_kwargs) -> LVASendspinClient:
     from linux_voice_assistant.config import SendspinPairingConfig
 
+    # Default to explicit espeak engine so tests don't hit the piper model
+    # download path; piper-specific tests override this.
+    pairing_kwargs.setdefault("voice_engine", "espeak-ng")
     sendspin = make_config(pairing=SendspinPairingConfig(**pairing_kwargs))
     return make_client(tmp_path, sendspin, EventBus(track_events=True))
 
@@ -409,7 +415,7 @@ def test_speak_pin_builds_espeak_command(tmp_path: Path) -> None:
 def test_speak_pin_none_stops_previous_announcement(tmp_path: Path) -> None:
     from unittest.mock import patch
 
-    client = make_speaker_client(tmp_path)
+    client = make_speaker_client(tmp_path, voice_engine="espeak-ng")
     espeak_proc = MagicMock()
     espeak_proc.poll.return_value = None
     client._pin_speech_procs = [espeak_proc, None]
@@ -436,7 +442,7 @@ def test_speak_pin_disabled_by_config(tmp_path: Path) -> None:
 def test_speak_pin_missing_espeak_degrades_gracefully(tmp_path: Path) -> None:
     from unittest.mock import patch
 
-    client = make_speaker_client(tmp_path)
+    client = make_speaker_client(tmp_path, voice_engine="espeak-ng")
     with patch("linux_voice_assistant.sendspin.client.shutil.which", return_value=None), \
          patch("linux_voice_assistant.sendspin.client.subprocess.Popen") as mock_popen:
         asyncio.run(client._on_pairing_speak_pin("1234", languages=()))
@@ -446,7 +452,7 @@ def test_speak_pin_missing_espeak_degrades_gracefully(tmp_path: Path) -> None:
 def test_config_voice_overrides_server_languages(tmp_path: Path) -> None:
     from unittest.mock import patch
 
-    client = make_speaker_client(tmp_path, voice="de")
+    client = make_speaker_client(tmp_path, voice="de", voice_engine="espeak-ng")
     captured = {}
 
     commands = []

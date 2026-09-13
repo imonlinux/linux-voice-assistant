@@ -507,6 +507,12 @@ class LVASendspinClient:
             model_path = self._piper_model_path()
             if model_path is not None:
                 return "piper", str(model_path)
+            # Auto/piper: download the model on first use so the neural
+            # voice works out of the box (falls back to espeak-ng if the
+            # download fails — e.g. offline or disk full).
+            model_path = self._ensure_piper_model()
+            if model_path is not None:
+                return "piper", str(model_path)
 
         if engine == "piper" and self._ensure_piper_model() is not None:
             model_path = self._piper_voices_dir / f"{self._piper_model_name}.onnx"
