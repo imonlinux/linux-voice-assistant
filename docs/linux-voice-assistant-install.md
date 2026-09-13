@@ -28,7 +28,7 @@ This guide reproduces a working setup of the **linux-voice-assistant** project w
 sudo apt update
 sudo apt upgrade
 sudo apt install build-essential git \
-      libmpv-dev mpv python3-dev python3-venv
+      libmpv-dev mpv python3-dev python3-venv libportaudio2
 sudo reboot
 ```
 
@@ -45,7 +45,14 @@ Instructions for the install (or re-install) of the ReSpeaker 2-Mic Hat (**versi
 
 ```bash
 git clone https://github.com/imonlinux/linux-voice-assistant.git
+cd linux-voice-assistant
+git checkout upstream-core
 ```
+
+> **Important:** the default `main` branch currently holds the previous
+> (legacy) code stack. The re-founded stack — required for the current
+> Music Assistant Sendspin protocol and current upstream features — lives
+> on the `upstream-core` branch, which is what this guide documents.
 
 ## 4. Setup Linux Voice Assistant (LVA)
 
@@ -379,7 +386,7 @@ systemctl --user status linux-voice-assistant --no-pager -l
 
 ## 🔌 MQTT Controls Overview
 
-MQTT is only required for LED controls. Voice and audio controls (mute, sound selection, thinking sound loop, event sounds, alarm duration, and wake word sensitivity) are now ESPHome entities available on the Home Assistant device page under **Configuration** — no MQTT required for those.
+MQTT is only required for LED controls. Voice and audio controls are ESPHome entities on the Home Assistant device page under **Configuration** — no MQTT required for those. That includes: mute, thinking sound (on/off + loop), event sounds master toggle, wakeup/thinking/timer sound selection, alarm duration, wake word 1/2 and stop word sensitivity, and microphone auto gain / noise suppression / mic volume.
 
 > **Note:** The desktop tray client also uses MQTT internally to mirror mute state and display voice state colors, but this does not require MQTT Discovery to be configured for mute in Home Assistant.
 
@@ -565,7 +572,26 @@ systemctl --user status linux-voice-assistant --no-pager -l
 <details>
 <summary><strong>Optional (Acoustic Echo Cancellation) </strong></summary>
 
-This optional configuration support the use AEC and require either a working PipeWire-Pulse or PulseAudio backend.
+This optional configuration adds **acoustic echo cancellation (AEC)**: it removes the LVA's own assistant audio from the microphone signal so the wake word and interrupt commands work *while the assistant is talking*. It requires a working PipeWire-Pulse or PulseAudio backend.
+
+> **AEC vs WebRTC Noise Suppression — different problems, they complement each other.**
+> The WebRTC processing below ("Mic Noise Suppression" / "Mic Auto Gain" on the HA
+> device page) removes *room noise* and normalizes *mic level*; it does **not** remove
+> echo. This PipeWire module removes echo. If both are active, note that this module's
+> `aec_args` can also do noise suppression — avoid stacking heavy suppression in both
+> layers or speech may sound "underwater".
+>
+> Upstream also supports **server-side AEC** (dual-channel mic input, see
+> `docs/enabling_aec.md`); this PipeWire approach remains the device-side alternative
+> and requires no HA changes.
+
+> **Persistence:** PulseAudio/PipeWire modules do not survive a reboot. A ready-made
+> systemd unit ships with LVA — install it after verifying the manual load below:
+> ```bash
+> cp service/aec-module-load.service ~/.config/systemd/user/
+> systemctl --user daemon-reload
+> systemctl --user enable --now aec-module-load.service
+> ```
 
 Enable the echo cancel PulseAudio module:
 
@@ -711,6 +737,29 @@ systemctl --user restart linux-voice-assistant.service
 ```bash
 systemctl --user status linux-voice-assistant --no-pager -l
 ```
+
+</details>
+
+<details>
+<summary><strong>Optional (WebRTC Noise Suppression & Mic Auto Gain)</strong></summary>
+
+LVA includes WebRTC-based microphone processing: **noise suppression** and
+**automatic gain control**. This cleans up the mic signal for wake-word
+detection and speech-to-text. It is different from the Acoustic Echo
+Cancellation above (which removes the assistant's own audio from the mic) —
+the two complement each other.
+
+**No configuration file changes are needed.** Both controls live on the
+Home Assistant device page:
+
+- **Mic Noise Suppression** — Off / Low / Medium / High / Max
+- **Mic Auto Gain** — 0 (off) to 31
+
+Defaults are Off/0: the processor is bypassed until you set a non-zero
+value. Settings apply live and persist automatically. Start with **Low**
+suppression — aggressive settings can degrade wake-word detection in quiet
+rooms. The processing package (`webrtc-noise-gain`) is installed with the
+base setup; no extra steps are required.
 
 </details>
 
@@ -923,6 +972,12 @@ tmpfs           1.0M     0  1.0M   0% /run/credentials/serial-getty@ttyS0.servic
 ```
 Update LVA via included script:
 *Be sure to include any needed extra setup flags (i.e. --sendspin --tray)*
+
+> **Keep your Sendspin identity:** `sendspin_identity.json` and
+> `sendspin_pairing.json` (next to `preferences.json`) hold the player's
+> identity and pairing credentials. If the upgrade process or a fresh clone
+> loses them, the player comes back as a NEW device in Music Assistant and
+> must be paired again.
 
 ```bash
 bash ~/linux-voice-assistant/script/update_lva --sendspin
