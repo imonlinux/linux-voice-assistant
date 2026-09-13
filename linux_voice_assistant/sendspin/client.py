@@ -217,7 +217,10 @@ class LVASendspinClient:
 
         # Headless pairing UX: while unpaired, keep a pairing window open so
         # the operator can pair from MA without shell access.
-        if not await pairing_store.pairing_psk():
+        server_id = getattr(getattr(client, "server_info", None), "server_id", None)
+        if await self._server_is_paired(pairing_store, server_id):
+            _LOGGER.debug("Sendspin: paired with server %s", server_id)
+        else:
             client.open_pairing_window()
             _LOGGER.info(
                 "Sendspin: server not yet paired — pairing window open for %ss. "
@@ -271,6 +274,17 @@ class LVASendspinClient:
     # ------------------------------------------------------------------
     # aiosendspin listeners
     # ------------------------------------------------------------------
+
+    @staticmethod
+    async def _server_is_paired(pairing_store: Any, server_id: Optional[str]) -> bool:
+        """Paired = a long-term record exists for this server (dynamic-PIN or
+        static-PIN pairing), or an accepted pairing PSK token. Checking only
+        the pairing PSK misses PIN-paired servers."""
+        if not server_id:
+            return False
+        if await pairing_store.record_by_server_id(server_id):
+            return True
+        return await pairing_store.pairing_psk() is not None
 
     def _apply_output_volume(self) -> None:
         if self._output is None:

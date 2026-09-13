@@ -303,3 +303,28 @@ def test_duck_handler_survives_reconnect(tmp_path: Path) -> None:
 
     output.set_duck_gain.assert_called_with(client._duck_gain)
     output.set_volume.assert_called_with(client._user_volume, muted=False)
+
+
+async def test_server_paired_check(tmp_path: Path) -> None:
+    """PIN-paired servers count as paired (not just pairing-PSK tokens)."""
+    from types import SimpleNamespace
+
+    from linux_voice_assistant.sendspin.client import LVASendspinClient
+
+    class StubStore:
+        def __init__(self, record, psk):
+            self._record, self._psk = record, psk
+
+        async def record_by_server_id(self, server_id):
+            return self._record
+
+        async def pairing_psk(self):
+            return self._psk
+
+    record = SimpleNamespace(server_id="srv1")
+    assert await LVASendspinClient._server_is_paired(StubStore(record, None), "srv1")
+    assert not await LVASendspinClient._server_is_paired(StubStore(None, None), "srv1")
+    # pairing-PSK token counts even without a long-term record
+    assert await LVASendspinClient._server_is_paired(StubStore(None, "psk"), "srv1")
+    # no server id (handshake incomplete) -> treated as unpaired
+    assert not await LVASendspinClient._server_is_paired(StubStore(record, None), None)
