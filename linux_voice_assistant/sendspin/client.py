@@ -112,7 +112,7 @@ class LVASendspinClient:
             Path(identity_path).parent / "piper_pin_announcement.wav"
         )
         # Matches script/setup's pre-download location (repo root)
-        self._piper_voices_dir = Path(__file__).parent.parent / "piper_voices"
+        self._piper_voices_dir = Path(__file__).parent.parent.parent / "piper_voices"
         self._piper_model_name = _cfg_get(pairing_cfg, "piper_model", "en_US-lessac-medium") or "en_US-lessac-medium"
         self._voice_engine = (_cfg_get(pairing_cfg, "voice_engine", "auto") or "auto").lower()
         self._identity_path = Path(identity_path)
