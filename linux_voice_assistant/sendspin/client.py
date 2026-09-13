@@ -185,6 +185,7 @@ class LVASendspinClient:
         client.add_audio_chunk_listener(self._on_audio_chunk)
         client.add_stream_start_listener(self._on_stream_start)
         client.add_stream_end_listener(self._on_stream_end)
+        client.add_stream_clear_listener(self._on_stream_clear)
         client.add_metadata_listener(self._on_metadata)
         client.add_group_update_listener(self._on_group_update)
         client.add_server_command_listener(self._on_server_command)
@@ -307,11 +308,27 @@ class LVASendspinClient:
         self.event_bus.publish("sendspin_playback_state", {"state": "playing"})
         _LOGGER.info("Sendspin: stream started")
 
-    def _on_stream_end(self) -> None:
+    def _on_stream_end(self, roles: Optional[list[str]] = None) -> None:
+        """Stream finished: release the output device.
+
+        ``roles`` (per spec) filters the event to the player role; ``None``
+        means it applies to us.
+        """
+        if roles is not None and "player" not in roles:
+            return
         if self._output is not None:
-            self._output.clear()
+            self._output.close_stream()
+        self._current_format = None
         self.event_bus.publish("sendspin_playback_state", {"state": "stopped"})
         _LOGGER.info("Sendspin: stream ended")
+
+    def _on_stream_clear(self, roles: Optional[list[str]] = None) -> None:
+        """Stream cleared (seek/jump): drop buffered audio so it can't play stale."""
+        if roles is not None and "player" not in roles:
+            return
+        if self._output is not None:
+            self._output.clear()
+        _LOGGER.debug("Sendspin: stream cleared")
 
     def _on_metadata(self, metadata: Any) -> None:
         try:

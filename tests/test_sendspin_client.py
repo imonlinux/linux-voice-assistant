@@ -149,3 +149,37 @@ def test_server_command_without_player_section_is_ignored(tmp_path: Path) -> Non
     client._on_server_command(SimpleNamespace(player=None))
 
     assert client._user_volume == 100
+
+
+def test_stream_end_accepts_roles_and_closes_output(tmp_path: Path) -> None:
+    """Stream end carries a roles list; the output device is released."""
+    client = make_client(tmp_path, make_config(), EventBus())
+    output = MagicMock()
+    client._output = output
+    client._current_format = MagicMock()
+
+    client._on_stream_end(None)
+    output.close_stream.assert_called_once()
+    assert client._current_format is None
+
+
+def test_stream_end_for_other_roles_is_ignored(tmp_path: Path) -> None:
+    """A stream/end scoped to non-player roles must not touch our output."""
+    client = make_client(tmp_path, make_config(), EventBus())
+    output = MagicMock()
+    client._output = output
+
+    client._on_stream_end(["controller"])
+
+    output.close_stream.assert_not_called()
+
+
+def test_stream_clear_drops_buffered_audio(tmp_path: Path) -> None:
+    """Seek/jump clears buffered chunks so stale audio can't play."""
+    client = make_client(tmp_path, make_config(), EventBus())
+    output = MagicMock()
+    client._output = output
+
+    client._on_stream_clear(["player"])
+
+    output.clear.assert_called_once()
