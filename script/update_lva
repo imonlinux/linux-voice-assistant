@@ -1,9 +1,14 @@
 #!/bin/bash
 # This script automates the refresh of the Linux Voice Assistant
 # from https://github.com/imonlinux/linux-voice-assistant while
-# maintaining current configuration and preferences.
+# maintaining current configuration, preferences, and pairing state.
 # You must pass the extra setup flags that you require.
 # Usage: bash ~/linux-voice-assistant/script/update_lva.sh --sendspin
+#
+# The script checks out the upstream-core branch (the current development
+# line) and rebuilds the virtual environment. Your config.json,
+# preferences.json, Sendspin identity/pairing credentials, and piper
+# voice model are all preserved.
 
 set -e  # Exit immediately if any command fails
 
@@ -16,23 +21,56 @@ PROJECT_NAME="$(basename "$PROJECT_DIR")"
 
 SAVE_DIR="${PARENT_DIR}/${PROJECT_NAME}_save"
 REPO_URL="https://github.com/imonlinux/linux-voice-assistant.git"
+BRANCH="upstream-core"
 
 echo "Project root : $PROJECT_DIR"
 echo "Save location: $SAVE_DIR"
+echo "Branch       : $BRANCH"
 
 # Stop the running LVA service
-systemctl --user stop linux-voice-assistant.service
+systemctl --user stop linux-voice-assistant.service 2>/dev/null || true
 
 # Save the current version (just in case)
 rm -rf "$SAVE_DIR"
 mv "$PROJECT_DIR" "$SAVE_DIR"
 
-# Clone current version from repo into the original location
-git clone "$REPO_URL" "$PROJECT_DIR"
+# Clone current version from repo into the original location,
+# then checkout the upstream-core branch
+git clone --branch "$BRANCH" "$REPO_URL" "$PROJECT_DIR"
 
-# Restore configuration and preferences
-cp "$SAVE_DIR/preferences.json" "$PROJECT_DIR/"
-cp "$SAVE_DIR/linux_voice_assistant/config.json" "$PROJECT_DIR/linux_voice_assistant/"
+# Restore configuration, preferences, and user data
+cp "$SAVE_DIR/preferences.json" "$PROJECT_DIR/" 2>/dev/null || true
+cp "$SAVE_DIR/linux_voice_assistant/config.json" "$PROJECT_DIR/linux_voice_assistant/" 2>/dev/null || true
+
+# Preserve Sendspin identity, pairing credentials, and piper voice model
+# so the MA player identity survives and no re-pairing is needed
+for f in sendspin_identity.json sendspin_pairing.json; do
+    if [ -f "$SAVE_DIR/$f" ]; then
+        cp "$SAVE_DIR/$f" "$PROJECT_DIR/"
+        echo "Preserved $f"
+    fi
+done
+if [ -d "$SAVE_DIR/piper_voices" ]; then
+    mkdir -p "$PROJECT_DIR/piper_voices"
+    cp -r "$SAVE_DIR/piper_voices/"* "$PROJECT_DIR/piper_voices/" 2>/dev/null || true
+    echo "Preserved piper voice models"
+fi
+
+# -----------------------------------------------------------------------
+# Migrate config.json: ensure new required keys exist and clean up
+# obsolete ones so the upgrade is seamless.
+# -----------------------------------------------------------------------
+CONFIG_FILE="$PROJECT_DIR/linux_voice_assistant/config.json"
+if [ -f "$CONFIG_FILE" ]; then
+    echo "Migrating config.json…"
+    python3 "$PROJECT_DIR/script/migrate_config.py" "$CONFIG_FILE" || {
+        echo "Warning: config migration had issues — the daemon will still"
+        echo "start, but check the log for unknown-key warnings."
+    }
+fi
+
+# Rebuild the virtual environment (dependency set changes between versions)
+rm -rf "$PROJECT_DIR/.venv"
 
 # Run setup with passed flags (e.g. --sendspin --tray)
 cd "$PROJECT_DIR"
@@ -40,3 +78,7 @@ script/setup "$@"
 
 # Start the LVA service
 systemctl --user start linux-voice-assistant.service
+
+echo ""
+echo "LVA update complete. Check the log for any warnings:"
+echo "  journalctl --user -u linux-voice-assistant -f"
