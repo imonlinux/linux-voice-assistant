@@ -139,6 +139,7 @@ class AudioPlayer:
         compute_server_time: Callable[[int], int],
         now_us: Callable[[], int] | None = None,
         is_clock_synced: Callable[[], bool] | None = None,
+        min_start_buffer_ms: float = 200.0,
     ) -> None:
         """
         Initialize the audio player.
@@ -162,6 +163,10 @@ class AudioPlayer:
         self._compute_server_time = compute_server_time
         self._now_us = now_us or (lambda: int(time.monotonic() * 1_000_000))
         self._is_clock_synced = is_clock_synced or (lambda: True)
+        # LVA: start-gate threshold. Should be >= the server's send-ahead
+        # target (min_buffer_ms) so playback doesn't begin before the buffer
+        # the server is maintaining has arrived.
+        self._min_start_buffer_us = int(max(0.0, min_start_buffer_ms) * 1_000)
         self._format: PCMFormat | None = None
         self._queue: queue.Queue[_QueuedChunk] = queue.Queue()
         self._stream: sounddevice.RawOutputStream | None = None
@@ -1287,7 +1292,7 @@ class AudioPlayer:
             not self._stream_started
             and self._stream is not None
             and (
-                self._queued_duration_us >= self._MIN_BUFFER_DURATION_US
+                self._queued_duration_us >= self._min_start_buffer_us
                 or self._queue.qsize() >= self._MIN_CHUNKS_TO_START
             )
         ):

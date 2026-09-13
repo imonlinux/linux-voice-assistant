@@ -328,3 +328,38 @@ async def test_server_paired_check(tmp_path: Path) -> None:
     assert await LVASendspinClient._server_is_paired(StubStore(None, "psk"), "srv1")
     # no server id (handshake incomplete) -> treated as unpaired
     assert not await LVASendspinClient._server_is_paired(StubStore(record, None), None)
+
+
+def test_start_gate_respects_configured_buffer_target(tmp_path: Path) -> None:
+    """Playback must not start before the configured buffer target arrives.
+
+    Starting at a bare 200 ms while the server maintains 350 ms caused an
+    immediate underflow/clear/re-buffer cycle at every stream start.
+    """
+    from aiosendspin.client.models import PCMFormat
+    from linux_voice_assistant.sendspin.output import AudioPlayer
+
+    player = AudioPlayer(
+        lambda ts: ts,
+        lambda ts: ts,
+        now_us=lambda: 0,
+        min_start_buffer_ms=350.0,
+    )
+    player._format = PCMFormat(sample_rate=48000, channels=2, bit_depth=16)
+    player._stream = MagicMock()
+
+    def chunk(duration_ms: float):
+        # 25 ms of stereo 16-bit 48 kHz PCM = 4800 bytes
+        ts = player._expected_next_timestamp or 1_000_000
+        data = b"\x00" * int(48000 * 2 * 2 * duration_ms / 1000)
+        player.submit(ts, data)
+
+    # 8 chunks = 200 ms: below the 350 ms gate, must not start
+    for _ in range(8):
+        chunk(25)
+    assert player._stream_started is False
+
+    # cross the 350 ms threshold (14 chunks = 350 ms)
+    for _ in range(6):
+        chunk(25)
+    assert player._stream_started is True

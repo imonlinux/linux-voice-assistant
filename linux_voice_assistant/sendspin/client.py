@@ -206,6 +206,9 @@ class LVASendspinClient:
             client.compute_server_time,
             now_us=client.clock.now_us,
             is_clock_synced=lambda: client.is_time_synchronized,
+            # Begin playback only once the server's send-ahead target has
+            # arrived; starting at a bare 200 ms caused immediate underflow.
+            min_start_buffer_ms=max(200.0, self._min_buffer_ms),
         )
         self._apply_output_volume()
 
