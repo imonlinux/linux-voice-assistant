@@ -129,6 +129,12 @@ Wants=network-online.target
 Type=simple
 # UPDATE THIS PATH:
 WorkingDirectory=/path/to/linux-voice-assistant
+
+> **Paths with spaces:** systemd does *not* strip quotes from
+> `WorkingDirectory=` — write the path bare (`WorkingDirectory=/home/me/My Folder/lva`);
+> a leading quote makes systemd reject it as non-absolute. `ExecStart=` is the
+> opposite: because the space would split the command into arguments, quote the
+> program path there (`ExecStart='/home/me/My Folder/lva/script/run'`).
 Environment=PYTHONUNBUFFERED=1
 
 # UPDATE THIS PATH:
