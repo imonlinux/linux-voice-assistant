@@ -11,7 +11,7 @@ synchronized output stage.
 | Requirement | Notes |
 |---|---|
 | Python **3.12+** | aiosendspin 9.x requirement; on 3.11 the subsystem disables itself with a log warning |
-| `libportaudio2` | `sudo apt install libportaudio2` — used by the sounddevice output |
+| `libportaudio2` | Debian: `sudo apt install libportaudio2` — Fedora: `sudo dnf install portaudio` — used by the sounddevice output |
 | Music Assistant with Sendspin enabled | Built into MA 2.7+ |
 | The `sendspin` extra | `script/setup --sendspin` or `pip install -e '.[sendspin]'` |
 
@@ -43,7 +43,7 @@ synchronized output stage.
 | `connection.server_host` | *(required)* | Music Assistant server address. There is no discovery — this must be set. |
 | `connection.server_port` / `server_path` | 8927 / `/sendspin` | Where to connect. |
 | `pairing.pin` | *(none)* | Fixed code to enter in MA when pairing. If unset, a dynamic PIN is written to the daemon log. |
-| `pairing.speak_pin` | true | Announce the PIN through the device speaker via **espeak-ng** (`sudo apt install espeak-ng`); falls back to log-only if not installed. |
+| `pairing.speak_pin` | true | Announce the PIN through the device speaker via **espeak-ng** (Debian: `sudo apt install espeak-ng` — Fedora: `sudo dnf install espeak-ng`); falls back to log-only if not installed. |
 | `pairing.voice` | *(server preference)* | espeak-ng voice override (e.g. `en-us`, `de`). |
 | `player.sync_target_latency_ms` | 250 | Audio the server keeps buffered at this player. Also the playback start gate. Higher = more jitter headroom, more startup latency. |
 | `player.output_latency_ms` | 0 | Static delay compensation, clamped to 0–5000 ms. Raise only if this device consistently plays early relative to others in the group. |

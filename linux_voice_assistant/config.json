@@ -1,5 +1,26 @@
 {
   "app": {
-    "name": "Linux Voice Assistant"
+    "name": "Local LLM Voice Assistant"
+  },
+  "mqtt": {
+    "host": "192.168.0.100",
+    "port": 1883,
+    "username": "mqtt",
+    "password": "Ss1552157"
+  },
+  "wake_word": {
+  "openwakeword_threshold": 0.62
+  },
+  "sendspin": {
+    "enabled": true,
+    "connection": {
+      "server_host": "192.168.0.100",
+      "time_sync_adaptive": true, "time_sync_interval_seconds": 1.0
+    },
+    "player": {
+      "output_latency_ms": -600,
+      "sync_target_latency_ms": 350,
+      "sync_late_drop_ms": 250
+    }
   }
 }

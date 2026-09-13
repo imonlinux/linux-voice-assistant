@@ -773,7 +773,7 @@ This optional configuration enables the **Sendspin** client inside LVA so Music 
 - ***Python 3.12 or higher*** — aiosendspin requires it (Raspberry Pi OS Trixie ships 3.13). On 3.11 the subsystem disables itself with a log warning.
 - Music Assistant running a Sendspin server on your network.
 - A working **PipeWire-Pulse** (recommended) or **PulseAudio** stack (see Section 5 above).
-- **PortAudio**: `sudo apt-get install libportaudio2`
+- **PortAudio**: `sudo apt-get install libportaudio2` (Fedora: `sudo dnf install portaudio`)
 
 ***Setup LVA with the Sendspin client***
 
