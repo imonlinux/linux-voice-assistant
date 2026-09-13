@@ -248,7 +248,11 @@
       "speak_pin": true,
       "voice_engine": "auto",
       "piper_model": "en_US-lessac-medium",
-      "voice": null
+      "voice": null,
+
+      // espeak-ng speaking rate in wpm (only applies when voice_engine
+      // is "espeak-ng"; piper uses the model's natural pace).
+      "voice_speed": 120
     },
 
     "connection": {
