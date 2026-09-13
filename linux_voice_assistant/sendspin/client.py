@@ -310,16 +310,25 @@ class LVASendspinClient:
             _LOGGER.debug("Sendspin: failed to publish group update", exc_info=True)
 
     def _on_server_command(self, payload: Any) -> None:
-        """Server-initiated volume/mute changes apply to the output stage."""
-        command = getattr(payload, "command", None)
+        """Server-initiated volume/mute changes apply to the output stage.
+
+        The callback receives a ``ServerCommandPayload`` whose ``player``
+        attribute carries the ``PlayerCommandPayload`` (set_static_delay
+        is handled inside aiosendspin itself).
+        """
+        player = getattr(payload, "player", None)
+        if player is None:
+            return
+        command = getattr(player, "command", None)
         if command == PlayerCommand.VOLUME:
-            self._user_volume = int(getattr(payload, "volume", 100))
+            self._user_volume = int(getattr(player, "volume", 100))
         elif command == PlayerCommand.MUTE:
-            self._muted = bool(getattr(payload, "mute", False))
+            self._muted = bool(getattr(player, "mute", False))
         else:
             return
         self._apply_output_volume()
-        self.event_bus.publish("sendspin_volume_changed", {"volume": self._user_volume})
+        if command == PlayerCommand.VOLUME:
+            self.event_bus.publish("sendspin_volume_changed", {"volume": self._user_volume})
 
     def _on_disconnect(self) -> None:
         self._connected = False

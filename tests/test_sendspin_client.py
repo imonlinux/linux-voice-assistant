@@ -92,10 +92,44 @@ def test_server_volume_command_applies_and_publishes(tmp_path: Path) -> None:
     output = MagicMock()
     client._output = output
     client._on_server_command(
-        SimpleNamespace(command=PlayerCommand.VOLUME, volume=42)
+        SimpleNamespace(player=SimpleNamespace(command=PlayerCommand.VOLUME, volume=42))
     )
 
     output.set_volume.assert_called_once_with(42, muted=False)
     topics = [t for t, _ in event_bus.events_received]
     assert "sendspin_volume_changed" in topics
     assert client._user_volume == 42
+
+
+def test_server_mute_command_applies(tmp_path: Path) -> None:
+    """Mute commands from MA set the muted flag on the output stage."""
+    from types import SimpleNamespace
+
+    from aiosendspin.models.types import PlayerCommand
+
+    sendspin = make_config()
+    event_bus = EventBus(track_events=True)
+    client = make_client(tmp_path, sendspin, event_bus)
+
+    output = MagicMock()
+    client._output = output
+    client._on_server_command(
+        SimpleNamespace(player=SimpleNamespace(command=PlayerCommand.MUTE, mute=True))
+    )
+
+    output.set_volume.assert_called_once_with(100, muted=True)
+    # mute must not publish a volume-change event
+    topics = [t for t, _ in event_bus.events_received]
+    assert "sendspin_volume_changed" not in topics
+
+
+def test_server_command_without_player_section_is_ignored(tmp_path: Path) -> None:
+    """A server/command without a player object must not raise or apply."""
+    from types import SimpleNamespace
+
+    sendspin = make_config()
+    client = make_client(tmp_path, sendspin, EventBus(track_events=True))
+
+    client._on_server_command(SimpleNamespace(player=None))
+
+    assert client._user_volume == 100
