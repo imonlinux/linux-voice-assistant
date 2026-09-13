@@ -66,10 +66,12 @@ tray = [
     "PyQt5>=5.15",
 ]
 
-# Optional Sendspin client support (fork) — aiosendspin 9.x protocol stack
+# Optional Sendspin client support (fork) — aiosendspin 9.x protocol stack.
+# aiosendspin requires Python >=3.12; on 3.11 the marker skips it and the
+# sendspin subsystem disables itself gracefully at runtime.
 sendspin = [
-    "aiosendspin>=9,<10",
-    "sounddevice>=0.4.6",
+    "aiosendspin>=9,<10; python_version>='3.12'",
+    "sounddevice>=0.4.6; python_version>='3.12'",
 ]
 
 [project.scripts]

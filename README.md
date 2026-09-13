@@ -18,7 +18,7 @@ A Linux-based voice satellite for [Home Assistant][homeassistant] that speaks th
 
 Runs on `aarch64` and `x86_64`
 
-Tested with Python 3.11, 3.13, and 3.14 on Raspberry Pi OS (Trixie), Fedora, Arch, and Nobara.
+Tested with Python 3.11, 3.13, and 3.14 on Raspberry Pi OS (Trixie), Fedora, Arch, and Nobara. Base install requires Python 3.11+; the optional Sendspin client requires **Python 3.12+**.
 
 See [the tutorial](docs/linux-voice-assistant-install.md) for complete instructions to install LVA.
 
@@ -85,13 +85,16 @@ When MQTT is enabled, *(See Section 5 of [the tutorial](docs/linux-voice-assista
 
 The optional Sendspin client turns LVA into a multiroom audio player for [Music Assistant][music-assistant]. The LVA automatically appears as a player in Music Assistant using the device name.
 
-- **Codec support** — PCM, FLAC (via ffmpeg), and Opus (via opuslib or ffmpeg)
-- **Clock-synchronized playback** — Kalman filter clock sync with configurable target latency and late-drop policy for tight multiroom alignment
-- **Transport controls** — Play, pause, stop, volume, and mute from Music Assistant
-- **Voice coordination** — Automatic audio ducking during voice interactions
-- **Tunable timing** — `output_latency_ms`, `sync_target_latency_ms`, and `sync_late_drop_ms` for per-device calibration
+- **Transport controls** — Play, pause, stop, volume, and mute from Music Assistant, with state echoed back so the MA UI always reflects the device
+- **Voice coordination** — Automatic audio ducking during voice interactions (`coordination.duck_during_voice`, `coordination.duck_gain`); logged at INFO
+- **Persistent identity** — the player's cryptographic identity and pairing credentials persist next to `preferences.json`; pair once per MA server, never again
+- **Headless-friendly pairing** — a dynamic PIN is written to the daemon log when pairing, or set a fixed PIN with `sendspin.pairing.pin`
+- **Tunable timing** — `sync_target_latency_ms` (server send-ahead target; also the playback start gate) and `output_latency_ms` (static delay compensation, clamped to 0–5000 ms — the old negative tuning is obsolete)
+- **Format** — PCM is advertised to the server; Music Assistant transcodes (PCM is mandatory for all Sendspin servers)
 
-#### *Requires Python 3.12+ and the `--sendspin` install extra.*
+See [the tutorial's Sendspin section](docs/linux-voice-assistant-install.md) for configuration and pairing, including the required `sendspin.connection.server_host` setting.
+
+#### *Requires Python 3.12+, the `--sendspin` install extra, and `libportaudio2`.*
 
 ### Desktop Tray Client *(See [this tutorial](docs/lva-desktop.md))*
 
@@ -109,7 +112,7 @@ LVA persists its MAC address to `preferences.json` on first boot. This ensures t
 
 ### Persistent Settings
 
-Volume, wake word selection, LED count, alarm duration, sound selections, and Sendspin volume are all persisted to `preferences.json` and restored on startup.
+Volume, wake word selection, LED count, alarm duration, sound selections, and Sendspin volume are all persisted to `preferences.json` and restored on startup. The Sendspin player's cryptographic identity and pairing credentials persist alongside it (`sendspin_identity.json` / `sendspin_pairing.json`) — keep these files when migrating or the player will need re-pairing in Music Assistant.
 
 ---
 
@@ -274,13 +277,12 @@ linux-voice-assistant/
 │   ├── openwakeword.py                              # Open wake word detection module
 │   ├── satellite.py                            # ESPHome voice assistant protocol
 │   ├── sendspin                                # Sendspin client subsystem
-│   │   ├── client.py                            # WebSocket connection and protocol
-│   │   ├── clock_sync.py                        # Kalman filter time synchronization
-│   │   ├── controller.py                        # EventBus handlers for ducking/commands
-│   │   ├── discovery.py                        # mDNS server discovery
-│   │   ├── __init__.py
-│   │   ├── models.py                            # Sendspin internal state
-│   │   └── player.py                            # PCM sink and decoder pipeline
+│   │   ├── client.py                            # LVA wrapper on aiosendspin: pairing, EventBus
+│   │   ├── output.py                            # Synchronized PCM output (reference player)
+│   │   ├── audio_devices.py                     # sounddevice output enumeration
+│   │   ├── identity.py                          # Persistent player identity
+│   │   ├── controller.py                        # Voice-coordination ducking handlers
+│   │   └── __init__.py
 │   ├── tray_client                                # Desktop tray client
 │   │   ├── client.py                            # PyQt5 system tray application
 │   │   ├── __init__.py
@@ -321,29 +323,24 @@ linux-voice-assistant/
 │   │   └── timer_finished.flac
 │   └── wakeup                                    # Wake word triggered sounds
 │       └── wake_word_triggered.flac
-├── tests                                              # Comprehensive test suite (293 tests, 99.3% passing)
-│   ├── README.md                                      # Test documentation
+├── tests                                              # Test suite (606 passing: upstream unit + fork tests)
 │   ├── conftest.py                                    # Shared pytest fixtures
-│   ├── diagnose_imports.py                            # Import diagnostic utility
-│   ├── test_audio_engine.py                           # Audio engine tests
+│   ├── unit/                                          # Upstream core unit tests (satellite, entity,
+│   │                                                  #   wake word, player, peripheral API, zeroconf…)
 │   ├── test_button_controller.py                      # Button controller tests
-│   ├── test_configuration.py                         # Configuration management tests
-│   ├── test_end_to_end_workflows.py                  # End-to-end integration tests
+│   ├── test_configuration.py                          # Configuration management tests
 │   ├── test_event_bus.py                              # Event system architecture tests
 │   ├── test_format_mac.py                             # MAC address formatting tests
 │   ├── test_led_controller.py                         # LED control tests
-│   ├── test_microwakeword.py                          # MicroWakeWord detection tests
-│   ├── test_mqtt_controller.py                        # MQTT integration tests
-│   ├── test_openwakeword.py                           # OpenWakeWord detection tests
-│   ├── test_sendspin_client.py                        # Sendspin client tests
-│   ├── test_sendspin_discovery.py                     # Sendspin discovery tests
-│   ├── test_state_management.py                       # State management tests
+│   ├── test_mqtt_controller.py                        # MQTT LED/tray integration tests
+│   ├── test_sendspin_client.py                        # Sendspin client + library contract tests
+│   ├── test_sendspin_identity.py                      # Sendspin identity persistence tests
 │   ├── test_volume_management.py                      # Volume control tests
-│   ├── test_xvf3800_button_controller.py             # XVF3800 button hardware tests
-│   ├── test_xvf3800_led_backend.py                   # XVF3800 LED hardware tests
+│   ├── test_xvf3800_button_controller.py              # XVF3800 button hardware tests
+│   ├── test_xvf3800_led_backend.py                    # XVF3800 LED hardware tests
 │   ├── lva_mic_capture.py                             # Audio capture utility
 │   ├── ok_nabu.wav                                    # Test audio file
-│   ├── xvf3800_hid_mute_probe.py                     # XVF3800 hardware probe
+│   ├── xvf3800_hid_mute_probe.py                      # XVF3800 hardware probe
 │   └── xvf3800_probe.py                               # XVF3800 device probe
 ├── wakewords                                    # Wake word models
 │   ├── alexa.json
@@ -426,16 +423,15 @@ pytest tests/ -m "not hardware"
 - **Unit Tests**: Core architecture (EventBus, State, Configuration)
 - **Integration Tests**: Controllers and hardware abstractions
 - **Hardware Tests**: Physical device integration (XVF3800, ReSpeaker)
-- **End-to-End Tests**: Complete voice assistant workflows
 
 ### Current Test Status
 
-- **Total Tests**: 293
-- **Passing**: 291 (99.3%)
-- **Skipped**: 2 (hardware-dependent tests)
-- **Test Framework**: pytest 7.4.4 with asyncio, mock, and coverage support
+- **Total**: 606 passing, 1 skipped (hardware-dependent)
+- **Coverage**: upstream core unit tests (`tests/unit/`) + fork subsystem tests
+- **Sendspin tests** skip gracefully when the sendspin extra isn't installed
+- **Framework**: pytest with asyncio, mock, and coverage support (Python 3.12+ for the full suite)
 
-See [Testing Guide](docs/testing-guide.md) for detailed testing documentation and [tests/README.md](tests/README.md) for test-specific information.
+See [Testing Guide](docs/testing-guide.md) for detailed testing documentation.
 
 ### Code Quality
 

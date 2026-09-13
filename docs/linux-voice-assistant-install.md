@@ -18,7 +18,7 @@ This guide reproduces a working setup of the **linux-voice-assistant** project w
 ## Prerequisites
 
 - Raspberry Pi OS Lite (64-bit) (Bookworm or Trixie)
-- Default Python 3.11+ recommended
+- Default Python 3.11+ recommended (Python 3.12+ required for the optional Sendspin client)
 - A microphone and speaker (see the options for reSpeaker devices in section 5)
 - Network access to your Home Assistant instance
 
@@ -717,75 +717,79 @@ systemctl --user status linux-voice-assistant --no-pager -l
 <details>
 <summary><strong>Optional (Sendspin client for Music Assistant)</strong></summary>
 
-This optional configuration enables the **Sendspin** client inside LVA so Music Assistant can stream audio to the device and control it (play/pause/stop, volume, mute, etc.). The Sendspin client will automatically show up in Music Assistant with the name of the LVA.
+This optional configuration enables the **Sendspin** client inside LVA so Music Assistant can stream synchronized multiroom audio to the device and control it (play/pause/stop, volume, mute). The client is built on **aiosendspin 9.x** and appears in Music Assistant under the LVA's name.
 
 **Requirements:**
 
-- ***Requires Python 3.12 or higher*** Recommend RaspberryPI OS (Trixie)
-- Music Assistant is running a Sendspin server on your network.
-- LVA is installed with a working **PipeWire-Pulse** (recommended) or **PulseAudio** stack (see Section 5 above).
-- FFMPEG for the FLAC codec if used.
+- ***Python 3.12 or higher*** — aiosendspin requires it (Raspberry Pi OS Trixie ships 3.13). On 3.11 the subsystem disables itself with a log warning.
+- Music Assistant running a Sendspin server on your network.
+- A working **PipeWire-Pulse** (recommended) or **PulseAudio** stack (see Section 5 above).
+- **PortAudio**: `sudo apt-get install libportaudio2`
 
-***Confirm FFMPEG is installed***
-
-```bash
-sudo apt-get install ffmpeg
-```
-
-***Setup LVA to implement the Sendspin Client***
+***Setup LVA with the Sendspin client***
 
 ```bash
 cd ~/linux-voice-assistant
+rm -rf .venv
 script/setup --sendspin
 ```
 
-***Edit LVA config.json file:***
+***Edit the LVA config.json file:***
 
 ```bash
 nano ~/linux-voice-assistant/linux_voice_assistant/config.json
 ```
 
-***Add a Sendspin block (minimum):***
+***Add a Sendspin block (minimum — server_host is required):***
 
 ```json
   ,
   "sendspin": {
     "enabled": true,
     "connection": {
-      "mdns": true
+      "server_host": "192.168.0.100"
     }
   }
 ```
 
-***As tested***
+Replace `192.168.0.100` with your Music Assistant server's address. Port (8927) and path (`/sendspin`) have sensible defaults.
 
-```bash
+***Pairing (one-time per MA server):***
+
+1. Restart LVA. When it connects and is not yet paired, it automatically opens a 10-minute pairing window and logs:
+   `Sendspin: PAIRING PIN — enter this in Music Assistant: <code>`
+2. In Music Assistant, select the LVA player and press **Setup**, then enter the PIN from the log.
+3. Pairing credentials persist in `sendspin_pairing.json` next to `preferences.json` — reboots never need re-pairing. (If migrating, keep `sendspin_identity.json` and `sendspin_pairing.json` or the player will pair as a new device.)
+
+For fully unattended pairing, set a fixed code: `"pairing": { "pin": "12345678" }` inside the sendspin block.
+
+***Optional tuning:***
+
+```json
   ,
   "sendspin": {
-  "enabled": true,
-  "connection": {
-    "time_sync_adaptive": true,
-    "time_sync_interval_seconds": 1.0
-  },
-  "player": {
-    "output_latency_ms": -600,
-    "sync_target_latency_ms": 350,
-    "sync_late_drop_ms": 250
+    "enabled": true,
+    "connection": {
+      "server_host": "192.168.0.100"
+    },
+    "player": {
+      "sync_target_latency_ms": 350,
+      "output_latency_ms": 0,
+      "output_device": null
+    },
+    "coordination": {
+      "duck_during_voice": true,
+      "duck_gain": 0.3
+    }
   }
-}
 ```
 
-Due to differences in chipsets and the mpv player pipeline, there may be a consistent lead/lag when compared to other sendspin clients. Especially when they are on other platforms (i.e. ESP32). The best knob for bringing the LVA sendspin client into initial sync (calibrate) is output_latency_ms. My client was a ~1 second behind the other player. The -600 value has closed that to a point that it is hard to hear a difference, but you may need to adjust accordingly based on what your testing shows.
+- `sync_target_latency_ms` — audio the server keeps buffered at this player; also the playback start gate. Higher = more jitter headroom, more startup latency (default 250).
+- `output_latency_ms` — static delay compensation, **clamped to 0–5000 ms**. The old negative tuning from the previous client is obsolete: the new time filter is self-correcting, so start at 0 and only raise this if the device consistently plays early relative to others in the group.
+- `output_device` — pin playback to a specific sounddevice name; omit for the system default.
+- `coordination.duck_during_voice` / `duck_gain` — duck the music while the voice assistant is active (logged at INFO: `Sendspin: music ducked (gain 0.30)`).
 
-Here is a good rule for tuning:
-
-`LVA player 1 second behind other player = "output_latency_ms": -600`
-
-`LVA player 1 second ahead other player = "output_latency_ms": 600`
-
-Then make adjustments until the two players are synchronized.
-
-> Take a look at ~/linux-voice-assistant/linux_voice_assistant/config.json.example for details on these settings as well as all available options.
+> Take a look at `~/linux-voice-assistant/linux_voice_assistant/config.json.example` for all available options.
 
 ***Restart LVA:***
 
@@ -797,9 +801,10 @@ systemctl --user restart linux-voice-assistant.service
 
 ```bash
 systemctl --user status linux-voice-assistant --no-pager -l
+journalctl --user -u linux-voice-assistant -f | grep -i sendspin
 ```
 
-</details>
+Look for `Sendspin: connected` and, after pairing, `Stream started with codec pcm` when music plays.</details>
 
 ## 6. Connect to Home Assistant
 

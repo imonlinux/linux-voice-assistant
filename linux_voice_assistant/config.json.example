@@ -51,7 +51,7 @@
 
     // Optional: Enables debug logging by default
     // Note: can also be enabled via CLI flag --debug
-    "debug": false
+    "debug": false,
 
     // Optional: When true, audio streaming to HA starts immediately
     // after wake word detection — the wakeup sound plays concurrently
@@ -62,7 +62,7 @@
     // bleeding into the microphone (requires Acoustic Echo Cancellation).
     //
     // Default: true
-    "listen_during_wake_sound": true,
+    "listen_during_wake_sound": true
   },
 
   // ---------------------------------------------------------------------------
@@ -227,188 +227,58 @@
   // ---------------------------------------------------------------------------
 
   "sendspin": {
-    // Enable/disable the Sendspin client feature.
-    "enabled": true,
+    // Music Assistant multiroom audio client (built on aiosendspin 9.x).
+    // Requires the sendspin install extra AND Python >= 3.12, plus the
+    // system package libportaudio2 (sudo apt install libportaudio2).
+    "enabled": false,
 
-    // -----------------------------------------------------------------------
-    // Client identity / capabilities
-    // -----------------------------------------------------------------------
-    "client": {
-      // Name shown in Music Assistant / Sendspin UI.
-      "name": "LVA Sendspin Client",
-
-      // Optional extra info that MA may display (safe to omit).
-      "device_info": {
-        "manufacturer": "OHF-Voice",
-        "model": "Linux Voice Assistant",
-        "sw_version": "dev"
-      }
+    // Optional: fixed PIN to enter in Music Assistant when pairing this
+    // player. If omitted, a dynamic PIN is generated during pairing and
+    // written to the daemon log (journalctl). Pairing happens once per
+    // MA server; the identity and pairing credentials persist in
+    // sendspin_identity.json / sendspin_pairing.json next to
+    // preferences.json, so reboots never need re-pairing.
+    "pairing": {
+      "pin": null
     },
 
-    // Which Sendspin roles this client will advertise. Most installs can leave
-    // these defaults as-is.
-    "roles": {
-      "player": true,
-      "metadata": true,
-      "controller": true
-    },
-
-    // -----------------------------------------------------------------------
-    // Startup state (seeded from preferences.json by LVA __main__.py)
-    // If you don't have preferences.json yet, these values provide defaults.
-    // -----------------------------------------------------------------------
-    "initial": {
-      // User volume (0–100). This is the *saved* volume shown in MA.
-      "volume": 50,
-
-      // Whether the client starts muted.
-      "muted": false
-    },
-
-    // -----------------------------------------------------------------------
-    // Connection / discovery / keepalive / clock sync
-    // -----------------------------------------------------------------------
     "connection": {
-      // If true, use mDNS discovery to find the MA Sendspin server.
-      // If you set server_host, discovery is bypassed.
-      "mdns": true,
+      // REQUIRED: Music Assistant server address (discovery is not
+      // supported by the current protocol client).
+      "server_host": "192.168.0.100",
 
-      // Optional static connection (recommended if you want to avoid discovery):
-      // "server_host": "192.168.0.100",
-      // "server_port": 8927,
-      // "server_path": "/sendspin",
-
-      // Time to wait for server/hello after connecting.
-      "hello_timeout_seconds": 8.0,
-
-      // WebSocket protocol keepalive pings.
-      // IMPORTANT: Some MA/Sendspin servers mis-handle protocol pings while idle
-      // (e.g., after stream/end on FLAC). Set either value to 0 to disable pings.
-      "ping_interval_seconds": 0,
-      "ping_timeout_seconds": 0,
-
-      // ---------------------------------------------------------------------
-      // Clock sync (client/time <-> server/time)
-      // ---------------------------------------------------------------------
-
-      // How often the client sends `client/time` for clock sync.
-      //
-      // - If time_sync_adaptive=false: this is the fixed interval.
-      // - If time_sync_adaptive=true: this is the base interval that adaptive logic
-      //   will start from, then adjust within [time_sync_min_interval_seconds,
-      //   time_sync_max_interval_seconds].
-      //
-      // Lower values converge faster but increase network chatter.
-      //
-      // Default: 5.0
-      "time_sync_interval_seconds": 5.0,
-
-      // Enable adaptive time-sync interval based on observed clock / network quality.
-      //
-      // Default: true
-      "time_sync_adaptive": true,
-
-      // Bounds for adaptive polling interval.
-      //
-      // Defaults: min=0.5, max=5.0
-      "time_sync_min_interval_seconds": 0.5,
-      "time_sync_max_interval_seconds": 5.0,
-
-      // Burst probing: send N `client/time` probes in quick succession and use the
-      // best (lowest-RTT) sample to update the clock sync filter.
-      //
-      // Default: 3
-      "time_sync_burst_count": 3,
-
-      // Delay between burst probes (seconds).
-      //
-      // Default: 0.15
-      "time_sync_burst_delay_seconds": 0.15
+      // Optional: port and path (defaults: 8927, "/sendspin")
+      "server_port": 8927,
+      "server_path": "/sendspin"
     },
 
-    // -----------------------------------------------------------------------
-    // Player settings (codec negotiation, buffering, local playback)
-    // -----------------------------------------------------------------------
     "player": {
-      // Preferred codec to request from MA/Sendspin.
-      // "pcm" is universally supported; "flac" or "opus" if supported.
-      "preferred_codec": "pcm",
+      // Only PCM is advertised to the server (MA transcodes).
 
-      // All codecs the client can decode.
-      "supported_codecs": ["pcm"],
-
-      // Audio format parameters (negotiated with the server).
-      "sample_rate": 48000,
-      "channels": 2,
-      "bit_depth": 16,
-
-      // Sync / jitter-buffer tuning
-      //
-      // Higher = more resilient to Wi-Fi jitter, but more delay.
-      // Typical: 150–300ms for LAN, 300–500ms for noisier networks.
+      // Sync tuning:
+      // - sync_target_latency_ms: how much audio the server keeps
+      //   buffered at this player. Also the playback start gate —
+      //   playback begins once this much has arrived. Higher = more
+      //   jitter headroom, more startup latency. Default 250.
+      // - output_latency_ms: static playback delay compensation in ms,
+      //   clamped to 0-5000. The old negative values from the previous
+      //   client are obsolete (the new time filter is self-correcting);
+      //   only raise this if this device consistently plays EARLY
+      //   relative to other players in the group. Default 0.
       "sync_target_latency_ms": 250,
-
-      // Late frame drop threshold (ms).
-      // If a chunk arrives "too late" (its target playout time is already in the past
-      // by more than this window), it is dropped rather than played late.
-      //
-      // Typical: 60–200ms (LAN is usually fine at 100–150ms).
-      // Default: 150
-      "sync_late_drop_ms": 150,
-
-      // Per-device latency compensation (ms).
-      //
-      // This shifts the *scheduled playout time* used by the jitter buffer.
-      // It does NOT change MPV's internal buffering directly; it simply makes us
-      // aim earlier or later relative to the server timestamps.
-      //
-      // Important notes:
-      // - Negative values are allowed and are often what you want.
-      //   Many audio stacks (PulseAudio/PipeWire/ALSA) add output buffering; a
-      //   negative value compensates by scheduling earlier.
-      // - If THIS client plays EARLIER than others, make this MORE POSITIVE (add delay).
-      // - If THIS client plays LATER than others, make this MORE NEGATIVE (play earlier).
-      //
-      // Typical: -50 to -300ms depending on hardware/stack; measure and tune.
-      // Default: 0
       "output_latency_ms": 0,
 
-      // Stream clear handling window (ms).
-      //
-      // When the server sends `stream/clear` (e.g., seeking), the client drops
-      // any queued chunks whose timestamps fall within this window ahead of the
-      // clear moment, to avoid briefly playing old audio after a seek.
-      //
-      // Default: 2000
-      "clear_drop_window_ms": 2000,
-
-      // Advertised buffer capacity to MA (bytes). This does not directly change
-      // mpv's internal queue, but helps MA size bursts.
-      "buffer_capacity_bytes": 1048576,
-
-      // Player-side commands the client will accept from MA.
-      "supported_commands": ["volume", "mute"]
+      // Optional: sounddevice output device name. Omit for the system
+      // default output.
+      "output_device": null
     },
 
-    // -----------------------------------------------------------------------
-    // Coordination with voice assistant states (ducking)
-    // -----------------------------------------------------------------------
     "coordination": {
-      // If true, reduce (duck) Sendspin playback while LVA is speaking/listening.
+      // Voice coordination: duck this music while the voice assistant
+      // is listening/thinking/responding. Logged at INFO:
+      // "Sendspin: music ducked (gain 0.30)".
       "duck_during_voice": true,
-      // Ducking amount while voice is active (if coordination.duck_during_voice is true) 0.2 = 20% of volume.
-      "duck_gain": 0.2
-    },
-
-    // -----------------------------------------------------------------------
-    // Debug logging toggles
-    // -----------------------------------------------------------------------
-    "logging": {
-      // Log message types (rx/tx).
-      "debug_protocol": false,
-
-      // Log full JSON payloads (verbose).
-      "debug_payloads": false
+      "duck_gain": 0.3
     }
   }
 }

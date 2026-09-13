@@ -23,8 +23,13 @@ docs/RESYNC_PLAN.md.
 
 - config.json configuration (now injected as CLI defaults; CLI wins)
 - EventBus + LED/button/XVF3800 controllers, MQTT (LED-only) + tray transport
-- Sendspin multiroom client (ducking driven from the same seams as the
-  peripheral API)
+- Sendspin multiroom client — REBUILT on aiosendspin 9.x (the old hand-rolled
+  client spoke the deprecated pre-encryption protocol and was rejected by
+  current MA servers). Adds Noise-encrypted pairing (dynamic PIN in the log
+  or static PIN from config), persistent player identity, a sounddevice
+  output stage with server-synchronized buffering, and
+  `sendspin.connection.server_host` as a required setting. Requires
+  Python >= 3.12 and libportaudio2.
 - Event sounds master toggle + sound selects + thinking loop + alarm duration
   as ESPHome entities (keys after upstream's)
 - Per-model wake word thresholds (three-tier precedence), 7 extra OWW models,
@@ -43,8 +48,13 @@ docs/RESYNC_PLAN.md.
 
 - Initial release (https://github.com/OHF-Voice/linux-voice-assistant)
 
-## Unreleased Fork 
+## Unreleased Fork
 (https://github.com/imonlinux/linux-voice-assistant)
+
+> **Historical (pre-2.0).** Everything below describes the original fork
+> before the 2.0 re-foundation. Some entries — notably the Sendspin client
+> internals (mDNS discovery, mpv IPC pipeline) — describe a subsystem that
+> has since been replaced. See the 2.0.0 section for the current state.
 
 ### Added
 

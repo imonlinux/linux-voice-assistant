@@ -17,7 +17,7 @@
 ### Architecture
 - **Protocol**: ESPHome API via `aioesphomeapi` for Home Assistant integration
 - **Wake Words**: Supports both OpenWakeWord and MicroWakeWord engines
-- **Audio**: Uses `soundcard` library for input, `python-mpv` for output
+- **Audio**: `soundcard` for mic input, `python-mpv` (`player/`) for voice/TTS and media playback, `sounddevice` for Sendspin music output, `webrtc-noise-gain` for mic processing
 - **Peripherals**: WebSocket API for LEDs, buttons, HAT boards
 - **Discovery**: mDNS/ZeroConf for auto-discovery by Home Assistant
 
