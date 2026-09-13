@@ -30,6 +30,7 @@ from aiosendspin.noise.trust_store import FileClientPairingStore
 from ..config import SendspinConfig
 from ..event_bus import EventBus
 from .audio_devices import AudioDevice, query_devices
+from .controller import SendspinDuckingHandler
 from .identity import load_or_create_identity
 from .output import AudioPlayer
 
@@ -107,6 +108,11 @@ class LVASendspinClient:
         self._stopping = False
         self._user_volume = max(0, min(100, int(initial_volume)))
         self._muted = False
+
+        # Voice coordination: voice_listen/thinking/responding events duck the
+        # music, voice_idle/error restores it. (Self-wired so the daemon
+        # wiring can't forget it — the port bug this fixes.)
+        self._ducking_handler = SendspinDuckingHandler(event_bus=event_bus, client=self)
 
     # ------------------------------------------------------------------
     # Config helpers

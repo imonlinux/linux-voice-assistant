@@ -263,3 +263,43 @@ def test_state_supported_commands_declares_static_delay(tmp_path: Path) -> None:
     assert PlayerCommand.SET_STATIC_DELAY
     assert PlayerCommand.VOLUME
     assert PlayerCommand.MUTE
+
+
+def test_voice_events_duck_music_via_event_bus(tmp_path: Path) -> None:
+    """REGRESSION for the port: voice lifecycle events must duck the music.
+
+    The client self-registers SendspinDuckingHandler; this exercises the full
+    EventBus path (voice_listen -> set_ducked -> output duck gain) rather than
+    calling set_ducked directly, so a missing handler registration fails here.
+    """
+    event_bus = EventBus(track_events=True)
+    client = make_client(tmp_path, make_config(), event_bus)
+
+    output = MagicMock()
+    client._output = output
+
+    event_bus.publish("voice_listen")
+    output.set_duck_gain.assert_called_with(client._duck_gain)
+
+    event_bus.publish("voice_thinking")
+    event_bus.publish("voice_responding")
+    output.set_duck_gain.assert_called_with(client._duck_gain)
+
+    event_bus.publish("voice_idle")
+    output.set_duck_gain.assert_called_with(1.0)
+
+
+def test_duck_handler_survives_reconnect(tmp_path: Path) -> None:
+    """A reconnect creates a new AudioPlayer; ducked state must be re-applied."""
+    event_bus = EventBus(track_events=True)
+    client = make_client(tmp_path, make_config(), event_bus)
+
+    output = MagicMock()
+    client._output = output
+    client.set_ducked(True)
+
+    # Simulate _connect_once creating a fresh output stage mid-duck
+    client._apply_output_volume()
+
+    output.set_duck_gain.assert_called_with(client._duck_gain)
+    output.set_volume.assert_called_with(client._user_volume, muted=False)
