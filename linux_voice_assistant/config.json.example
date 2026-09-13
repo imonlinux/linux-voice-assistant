@@ -241,9 +241,13 @@
     "pairing": {
       "pin": null,
 
-      // Speak the pairing PIN through the device speaker (requires
-      // espeak-ng; falls back to log-only if not installed).
+      // Speak the pairing PIN through the device speaker.
+      // voice_engine: "auto" (piper if model downloaded, else espeak-ng),
+      //               "piper" (neural voice, ~60 MB model download on
+      //               first use — recommended), or "espeak-ng".
       "speak_pin": true,
+      "voice_engine": "auto",
+      "piper_model": "en_US-lessac-medium",
       "voice": null
     },
 

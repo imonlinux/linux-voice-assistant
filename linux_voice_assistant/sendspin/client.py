@@ -18,8 +18,11 @@ from __future__ import annotations
 import asyncio
 import copy
 import logging
+import shlex
 import shutil
 import subprocess
+import sys
+import threading
 from pathlib import Path
 from typing import Any, Optional, Union
 
@@ -103,7 +106,14 @@ class LVASendspinClient:
         self._speak_pin = bool(_cfg_get(pairing_cfg, "speak_pin", True))
         self._pairing_voice = _cfg_get(pairing_cfg, "voice", None)
         self._pairing_voice_speed = max(80, min(200, int(_cfg_get(pairing_cfg, "voice_speed", 120))))
-        self._pin_speech_procs: tuple = (None, None)
+        self._pin_speech_procs: list = []
+        self._pin_speech_generation = 0
+        self._pin_speech_wav_path = (
+            Path(identity_path).parent / "piper_pin_announcement.wav"
+        )
+        self._piper_voices_dir = Path(identity_path).parent / "piper_voices"
+        self._piper_model_name = _cfg_get(pairing_cfg, "piper_model", "en_US-lessac-medium") or "en_US-lessac-medium"
+        self._voice_engine = (_cfg_get(pairing_cfg, "voice_engine", "auto") or "auto").lower()
         self._identity_path = Path(identity_path)
         self._pairing_path = Path(pairing_path)
 
@@ -444,12 +454,77 @@ class LVASendspinClient:
                 return path
         return None
 
+    def _piper_model_path(self) -> Optional[Path]:
+        """Path to the piper voice model, if already downloaded."""
+        model_path = self._piper_voices_dir / f"{self._piper_model_name}.onnx"
+        if model_path.exists():
+            return model_path
+        return None
+
+    def _ensure_piper_model(self) -> Optional[Path]:
+        """Return the piper model path, downloading it on first use (blocking).
+
+        Only called when the operator explicitly selects ``voice_engine: piper``;
+        the one-time ~60 MB download is expected in that case.
+        """
+        existing = self._piper_model_path()
+        if existing is not None:
+            return existing
+
+        self._piper_voices_dir.mkdir(parents=True, exist_ok=True)
+        _LOGGER.info(
+            "Sendspin: downloading piper voice %s (~60 MB, one-time)…",
+            self._piper_model_name,
+        )
+        result = subprocess.run(
+            [sys.executable, "-m", "piper.download_voices", self._piper_model_name],
+            cwd=str(self._piper_voices_dir),
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+        if result.returncode != 0:
+            _LOGGER.warning(
+                "Sendspin: piper voice download failed: %s", result.stderr[-500:] if result.stderr else "unknown"
+            )
+            return None
+
+        model_path = self._piper_voices_dir / f"{self._piper_model_name}.onnx"
+        if model_path.exists():
+            _LOGGER.info("Sendspin: piper voice downloaded to %s", model_path)
+            return model_path
+        return None
+
+    def _resolve_pin_tts(self) -> tuple[Optional[str], Optional[list]]:
+        """Resolve which TTS engine speaks the pairing PIN.
+
+        Returns (engine_name, command_prefix) or (None, None) when nothing
+        is available.
+        """
+        engine = self._voice_engine
+
+        if engine in ("auto", "piper"):
+            model_path = self._piper_model_path()
+            if model_path is not None:
+                return "piper", str(model_path)
+
+        if engine == "piper" and self._ensure_piper_model() is not None:
+            model_path = self._piper_voices_dir / f"{self._piper_model_name}.onnx"
+            return "piper", str(model_path)
+
+        espeak = self._find_espeak()
+        if espeak is not None:
+            return "espeak-ng", [espeak]
+
+        return None, None
+
     def _stop_pin_speech(self) -> None:
         """Terminate a running PIN announcement (pairing ended or re-announce)."""
+        self._pin_speech_generation += 1
         for proc in self._pin_speech_procs:
             if proc is not None and proc.poll() is None:
                 proc.terminate()
-        self._pin_speech_procs = (None, None)
+        self._pin_speech_procs = []
 
     async def _on_pairing_speak_pin(
         self,
@@ -457,20 +532,19 @@ class LVASendspinClient:
         *,
         languages: tuple[str, ...] = (),
     ) -> None:
-        """PinSpeaker out-channel: announce the pairing PIN via espeak-ng.
+        """PinSpeaker out-channel: announce the pairing PIN through the speaker.
 
         Contract (aiosendspin): return once emission has *started* — the
         pairing exchange is blocked while this runs, so playback proceeds in
         background processes. ``pin=None`` stops the current announcement.
+
+        Engine selection (``pairing.voice_engine``): "auto" uses the piper
+        neural voice when a model is already downloaded, else espeak-ng;
+        "piper" additionally downloads the model (~60 MB, one-time) on
+        first use. The announcement text (digits comma-separated, spoken
+        twice) is common to both engines.
         """
         if not self._speak_pin:
-            return
-        espeak = self._find_espeak()
-        if espeak is None:
-            _LOGGER.info(
-                "Sendspin: espeak-ng not installed — cannot speak the pairing "
-                "PIN (install espeak-ng for spoken pairing); the PIN is in the log"
-            )
             return
 
         self._stop_pin_speech()
@@ -480,33 +554,63 @@ class LVASendspinClient:
         # Commas insert pauses between digits; the code is spoken twice so
         # a misheard digit doesn't force another pairing round.
         spaced = ", ".join(pin)
-        text = f"Your pairing code is: {spaced}. I repeat: {spaced}."
-        voice = self._pairing_voice or next(
-            (lang.replace("_", "-") for lang in languages if lang), None
-        )
-        cmd = [espeak, "--stdout", "-s", str(self._pairing_voice_speed)]
-        if voice:
-            cmd += ["-v", voice]
-        cmd.append(text)
-        try:
-            espeak_proc = subprocess.Popen(
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
+        announcement = f"Your pairing code is: {spaced}. I repeat: {spaced}."
+        engine, cmd = self._resolve_pin_tts()
+
+        if engine == "piper":
+            # piper reads the text on stdin, writes WAV; mpv plays it.
+            wav = self._pin_speech_wav_path
+            pipeline = (
+                f"{shlex.quote(sys.executable)} -m piper -m "
+                f"{shlex.quote(str(cmd))} -f {shlex.quote(str(wav))} && "
+                f"mpv --no-video --really-quiet --audio-display=no "
+                f"{shlex.quote(str(wav))}"
             )
-            # mpv plays the WAV from espeak's stdout using the system audio
-            # stack, consistent with the rest of LVA playback.
-            mpv_proc = subprocess.Popen(
-                ["mpv", "--no-video", "--really-quiet", "--audio-display=no", "-"],
-                stdin=espeak_proc.stdout,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+            text_file = Path(str(wav) + ".txt")
+            text_file.parent.mkdir(parents=True, exist_ok=True)
+            text_file.write_text(announcement, encoding="utf-8")
+            try:
+                proc = subprocess.Popen(
+                    pipeline,
+                    shell=True,
+                    executable="/bin/bash",
+                    stdin=open(text_file, "rb"),
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+                self._pin_speech_procs = [proc]
+                _LOGGER.info("Sendspin: speaking pairing PIN (piper voice)")
+            except Exception:  # pylint: disable=broad-except
+                _LOGGER.warning("Sendspin: failed to speak the pairing PIN", exc_info=True)
+            return
+
+        if engine == "espeak-ng":
+            voice = self._pairing_voice or next(
+                (lang.replace("_", "-") for lang in languages if lang), None
             )
-            espeak_proc.stdout.close()
-            self._pin_speech_procs = (espeak_proc, mpv_proc)
-            _LOGGER.info("Sendspin: speaking pairing PIN")
-        except Exception:  # pylint: disable=broad-except
-            _LOGGER.warning(
-                "Sendspin: failed to speak the pairing PIN", exc_info=True
-            )
+            cmd = list(cmd)
+            cmd += ["-s", str(self._pairing_voice_speed)]
+            if voice:
+                cmd += ["-v", voice]
+            cmd.append(announcement)
+            try:
+                espeak_proc = subprocess.Popen(
+                    cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
+                )
+                mpv_proc = subprocess.Popen(
+                    ["mpv", "--no-video", "--really-quiet", "--audio-display=no", "-"],
+                    stdin=espeak_proc.stdout,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                espeak_proc.stdout.close()
+                self._pin_speech_procs = [espeak_proc, mpv_proc]
+                _LOGGER.info("Sendspin: speaking pairing PIN")
+            except Exception:  # pylint: disable=broad-except
+                _LOGGER.warning(
+                    "Sendspin: failed to speak the pairing PIN", exc_info=True
+                )
 
     async def _on_pairing_pin(self, pin: Optional[str]) -> None:
         """PinDisplay out-channel: the PIN goes to the daemon log."""

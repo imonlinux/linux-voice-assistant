@@ -43,8 +43,11 @@ synchronized output stage.
 | `connection.server_host` | *(required)* | Music Assistant server address. There is no discovery — this must be set. |
 | `connection.server_port` / `server_path` | 8927 / `/sendspin` | Where to connect. |
 | `pairing.pin` | *(none)* | Fixed code to enter in MA when pairing. If unset, a dynamic PIN is written to the daemon log. |
-| `pairing.speak_pin` | true | Announce the PIN through the device speaker via **espeak-ng** (Debian: `sudo apt install espeak-ng` — Fedora: `sudo dnf install espeak-ng`); falls back to log-only if not installed. |
-| `pairing.voice` | *(server preference)* | espeak-ng voice override (e.g. `en-us`, `de`). |
+| `pairing.speak_pin` | true | Announce the PIN through the device speaker; falls back to log-only if no TTS engine is available. |
+| `pairing.voice_engine` | auto | `auto` (piper if model downloaded, else espeak-ng), `piper` (neural voice; downloads ~60 MB model on first use), or `espeak-ng`. |
+| `pairing.piper_model` | en_US-lessac-medium | Piper voice model (HuggingFace name). |
+| `pairing.voice` | *(server preference)* | espeak-ng voice override (e.g. `en-us`, `de`). Only applies to the espeak-ng engine. |
+| `pairing.voice_speed` | 120 | Speaking rate in wpm. Only applies to the espeak-ng engine. |
 | `player.sync_target_latency_ms` | 250 | Audio the server keeps buffered at this player. Also the playback start gate. Higher = more jitter headroom, more startup latency. |
 | `player.output_latency_ms` | 0 | Static delay compensation, clamped to 0–5000 ms. Raise only if this device consistently plays early relative to others in the group. |
 | `player.output_device` | *(system default)* | sounddevice output device name. |

@@ -473,8 +473,21 @@ class SendspinPairingConfig:
 
     # Speaking rate for the PIN announcement in words-per-minute.
     # espeak-ng's default (175) is too fast for 6-digit codes; slower
-    # (110-130) is much easier to catch.
+    # (110-130) is much easier to catch. Only applies to the espeak-ng
+    # engine.
     voice_speed: int = 120
+
+    # TTS engine for the spoken PIN:
+    #   "auto"      -> piper if a voice model is already downloaded,
+    #                  otherwise espeak-ng
+    #   "piper"     -> neural voice (piper-tts); downloads the model
+    #                  (~60 MB, one-time) on first use. RECOMMENDED -
+    #                  same engine Home Assistant uses for Piper TTS.
+    #   "espeak-ng" -> classic robotic espeak
+    voice_engine: str = "auto"
+
+    # Piper voice model (HuggingFace name or local .onnx path).
+    piper_model: str = "en_US-lessac-medium"
 
 
 @dataclass

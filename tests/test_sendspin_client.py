@@ -397,8 +397,8 @@ def test_speak_pin_builds_espeak_command(tmp_path: Path) -> None:
 
     # first Popen is espeak (WAV to stdout), second is mpv reading stdin
     assert commands[0][0] == "/usr/bin/espeak-ng"
-    assert commands[0][2:6] == ["-s", "120", "-v", "en-US"]
-    announcement = commands[0][6]
+    assert commands[0][1:5] == ["-s", "120", "-v", "en-US"]
+    announcement = commands[0][5]
     assert "9, 0, 0, 9, 8, 4" in announcement, "digits must be comma-separated"
     assert announcement.count("9, 0, 0, 9, 8, 4") == 2, "code must be spoken twice"
     assert commands[1][:4] == ["mpv", "--no-video", "--really-quiet", "--audio-display=no"]
@@ -412,7 +412,7 @@ def test_speak_pin_none_stops_previous_announcement(tmp_path: Path) -> None:
     client = make_speaker_client(tmp_path)
     espeak_proc = MagicMock()
     espeak_proc.poll.return_value = None
-    client._pin_speech_procs = (espeak_proc, None)
+    client._pin_speech_procs = [espeak_proc, None]
 
     with patch("linux_voice_assistant.sendspin.client.shutil.which", return_value="/usr/bin/espeak-ng"), \
          patch("linux_voice_assistant.sendspin.client.subprocess.Popen") as mock_popen:
@@ -420,7 +420,7 @@ def test_speak_pin_none_stops_previous_announcement(tmp_path: Path) -> None:
 
     espeak_proc.terminate.assert_called_once()
     mock_popen.assert_not_called()
-    assert client._pin_speech_procs == (None, None)
+    assert client._pin_speech_procs == []
 
 
 def test_speak_pin_disabled_by_config(tmp_path: Path) -> None:
@@ -459,7 +459,7 @@ def test_config_voice_overrides_server_languages(tmp_path: Path) -> None:
          patch("linux_voice_assistant.sendspin.client.subprocess.Popen", side_effect=fake_popen):
         asyncio.run(client._on_pairing_speak_pin("123456", languages=("en-US",)))
 
-    assert commands[0][2:6] == ["-s", "120", "-v", "de"]
+    assert commands[0][1:5] == ["-s", "120", "-v", "de"]
 
 
 def test_speak_pin_rate_clamped_and_configurable(tmp_path: Path) -> None:

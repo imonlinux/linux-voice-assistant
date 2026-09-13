@@ -30,3 +30,8 @@ sendspin_pairing.json
 
 # editor backups
 *~
+
+# piper voice models (large binaries, downloaded on demand)
+en_US-*.onnx
+en_US-*.onnx.json
+*.onnx.json
