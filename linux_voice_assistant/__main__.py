@@ -46,9 +46,9 @@ from .xvf3800_button_controller import XVF3800ButtonController
 
 # Fork: Sendspin (optional — needs the sendspin extra)
 try:
-    from .sendspin.client import SendspinClient  # type: ignore
+    from .sendspin.client import LVASendspinClient  # type: ignore
 except ImportError:
-    SendspinClient = None  # type: ignore[assignment,misc]
+    LVASendspinClient = None  # type: ignore[assignment,misc]
 
 _LOGGER = logging.getLogger(__name__)
 _MODULE_DIR = Path(__file__).parent
@@ -239,30 +239,24 @@ def _start_sendspin(
             _LOGGER.debug("Sendspin subsystem disabled (sendspin.enabled=false or no config)")
             return None, None
 
-        if SendspinClient is None:
+        if LVASendspinClient is None:
             _LOGGER.warning(
                 "Sendspin enabled in config but the sendspin extra is not installed. "
                 "Run 'pip install -e .[sendspin]' to enable Sendspin support."
             )
             return None, None
 
-        # Serialize the typed config for the client (it consumes a plain dict)
-        import dataclasses as _dc
-
-        sendspin_cfg = _dc.asdict(config.sendspin)
-        # Seed the initial player volume from preferences so the first
-        # state after handshake reflects the last known Music Assistant volume.
-        sendspin_cfg["initial"] = {
-            "volume": int(getattr(state.preferences, "sendspin_volume", 100))
-        }
-
+        prefs_dir = state.preferences_path.parent
         client_id = f"lva-{state.mac_address}"
-        client = SendspinClient(
+
+        client = LVASendspinClient(
             loop=loop,
             event_bus=state.event_bus,
-            config=sendspin_cfg,
-            client_id=client_id,
+            config=config.sendspin,
+            identity_path=prefs_dir / "sendspin_identity.json",
+            pairing_path=prefs_dir / "sendspin_pairing.json",
             client_name=config.app.name,
+            initial_volume=int(getattr(state.preferences, "sendspin_volume", 100)),
         )
         state.sendspin_client = client  # type: ignore[attr-defined]
         SendspinPreferencesHandler(event_bus=state.event_bus, state=state)

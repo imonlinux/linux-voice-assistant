@@ -370,11 +370,16 @@ class SendspinPlayerConfig:
     # This value is retained for backwards compatibility and for UI/Docs.
     duck_volume_percent: int = 20
 
-    # Local playback process configuration
+    # Local playback process configuration (legacy mpv pipeline; unused by the
+    # aiosendspin-based client, kept so existing config files load silently)
     mpv_path: str = "mpv"
     mpv_ao: Optional[str] = None
     mpv_audio_device: Optional[str] = None
     mpv_extra_args: List[str] = field(default_factory=list)
+
+    # sounddevice output device name for the aiosendspin player.
+    # None/omitted = system default output device.
+    output_device: Optional[str] = None
 
     # Decoder configuration (Milestone 4: wired-through, used in later milestones)
     decoder_backend: str = "auto"  # auto|ffmpeg|none
@@ -449,9 +454,20 @@ class SendspinCoordinationConfig:
 
 
 @dataclass
+class SendspinPairingConfig:
+    """Pairing settings for the Sendspin client (headless-friendly)."""
+
+    # Static PIN entered in Music Assistant when pairing this player.
+    # Optional: if unset, a dynamic PIN is generated during pairing and
+    # written to the daemon log (journalctl).
+    pin: Optional[str] = None
+
+
+@dataclass
 class SendspinConfig:
     """Top-level Sendspin config block."""
     enabled: bool = False
+    pairing: SendspinPairingConfig = field(default_factory=SendspinPairingConfig)
     connection: SendspinConnectionConfig = field(default_factory=SendspinConnectionConfig)
     roles: SendspinRolesConfig = field(default_factory=SendspinRolesConfig)
     player: SendspinPlayerConfig = field(default_factory=SendspinPlayerConfig)
@@ -506,6 +522,9 @@ def load_config_from_json(config_path: Path) -> Config:
 
     sendspin_cfg = SendspinConfig(
         enabled=bool(sendspin_raw.get("enabled", False)),
+        pairing=_dataclass_from_dict(
+            SendspinPairingConfig, (sendspin_raw.get("pairing", {}) or {}), context="sendspin.pairing"
+        ),
         connection=_dataclass_from_dict(
             SendspinConnectionConfig, (sendspin_raw.get("connection", {}) or {}), context="sendspin.connection"
         ),
