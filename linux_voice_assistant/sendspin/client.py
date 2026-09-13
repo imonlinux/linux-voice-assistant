@@ -179,6 +179,7 @@ class LVASendspinClient:
             ),
             min_buffer_ms=self._min_buffer_ms,
             static_delay_ms=self._static_delay_ms,
+            state_supported_commands=[PlayerCommand.SET_STATIC_DELAY],
             initial_volume=self._user_volume,
             initial_muted=self._muted,
         )
@@ -189,6 +190,7 @@ class LVASendspinClient:
         client.add_metadata_listener(self._on_metadata)
         client.add_group_update_listener(self._on_group_update)
         client.add_server_command_listener(self._on_server_command)
+        client.add_pairing_abort_listener(self._on_pairing_abort)
         client.add_disconnect_listener(self._on_disconnect)
 
         self._client = client
@@ -305,6 +307,9 @@ class LVASendspinClient:
         self._output.submit(server_timestamp_us, audio_data)
 
     def _on_stream_start(self, message: Any) -> None:
+        if self._output is not None:
+            # Drop any stale buffered audio from a previous stream
+            self._output.clear()
         self.event_bus.publish("sendspin_playback_state", {"state": "playing"})
         _LOGGER.info("Sendspin: stream started")
 
@@ -375,6 +380,9 @@ class LVASendspinClient:
 
     def _on_disconnect(self) -> None:
         self._connected = False
+        if self._output is not None:
+            self._output.close_stream()
+        self._current_format = None
         self._publish_connection_state(False)
         _LOGGER.info("Sendspin: disconnected from server")
 
@@ -390,6 +398,9 @@ class LVASendspinClient:
                 self._client.open_pairing_window()
         else:
             _LOGGER.info("Sendspin: pairing wait ended")
+
+    def _on_pairing_abort(self, reason: Any) -> None:
+        _LOGGER.info("Sendspin: pairing attempt aborted (%s)", getattr(reason, "value", reason))
 
     async def _on_pairing_pin(self, pin: Optional[str]) -> None:
         """PinDisplay out-channel: the PIN goes to the daemon log."""

@@ -2,6 +2,10 @@
 
 from pathlib import Path
 
+import pytest
+
+pytest.importorskip("aiosendspin", reason="sendspin extra not installed")
+
 from linux_voice_assistant.sendspin.identity import load_or_create_identity
 
 

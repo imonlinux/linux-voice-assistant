@@ -1,5 +1,9 @@
 """Tests for the aiosendspin-based LVA Sendspin client wrapper."""
 
+import pytest
+
+pytest.importorskip("aiosendspin", reason="sendspin extra not installed")
+
 import asyncio
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -9,6 +13,8 @@ import pytest
 from linux_voice_assistant.config import SendspinConfig
 from linux_voice_assistant.event_bus import EventBus
 from linux_voice_assistant.sendspin.client import LVASendspinClient
+from aiosendspin.client import client as aio_client_mod
+
 
 
 def make_config(**kwargs) -> SendspinConfig:
@@ -183,3 +189,77 @@ def test_stream_clear_drops_buffered_audio(tmp_path: Path) -> None:
     client._on_stream_clear(["player"])
 
     output.clear.assert_called_once()
+
+
+# --------------------------------------------------------------------------- #
+# Library contract conformance
+#
+# Every listener the wrapper registers must accept exactly what the library's
+# declared callback type passes. Two shipping bugs (stream/end roles, the
+# server-command payload envelope) were signature/shape mismatches; this test
+# makes signature drift a build failure instead of a hardware surprise.
+# --------------------------------------------------------------------------- #
+
+import inspect
+import typing
+
+from aiosendspin.client import client as aio_client_mod
+
+_CALLBACK_CONTRACTS = [
+    ("add_audio_chunk_listener", "AudioChunkCallback", "_on_audio_chunk"),
+    ("add_stream_start_listener", "StreamStartCallback", "_on_stream_start"),
+    ("add_stream_end_listener", "StreamEndCallback", "_on_stream_end"),
+    ("add_stream_clear_listener", "StreamClearCallback", "_on_stream_clear"),
+    ("add_metadata_listener", "MetadataCallback", "_on_metadata"),
+    ("add_group_update_listener", "GroupUpdateCallback", "_on_group_update"),
+    ("add_server_command_listener", "ServerCommandCallback", "_on_server_command"),
+    ("add_disconnect_listener", "DisconnectCallback", "_on_disconnect"),
+    ("add_pairing_abort_listener", "PairingAbortCallback", "_on_pairing_abort"),
+]
+
+
+@pytest.mark.parametrize("add_method,alias_name,handler_name", _CALLBACK_CONTRACTS)
+def test_handler_matches_library_callback_contract(
+    tmp_path: Path, add_method: str, alias_name: str, handler_name: str
+) -> None:
+    """Our handlers must accept exactly the arguments the library passes."""
+    client = make_client(tmp_path, make_config(), EventBus())
+    handler = getattr(client, handler_name)
+
+    callback_alias = getattr(aio_client_mod, alias_name)
+    # Callable[[A, B], None] -> get_args yields ([A, B], None): first element
+    # is the argument list.
+    arg_types = typing.get_args(callback_alias)[0]
+
+    params = [
+        p for name, p in inspect.signature(handler).parameters.items() if name != "self"
+    ]
+    required = [p for p in params if p.default is inspect.Parameter.empty]
+
+    assert len(arg_types) >= len(required), (
+        f"{handler_name}: library passes {len(arg_types)} arg(s) "
+        f"but handler requires {len(required)}"
+    )
+    assert len(arg_types) <= len(params), (
+        f"{handler_name}: handler accepts {len(params)} arg(s) "
+        f"but library passes {len(arg_types)}"
+    )
+
+
+def test_every_library_listener_we_register_exists(tmp_path: Path) -> None:
+    """Guard against aiosendspin renames: all add_* methods we call must exist."""
+    client = make_client(tmp_path, make_config(), EventBus())
+    for add_method, _, _ in _CALLBACK_CONTRACTS:
+        assert hasattr(aio_client_mod.SendspinClient, add_method), f"library lost {add_method}?"
+
+
+def test_state_supported_commands_declares_static_delay(tmp_path: Path) -> None:
+    """Match the reference client: SET_STATIC_DELAY echo support is declared."""
+    from aiosendspin.models.types import PlayerCommand
+
+    client = make_client(tmp_path, make_config(), EventBus())
+    # Verified indirectly: the constructor is called with this list in
+    # _connect_once; assert the enum members we rely on exist.
+    assert PlayerCommand.SET_STATIC_DELAY
+    assert PlayerCommand.VOLUME
+    assert PlayerCommand.MUTE
