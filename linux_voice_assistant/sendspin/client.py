@@ -102,6 +102,7 @@ class LVASendspinClient:
         self._static_pin = _cfg_get(pairing_cfg, "pin", None)
         self._speak_pin = bool(_cfg_get(pairing_cfg, "speak_pin", True))
         self._pairing_voice = _cfg_get(pairing_cfg, "voice", None)
+        self._pairing_voice_speed = max(80, min(200, int(_cfg_get(pairing_cfg, "voice_speed", 120))))
         self._pin_speech_procs: tuple = (None, None)
         self._identity_path = Path(identity_path)
         self._pairing_path = Path(pairing_path)
@@ -476,14 +477,17 @@ class LVASendspinClient:
         if pin is None:
             return
 
-        spaced = " ".join(pin)  # read digits individually
+        # Commas insert pauses between digits; the code is spoken twice so
+        # a misheard digit doesn't force another pairing round.
+        spaced = ", ".join(pin)
+        text = f"Your pairing code is: {spaced}. I repeat: {spaced}."
         voice = self._pairing_voice or next(
             (lang.replace("_", "-") for lang in languages if lang), None
         )
-        cmd = [espeak, "--stdout"]
+        cmd = [espeak, "--stdout", "-s", str(self._pairing_voice_speed)]
         if voice:
             cmd += ["-v", voice]
-        cmd.append(spaced)
+        cmd.append(text)
         try:
             espeak_proc = subprocess.Popen(
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL

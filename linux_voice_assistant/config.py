@@ -471,6 +471,11 @@ class SendspinPairingConfig:
     # voice is chosen from the language preferences the server reports.
     voice: Optional[str] = None
 
+    # Speaking rate for the PIN announcement in words-per-minute.
+    # espeak-ng's default (175) is too fast for 6-digit codes; slower
+    # (110-130) is much easier to catch.
+    voice_speed: int = 120
+
 
 @dataclass
 class SendspinConfig:

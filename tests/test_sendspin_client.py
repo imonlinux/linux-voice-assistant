@@ -377,7 +377,7 @@ def make_speaker_client(tmp_path: Path, **pairing_kwargs) -> LVASendspinClient:
 
 
 def test_speak_pin_builds_espeak_command(tmp_path: Path) -> None:
-    """Digits are spaced for individual pronunciation; voice from server languages."""
+    """Digits are comma-separated and spoken twice; voice from server languages."""
     from unittest.mock import patch
 
     client = make_speaker_client(tmp_path)
@@ -396,9 +396,11 @@ def test_speak_pin_builds_espeak_command(tmp_path: Path) -> None:
         asyncio.run(client._on_pairing_speak_pin("900984", languages=("en-US",)))
 
     # first Popen is espeak (WAV to stdout), second is mpv reading stdin
-    assert commands[0] == [
-        "/usr/bin/espeak-ng", "--stdout", "-v", "en-US", "9 0 0 9 8 4"
-    ]
+    assert commands[0][0] == "/usr/bin/espeak-ng"
+    assert commands[0][2:6] == ["-s", "120", "-v", "en-US"]
+    announcement = commands[0][6]
+    assert "9, 0, 0, 9, 8, 4" in announcement, "digits must be comma-separated"
+    assert announcement.count("9, 0, 0, 9, 8, 4") == 2, "code must be spoken twice"
     assert commands[1][:4] == ["mpv", "--no-video", "--really-quiet", "--audio-display=no"]
     # mpv chained on espeak stdout, both processes retained for stop()
     espeak_proc.stdout.close.assert_called_once()
@@ -457,4 +459,14 @@ def test_config_voice_overrides_server_languages(tmp_path: Path) -> None:
          patch("linux_voice_assistant.sendspin.client.subprocess.Popen", side_effect=fake_popen):
         asyncio.run(client._on_pairing_speak_pin("123456", languages=("en-US",)))
 
-    assert commands[0][2:4] == ["-v", "de"]
+    assert commands[0][2:6] == ["-s", "120", "-v", "de"]
+
+
+def test_speak_pin_rate_clamped_and_configurable(tmp_path: Path) -> None:
+    """voice_speed is configurable and clamped to a sane range."""
+    client = make_speaker_client(tmp_path, voice_speed=10)
+    assert client._pairing_voice_speed == 80  # clamped to the 80-200 floor
+    client = make_speaker_client(tmp_path, voice_speed=999)
+    assert client._pairing_voice_speed == 200
+    client = make_speaker_client(tmp_path, voice_speed=140)
+    assert client._pairing_voice_speed == 140
