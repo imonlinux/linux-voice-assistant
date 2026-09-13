@@ -774,6 +774,7 @@ This optional configuration enables the **Sendspin** client inside LVA so Music 
 - Music Assistant running a Sendspin server on your network.
 - A working **PipeWire-Pulse** (recommended) or **PulseAudio** stack (see Section 5 above).
 - **PortAudio**: `sudo apt-get install libportaudio2` (Fedora: `sudo dnf install portaudio`)
+- **Piper TTS** (optional, for natural-voice PIN announcements): `pip install piper-tts` — installed automatically by `script/setup --sendspin`
 
 ***Setup LVA with the Sendspin client***
 
@@ -837,6 +838,8 @@ For fully unattended pairing, set a fixed code: `"pairing": { "pin": "12345678" 
 - `output_latency_ms` — static delay compensation, **clamped to 0–5000 ms**. The old negative tuning from the previous client is obsolete: the new time filter is self-correcting, so start at 0 and only raise this if the device consistently plays early relative to others in the group.
 - `output_device` — pin playback to a specific sounddevice name; omit for the system default.
 - `coordination.duck_during_voice` / `duck_gain` — duck the music while the voice assistant is active (logged at INFO: `Sendspin: music ducked (gain 0.30)`).
+- `pairing.voice_engine` — `"auto"` (piper if model downloaded, else espeak-ng), `"piper"` (neural voice — recommended), or `"espeak-ng"`. When pairing, LVA speaks the code through its speaker using a natural neural voice.
+- `pairing.piper_model` — HuggingFace voice model name (default: `en_US-lessac-medium`).
 
 > Take a look at `~/linux-voice-assistant/linux_voice_assistant/config.json.example` for all available options.
 

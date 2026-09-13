@@ -88,13 +88,24 @@ The optional Sendspin client turns LVA into a multiroom audio player for [Music 
 - **Transport controls** — Play, pause, stop, volume, and mute from Music Assistant, with state echoed back so the MA UI always reflects the device
 - **Voice coordination** — Automatic audio ducking during voice interactions (`coordination.duck_during_voice`, `coordination.duck_gain`); logged at INFO
 - **Persistent identity** — the player's cryptographic identity and pairing credentials persist next to `preferences.json`; pair once per MA server, never again
-- **Headless-friendly pairing** — a dynamic PIN is written to the daemon log when pairing, or set a fixed PIN with `sendspin.pairing.pin`
+- **Headless-friendly pairing** — when you pair the player in Music Assistant, LVA **speaks the pairing code through its speaker** using a natural neural voice (Piper — the same engine HA uses for Piper TTS). A fixed code can also be set with `sendspin.pairing.pin`, and the code is always written to the daemon log as a fallback
 - **Tunable timing** — `sync_target_latency_ms` (server send-ahead target; also the playback start gate) and `output_latency_ms` (static delay compensation, clamped to 0–5000 ms — the old negative tuning is obsolete)
 - **Format** — PCM is advertised to the server; Music Assistant transcodes (PCM is mandatory for all Sendspin servers)
 
+#### Voice engine selection
+
+The pairing announcement uses the best available TTS engine, selected automatically:
+
+| Engine | Quality | Extra dependency |
+|---|---|---|
+| **Piper** (default when installed) | Natural neural voice | `piper-tts` (installed with `--sendspin`) |
+| **espeak-ng** | Robotic fallback | `espeak-ng` system package |
+
+Override with `pairing.voice_engine` in config.json (`"auto"`, `"piper"`, or `"espeak-ng"`). Additional tuning: `pairing.piper_model` (HuggingFace voice model, default `en_US-lessac-medium`), `pairing.voice` and `pairing.voice_speed` (espeak-ng only).
+
 See [the tutorial's Sendspin section](docs/linux-voice-assistant-install.md) for configuration and pairing, including the required `sendspin.connection.server_host` setting.
 
-#### *Requires Python 3.12+, the `--sendspin` install extra, and `libportaudio2`.*
+#### *Requires Python 3.12+, the `--sendspin` install extra (includes Piper TTS), and `libportaudio2`.*
 
 ### Desktop Tray Client *(See [this tutorial](docs/lva-desktop.md))*
 
