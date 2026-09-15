@@ -48,6 +48,15 @@ docs/RESYNC_PLAN.md.
   copy when none exists. Existing devices: set your local `config.json`
   aside when pulling the commit that removes it from tracking, then move it
   back — from then on pulls never touch it.
+- update_lva rewritten: in-place `git fetch` + checkout instead of
+  move-aside + fresh clone. Untracked per-device files (preferences,
+  Sendspin credentials, piper voices, per-model threshold files, external
+  wake words) are no longer touched at all. The script re-executes the
+  freshly fetched copy, so update logic always runs at the version being
+  deployed to. Adds `--branch`, `--force` (tracked files with local
+  modifications are refused by default) and `--rollback` (returns to the
+  pre-update revision). Services: stops the tray unit too, and restarts
+  whichever daemon unit (main or XVF3800) was running.
 
 ### Fixed
 

@@ -965,100 +965,36 @@ systemctl --user disable pipewire.service pipewire-pulse.service wireplumber.ser
 
 ## 10. Safely Upgrade from previous version of LVA
 
-***You will need a minimum of 550 MB of free space to use this process.***
-
-Verify that you have enough free disk space:
-
-```bash
-df -h
-
-Filesystem      Size  Used Avail Use% Mounted on
-udev            912M     0  912M   0% /dev
-tmpfs           198M  3.4M  195M   2% /run
-# This is the entry that indicates available free space
-/dev/mmcblk1p1   57G  3.2G   53G   6% /
-#
-tmpfs           988M     0  988M   0% /dev/shm
-tmpfs           5.0M     0  5.0M   0% /run/lock
-tmpfs           1.0M     0  1.0M   0% /run/credentials/systemd-resolved.service
-tmpfs           1.0M     0  1.0M   0% /run/credentials/systemd-networkd.service
-tmpfs           988M     0  988M   0% /tmp
-/dev/zram1       47M  424K   43M   1% /var/log
-tmpfs           1.0M     0  1.0M   0% /run/credentials/systemd-journald.service
-tmpfs           198M  8.0K  198M   1% /run/user/1000
-tmpfs           1.0M     0  1.0M   0% /run/credentials/getty@tty1.service
-tmpfs           1.0M     0  1.0M   0% /run/credentials/serial-getty@ttyS0.service
-```
-Update LVA via included script:
-*Be sure to include any needed extra setup flags (i.e. --sendspin --tray)*
-
-> **Keep your Sendspin identity:** `sendspin_identity.json` and
-> `sendspin_pairing.json` (next to `preferences.json`) hold the player's
-> identity and pairing credentials. If the upgrade process or a fresh clone
-> loses them, the player comes back as a NEW device in Music Assistant and
-> must be paired again.
+Update LVA via the included script. It updates the checkout in place
+(`git fetch` + checkout), keeps every untracked per-device file
+(`config.json`, `preferences.json`, `sendspin_identity.json`,
+`sendspin_pairing.json`, `piper_voices/`, wake word models), migrates
+`config.json`, rebuilds the virtual environment and restarts the service.
+Be sure to include any needed extra setup flags (i.e. `--sendspin --tray`):
 
 ```bash
 bash ~/linux-voice-assistant/script/update_lva --sendspin
 ```
 
-Or manually update using the same process as the script.
-
-Stop any running LVA systemd unit files:
+Useful options:
 
 ```bash
-# Stop LVA Service
-systemctl --user stop linux-voice-assistant.service
+# Update to a specific branch or tag instead of upstream-core
+bash ~/linux-voice-assistant/script/update_lva --branch main
 
-# Stop Tray Client Service if you are using it
-systemctl --user stop linux-voide-assistant-tray.service
+# The update refuses to run when tracked files have local modifications
+# (untracked per-device files are always fine). To discard them anyway:
+bash ~/linux-voice-assistant/script/update_lva --force
 ```
 
-Save current version of LVA (the safe part):
+If the new version misbehaves, roll back to the revision the updater found
+before the last update, then roll forward again later with a normal update:
 
 ```bash
-mv ~/linux-voice-assistant ~/linux-voice-assistant_save
+bash ~/linux-voice-assistant/script/update_lva --rollback
 ```
 
-Clone the latest version of the LVA project:
-
-```bash
-git clone https://github.com/imonlinux/linux-voice-assistant.git
-```
-
-Restore saved config.json and preferences.json files:
-
-```bash
-cp ~/linux-voice-assistant_save/preferences.json ~/linux-voice-assistant/
-cp ~/linux-voice-assistant_save/linux_voice_assistant/config.json ~/linux-voice-assistant/linux_voice_assistant/
-```
-
-Setup the new version of LVA:
-
-```bash
-cd ~/linux-voice-assistant
-
-# LVA without the Sendspin client or Tray client
-script/setup
-
-# LVA and the Sendspin client
-script/setup --sendspin
-
-# LVA with Tray and Sendspin client
-script/setup --tray --sendspin
-```
-
-If you're sure that everything went well, restart the LVA service
-
-```bash
-# LVA service
-systemctl --user restart linux-voice-assistant.service
-
-# LVA Tray service
-systemctl --user restart linux-voice-assistant-tray.service
-```
-
-If you're not sure, or if the LVA didn't start as expected, run the LVA via CLI with debug:
+If the LVA didn't start as expected, run it via CLI with debug:
 
 ```bash
 # LVA
@@ -1068,9 +1004,7 @@ script/run --debug
 script/run --tray
 ```
 
-Optionally, once you are comfortable with the new version, remove the older version of the LVA:
-
-```bash
-# !!! BE CAREFUL WITH THIS COMMAND !!!
-rm -rf ~/linux-voice-assistant_save
-```
+> Upgrading from a version that shipped the old fresh-clone updater? A
+> `~/linux-voice-assistant_save` directory may be left over from a previous
+> update. Once the new version works, it can be deleted:
+> `rm -rf ~/linux-voice-assistant_save`

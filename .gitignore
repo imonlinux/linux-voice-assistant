@@ -22,6 +22,9 @@ venv/
 # Per-device configuration (template: linux_voice_assistant/config.json.example)
 linux_voice_assistant/config.json
 
+# Revision recorded by script/update_lva for --rollback
+.lva-update-previous-rev
+
 # Docker
 .env
 dev.env

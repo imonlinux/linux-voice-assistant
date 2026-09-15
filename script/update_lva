@@ -1,91 +1,190 @@
 #!/bin/bash
-# This script automates the refresh of the Linux Voice Assistant
-# from https://github.com/imonlinux/linux-voice-assistant while
-# maintaining current configuration, preferences, and pairing state.
-# You must pass the extra setup flags that you require.
-# Usage: bash ~/linux-voice-assistant/script/update_lva.sh --sendspin
+# Update the Linux Voice Assistant in place from
+# https://github.com/imonlinux/linux-voice-assistant
 #
-# The script checks out the upstream-core branch (the current development
-# line) and rebuilds the virtual environment. Your config.json,
-# preferences.json, Sendspin identity/pairing credentials, and piper
-# voice model are all preserved.
+# Usage:
+#   bash ~/linux-voice-assistant/script/update_lva [options] [setup flags]
+#   e.g. bash ~/linux-voice-assistant/script/update_lva --sendspin --tray
+#
+# How it works:
+#   1. Sanity-checks that this directory is the LVA clone with a clean
+#      tracked tree (use --force to override).
+#   2. Records the current revision for --rollback.
+#   3. git fetch + git checkout -B to the target branch.
+#   4. Re-executes the freshly updated copy of THIS script, so update
+#      logic always runs at the version being deployed to.
+#   5. Migrates config.json, rebuilds the virtual environment
+#      (script/setup with your flags) and restarts the service.
+#
+# Untracked per-device files (config.json, preferences.json, Sendspin
+# identity/pairing credentials, piper voices, per-model threshold .json
+# files, external wake word downloads) are untouched by the update.
+#
+# Options:
+#   --branch NAME   Branch or tag ref to update to (default: upstream-core)
+#   --force         Proceed even if tracked files have local modifications
+#   --rollback      Return to the revision that was checked out before the
+#                   last update, then rebuild and restart
+#   -h, --help      Show this help
+#
+# Rollback: if the new version misbehaves, run
+#   bash ~/linux-voice-assistant/script/update_lva --rollback
+# Roll forward again later by running a normal update.
 
-set -e  # Exit immediately if any command fails
+set -euo pipefail
 
-# Resolve the directory containing this script, then derive the
-# project root and its parent — works regardless of install location.
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 PARENT_DIR="$(cd "$PROJECT_DIR/.." && pwd)"
 PROJECT_NAME="$(basename "$PROJECT_DIR")"
 
-SAVE_DIR="${PARENT_DIR}/${PROJECT_NAME}_save"
-REPO_URL="https://github.com/imonlinux/linux-voice-assistant.git"
-BRANCH="upstream-core"
+REPO_HINT="imonlinux/linux-voice-assistant"
+DEFAULT_BRANCH="upstream-core"
+PREV_REV_FILE="$PROJECT_DIR/.lva-update-previous-rev"
+
+DAEMON_UNIT="linux-voice-assistant.service"
+DAEMON_UNIT_XVF="linux-voice-assistant_xvf3800.service"
+TRAY_UNIT="linux-voice-assistant-tray.service"
+
+BRANCH="$DEFAULT_BRANCH"
+FORCE=0
+ROLLBACK=0
+SKIP_FETCH=0
+SETUP_ARGS=()
+
+usage() { sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'; }
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --branch)
+            [ $# -ge 2 ] || { echo "error: --branch requires a value" >&2; exit 1; }
+            BRANCH="$2"; shift 2 ;;
+        --force)    FORCE=1; shift ;;
+        --rollback) ROLLBACK=1; shift ;;
+        --skip-fetch) SKIP_FETCH=1; shift ;;
+        -h|--help)  usage; exit 0 ;;
+        *)          SETUP_ARGS+=("$1"); shift ;;
+    esac
+done
+
+stop_services() {
+    # Units may not exist (fresh installs, containers); failures are fine.
+    systemctl --user stop "$DAEMON_UNIT" 2>/dev/null || true
+    systemctl --user stop "$DAEMON_UNIT_XVF" 2>/dev/null || true
+    systemctl --user stop "$TRAY_UNIT" 2>/dev/null || true
+}
+
+verify_repo() {
+    if ! git -C "$PROJECT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        echo "error: $PROJECT_DIR is not a git checkout." >&2
+        exit 1
+    fi
+    local remote
+    remote="$(git -C "$PROJECT_DIR" remote get-url origin 2>/dev/null || true)"
+    if [[ "$remote" != *"$REPO_HINT"* ]]; then
+        echo "error: origin remote ($remote) does not look like the LVA repository." >&2
+        exit 1
+    fi
+}
+
+rebuild_and_start() {
+    echo "Rebuilding virtual environment…"
+    rm -rf "$PROJECT_DIR/.venv"
+
+    # config.json is per-device and untracked; bootstrap it from the
+    # template when missing (e.g. install predates the untracking).
+    local config_file="$PROJECT_DIR/linux_voice_assistant/config.json"
+    if [ ! -f "$config_file" ] && [ -f "$PROJECT_DIR/linux_voice_assistant/config.json.example" ]; then
+        cp "$PROJECT_DIR/linux_voice_assistant/config.json.example" "$config_file"
+        echo "Bootstrapped config.json from config.json.example"
+    fi
+    if [ -f "$config_file" ]; then
+        echo "Migrating config.json…"
+        python3 "$PROJECT_DIR/script/migrate_config.py" "$config_file" || {
+            echo "Warning: config migration had issues — the daemon will still"
+            echo "start, but check the log for unknown-key warnings."
+        }
+    fi
+
+    cd "$PROJECT_DIR"
+    script/setup ${SETUP_ARGS[@]+"${SETUP_ARGS[@]}"}
+
+    systemctl --user start "$DAEMON_UNIT_ACTIVE" 2>/dev/null || true
+
+    echo ""
+    echo "Done. Now at: $(git -C "$PROJECT_DIR" describe --tags --always 2>/dev/null || echo "$BRANCH")"
+    echo "Check the log for warnings:"
+    echo "  journalctl --user -u linux-voice-assistant -f"
+    if [ -d "$PARENT_DIR/${PROJECT_NAME}_save" ]; then
+        echo ""
+        echo "Note: $PARENT_DIR/${PROJECT_NAME}_save is a backup left by the old"
+        echo "fresh-clone updater. Once this version works, it can be deleted."
+    fi
+}
+
+# Pick the daemon unit this device actually runs (XVF3800 devices may use
+# the alternative unit), then stop everything related.
+DAEMON_UNIT_ACTIVE="$DAEMON_UNIT"
+if ! systemctl --user is-active --quiet "$DAEMON_UNIT" 2>/dev/null \
+    && systemctl --user is-active --quiet "$DAEMON_UNIT_XVF" 2>/dev/null; then
+    DAEMON_UNIT_ACTIVE="$DAEMON_UNIT_XVF"
+fi
 
 echo "Project root : $PROJECT_DIR"
-echo "Save location: $SAVE_DIR"
-echo "Branch       : $BRANCH"
+echo "Target       : $BRANCH"
 
-# Stop the running LVA service
-systemctl --user stop linux-voice-assistant.service 2>/dev/null || true
-
-# Save the current version (just in case)
-rm -rf "$SAVE_DIR"
-mv "$PROJECT_DIR" "$SAVE_DIR"
-
-# Clone current version from repo into the original location,
-# then checkout the upstream-core branch
-git clone --branch "$BRANCH" "$REPO_URL" "$PROJECT_DIR"
-
-# Restore configuration, preferences, and user data
-cp "$SAVE_DIR/preferences.json" "$PROJECT_DIR/" 2>/dev/null || true
-cp "$SAVE_DIR/linux_voice_assistant/config.json" "$PROJECT_DIR/linux_voice_assistant/" 2>/dev/null || true
-# config.json is per-device and untracked: bootstrap it from the template
-# when no saved copy exists (e.g. first update_lva run on a fresh clone).
-if [ ! -f "$PROJECT_DIR/linux_voice_assistant/config.json" ]; then
-    cp "$PROJECT_DIR/linux_voice_assistant/config.json.example" \
-       "$PROJECT_DIR/linux_voice_assistant/config.json"
-    echo "Bootstrapped config.json from config.json.example"
-fi
-
-# Preserve Sendspin identity, pairing credentials, and piper voice model
-# so the MA player identity survives and no re-pairing is needed
-for f in sendspin_identity.json sendspin_pairing.json; do
-    if [ -f "$SAVE_DIR/$f" ]; then
-        cp "$SAVE_DIR/$f" "$PROJECT_DIR/"
-        echo "Preserved $f"
+if [ "$ROLLBACK" -eq 1 ]; then
+    verify_repo
+    if [ ! -f "$PREV_REV_FILE" ]; then
+        echo "error: no previous revision recorded; nothing to roll back to." >&2
+        exit 1
     fi
-done
-if [ -d "$SAVE_DIR/piper_voices" ]; then
-    mkdir -p "$PROJECT_DIR/piper_voices"
-    cp -r "$SAVE_DIR/piper_voices/"* "$PROJECT_DIR/piper_voices/" 2>/dev/null || true
-    echo "Preserved piper voice models"
+    PREV_REV="$(cat "$PREV_REV_FILE")"
+    echo "Rolling back to: $PREV_REV"
+    stop_services
+    git -C "$PROJECT_DIR" checkout -B "$BRANCH" "$PREV_REV"
+    rm -f "$PREV_REV_FILE"
+    echo "Rolled back. Roll forward again later with a normal update."
+    rebuild_and_start
+    exit 0
 fi
 
-# -----------------------------------------------------------------------
-# Migrate config.json: ensure new required keys exist and clean up
-# obsolete ones so the upgrade is seamless.
-# -----------------------------------------------------------------------
-CONFIG_FILE="$PROJECT_DIR/linux_voice_assistant/config.json"
-if [ -f "$CONFIG_FILE" ]; then
-    echo "Migrating config.json…"
-    python3 "$PROJECT_DIR/script/migrate_config.py" "$CONFIG_FILE" || {
-        echo "Warning: config migration had issues — the daemon will still"
-        echo "start, but check the log for unknown-key warnings."
-    }
+verify_repo
+
+if [ "$SKIP_FETCH" -eq 0 ]; then
+    # Guard against silently destroying local work: untracked per-device
+    # files are fine, modifications to TRACKED files are not.
+    if [ "$FORCE" -eq 0 ]; then
+        DIRTY="$(git -C "$PROJECT_DIR" status --porcelain --untracked-files=no || true)"
+        if [ -n "$DIRTY" ]; then
+            echo "Refusing to update: tracked files have local modifications:" >&2
+            echo "$DIRTY" >&2
+            echo "" >&2
+            echo "Commit or stash them, or re-run with --force to discard them." >&2
+            exit 1
+        fi
+    fi
+
+    stop_services
+
+    git -C "$PROJECT_DIR" rev-parse HEAD > "$PREV_REV_FILE"
+    echo "Previous revision saved for --rollback: $(cat "$PREV_REV_FILE")"
+
+    echo "Fetching…"
+    git -C "$PROJECT_DIR" fetch origin --tags --force
+    if git -C "$PROJECT_DIR" rev-parse --verify --quiet "origin/$BRANCH" >/dev/null; then
+        git -C "$PROJECT_DIR" checkout -B "$BRANCH" "origin/$BRANCH"
+    else
+        # Not a remote branch (tag or raw ref); check it out by name.
+        git -C "$PROJECT_DIR" checkout -B "$BRANCH" "$BRANCH"
+    fi
+
+    # Hand over to the freshly updated copy of this script so the rest of
+    # the update runs with the newest update logic (the old copy is the
+    # one that was just replaced).
+    echo "Handing over to the updated script…"
+    exec bash "$SCRIPT_DIR/update_lva" --skip-fetch --branch "$BRANCH" \
+        ${SETUP_ARGS[@]+"${SETUP_ARGS[@]}"}
 fi
 
-# Rebuild the virtual environment (dependency set changes between versions)
-rm -rf "$PROJECT_DIR/.venv"
-
-# Run setup with passed flags (e.g. --sendspin --tray)
-cd "$PROJECT_DIR"
-script/setup "$@"
-
-# Start the LVA service
-systemctl --user start linux-voice-assistant.service
-
-echo ""
-echo "LVA update complete. Check the log for any warnings:"
-echo "  journalctl --user -u linux-voice-assistant -f"
+rebuild_and_start
