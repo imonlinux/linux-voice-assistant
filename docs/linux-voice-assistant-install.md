@@ -240,6 +240,11 @@ If you are only using the Mic and or Speaker you do not need to do anything furt
 
 If you are using the **ReSpeaker XVF3800 USB 4‑Mic Array** LEDs and Mute Button
 
+> `config.json` is per-device and not tracked by git, so it is never overwritten or
+> merged on updates. A fresh clone ships only the annotated template; if
+> `config.json` does not exist yet, copy it once:
+> `cp linux_voice_assistant/config.json.example linux_voice_assistant/config.json`
+
 Edit the config.json file:
 
 ```bash

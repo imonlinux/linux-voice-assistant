@@ -156,7 +156,9 @@ script/setup --dev         # Development tools
 Copy and edit the example configuration:
 
 ```bash
-nano ~/linux_voice_assistant/config.json
+cp ~/linux-voice-assistant/linux_voice_assistant/config.json.example \
+   ~/linux-voice-assistant/linux_voice_assistant/config.json
+nano ~/linux-voice-assistant/linux_voice_assistant/config.json
 ```
 
 *At minimum, set the `app.name` field. See [`config.json.example`](linux_voice_assistant/config.json.example) for all available options with inline documentation.*

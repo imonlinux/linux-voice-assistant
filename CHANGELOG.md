@@ -43,6 +43,11 @@ docs/RESYNC_PLAN.md.
   keys are ignored with a warning
 - Fork entities register after upstream's (keys 9-14) to keep upstream key
   numbering stable
+- `config.json` is no longer tracked by git (it is per-device); the annotated
+  `config.json.example` remains the template, and update_lva bootstraps a
+  copy when none exists. Existing devices: set your local `config.json`
+  aside when pulling the commit that removes it from tracking, then move it
+  back — from then on pulls never touch it.
 
 ### Fixed
 

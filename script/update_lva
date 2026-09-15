@@ -41,6 +41,13 @@ git clone --branch "$BRANCH" "$REPO_URL" "$PROJECT_DIR"
 # Restore configuration, preferences, and user data
 cp "$SAVE_DIR/preferences.json" "$PROJECT_DIR/" 2>/dev/null || true
 cp "$SAVE_DIR/linux_voice_assistant/config.json" "$PROJECT_DIR/linux_voice_assistant/" 2>/dev/null || true
+# config.json is per-device and untracked: bootstrap it from the template
+# when no saved copy exists (e.g. first update_lva run on a fresh clone).
+if [ ! -f "$PROJECT_DIR/linux_voice_assistant/config.json" ]; then
+    cp "$PROJECT_DIR/linux_voice_assistant/config.json.example" \
+       "$PROJECT_DIR/linux_voice_assistant/config.json"
+    echo "Bootstrapped config.json from config.json.example"
+fi
 
 # Preserve Sendspin identity, pairing credentials, and piper voice model
 # so the MA player identity survives and no re-pairing is needed

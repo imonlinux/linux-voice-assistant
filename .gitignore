@@ -19,6 +19,9 @@ venv/
 /preferences.json
 /local/
 
+# Per-device configuration (template: linux_voice_assistant/config.json.example)
+linux_voice_assistant/config.json
+
 # Docker
 .env
 dev.env
