@@ -8,6 +8,8 @@ LVA Tray Client
 - Subscribes to MQTT topics to:
   - Track availability (online/offline)
   - Track mute state
+  - Track the active voice state via the consolidated `lva/<device_id>/state`
+    topic (retained; single source of truth for state transitions)
   - Track per-state LED color (idle/listening/thinking/responding/error)
 - Shows a system tray icon whose color matches the current LVA state.
 - Provides a tray menu to start/stop/restart the LVA systemd --user service
@@ -252,6 +254,10 @@ class LvaTrayClient(QtWidgets.QSystemTrayIcon):
                 self._handle_mute_state(payload)
                 return
 
+            if topic == f"{self._topic_prefix}/state":
+                self._handle_voice_state(payload)
+                return
+
             # ignore effect states for now
             if topic.endswith("_effect/state"):
                 return
@@ -276,12 +282,37 @@ class LvaTrayClient(QtWidgets.QSystemTrayIcon):
         self._mute_action.setChecked(self._muted)
         self._update_tray_icon()
 
+    def _handle_voice_state(self, payload: str) -> None:
+        """
+        Handle the consolidated voice-state topic (lva/<device_id>/state).
+
+        Payload is the active state name (idle/listening/thinking/
+        responding/error). This topic is the single source of truth for the
+        tray's displayed state: it is retained and republished on every
+        transition, so broker reconnects and retained-message replays can
+        never leave the tray on a stale state. The per-state
+        <state>_light/state topics are color configuration only.
+        """
+        state_name = payload.strip().lower()
+        if state_name not in self.STATES:
+            _LOGGER.warning("Unknown voice state on %s: %s", "state", payload)
+            return
+
+        self._current_state = state_name
+        self._update_tray_icon()
+
     def _handle_light_state(self, topic: str, payload: str) -> None:
         """
-        Handle JSON from .../<state>_light/state
+        Handle JSON from .../<state>_light/state (color configuration only).
         Example payload:
           {"state": "ON", "brightness": 127,
            "color": {"r": 0, "g": 0, "b": 255}}
+
+        Note: light topics are retained per configured state and are NOT a
+        reliable indicator of which state is currently active (after a
+        normal turn several of them are retained-ON and replay in broker
+        order on reconnect). Active-state tracking uses the consolidated
+        lva/<device_id>/state topic; this handler only caches colors.
         """
         try:
             data = json.loads(payload)
@@ -301,7 +332,6 @@ class LvaTrayClient(QtWidgets.QSystemTrayIcon):
         if state_name not in self.STATES:
             return
 
-        state_flag = str(data.get("state", "OFF")).upper()
         color_dict = data.get("color", {}) or {}
         brightness = int(data.get("brightness", 255))
         brightness = max(0, min(brightness, 255))
@@ -318,15 +348,6 @@ class LvaTrayClient(QtWidgets.QSystemTrayIcon):
             max(0, min(255, int(b * scale))),
         )
         self._last_color_by_state[state_name] = qcolor
-
-        # State transitions:
-        # - For non-idle: treat "ON" as "this is the active state"
-        # - For idle: always treat updates as the baseline idle state
-        if state_name == SatelliteState.IDLE.value:
-            self._current_state = SatelliteState.IDLE.value
-        else:
-            if state_flag == "ON":
-                self._current_state = state_name
 
         self._update_tray_icon()
 

@@ -67,6 +67,16 @@ class MqttController(EventHandler):
                 "command": f"{self._topic_prefix}/num_leds/set",
                 "state": f"{self._topic_prefix}/num_leds/state",
             },
+            # Consolidated voice-state truth topic. Published on every voice
+            # state transition with the active state name (idle/listening/
+            # thinking/responding/error), retained. Consumers (tray client)
+            # must derive current state from this topic, NOT from the
+            # per-state <state>_light/state topics: those are retained-ON
+            # per configured state and replay in arbitrary order on
+            # (re)connect, which cannot represent "which state is active".
+            "voice_state": {
+                "state": f"{self._topic_prefix}/state",
+            },
         }
 
         for state_name in self.CONFIGURABLE_STATES:
@@ -376,6 +386,13 @@ class MqttController(EventHandler):
                 },
             }
             self._client.publish(state_topics["light_state"], json.dumps(light_state), retain=True)
+
+            # Consolidated truth topic: exactly one retained message that
+            # names the currently-active state, so reconnect/replays cannot
+            # leave consumers on a stale state.
+            self._client.publish(
+                self.topics["voice_state"]["state"], state_name, retain=True
+            )
 
     @subscribe
     def mic_muted(self, data: dict):

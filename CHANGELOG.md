@@ -44,6 +44,18 @@ docs/RESYNC_PLAN.md.
 - Fork entities register after upstream's (keys 9-14) to keep upstream key
   numbering stable
 
+### Fixed
+
+- Tray client showed a stale state (typically "thinking") after MQTT
+  (re)connects: per-state `<state>_light/state` topics are retained-ON for
+  every state that has been active and replay in broker topic order, so
+  deriving the active state from them landed on "thinking". The daemon now
+  publishes a consolidated retained `lva/<device_id>/state` topic on every
+  voice transition, and the tray derives its displayed state from it; light
+  topics configure colors only. State changes while the mic is muted are
+  also published to MQTT now instead of being swallowed by the mute LED
+  overlay.
+
 ## 1.0.0
 
 - Initial release (https://github.com/OHF-Voice/linux-voice-assistant)

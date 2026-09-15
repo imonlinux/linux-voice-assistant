@@ -331,6 +331,29 @@ class TestLedControllerStateTransitions:
         assert hasattr(minimal_controller, '_mic_is_muted')
         assert isinstance(minimal_controller._mic_is_muted, bool)
 
+    def test_muted_state_still_publishes_to_mqtt(self, minimal_controller, event_bus):
+        """Mute overlay suppresses local LED effects, NOT the MQTT publish.
+
+        Regression guard for the tray-client desync: while muted, state
+        transitions must still reach MQTT consumers, otherwise the retained
+        per-state topics (and the consolidated state topic) go stale and a
+        mid-turn mute leaves the tray stuck on the pre-mute state.
+        """
+        published = []
+        event_bus.subscribe("publish_state_to_mqtt", published.append)
+
+        with patch.object(minimal_controller, 'run_action') as mock_run:
+            minimal_controller._mic_is_muted = True
+            minimal_controller._apply_state_effect("idle")
+
+        # MQTT publish happened despite the mute overlay
+        assert len(published) == 1
+        assert published[0]["state_name"] == "idle"
+
+        # Local LEDs still show the mute override, not the state effect
+        assert mock_run.call_count == 1
+        assert mock_run.call_args[0][0] == "solid"
+
     def test_led_controller_ready_state(self, minimal_controller):
         """Test LED controller ready state management."""
         # Initially not ready
