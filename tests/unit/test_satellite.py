@@ -145,6 +145,36 @@ class TestSetMuted:
         sat._set_muted(True)
         assert sat._is_streaming_audio is False
 
+    def test_muting_publishes_switch_state_to_ha(self, tmp_path):
+        from aioesphomeapi.api_pb2 import SwitchStateResponse  # type: ignore[attr-defined]
+
+        sat = make_satellite(tmp_path)
+        with patch.object(sat.state, "broadcast") as broadcast:
+            sat._set_muted(True)
+
+        entity = sat.state.mute_switch_entity
+        assert entity._switch_state is True
+        broadcast.assert_called_once()
+        (msgs,) = broadcast.call_args[0]
+        assert len(msgs) == 1
+        assert isinstance(msgs[0], SwitchStateResponse)
+        assert msgs[0].key == entity.key
+        assert msgs[0].state is True
+
+    def test_unmuting_publishes_switch_state_to_ha(self, tmp_path):
+        from aioesphomeapi.api_pb2 import SwitchStateResponse  # type: ignore[attr-defined]
+
+        sat = make_satellite(tmp_path)
+        with patch.object(sat.state, "broadcast") as broadcast:
+            sat._set_muted(False)
+
+        entity = sat.state.mute_switch_entity
+        assert entity._switch_state is False
+        broadcast.assert_called_once()
+        (msgs,) = broadcast.call_args[0]
+        assert isinstance(msgs[0], SwitchStateResponse)
+        assert msgs[0].state is False
+
 
 # ---------------------------------------------------------------------------
 # _set_thinking_sound_enabled()

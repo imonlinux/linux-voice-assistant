@@ -60,6 +60,11 @@ docs/RESYNC_PLAN.md.
   topics configure colors only. State changes while the mic is muted are
   also published to MQTT now instead of being swallowed by the mute LED
   overlay.
+- Mute changes from outside Home Assistant (tray client via MQTT, GPIO and
+  XVF3800 hardware buttons) never updated the ESPHome mute switch, leaving
+  HA showing a stale position until its next reconnect. `VoiceSatellite-
+  Protocol._set_muted` now publishes the switch state to all connected API
+  clients, replacing the peripheral-API-only workaround.
 
 ## 1.0.0
 

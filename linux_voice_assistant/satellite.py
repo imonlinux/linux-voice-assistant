@@ -654,6 +654,12 @@ class VoiceSatelliteProtocol(APIServer):
         self.state.muted = bool(new_state)
         self._emit(LVAEvent.MUTED, {"muted": self.state.muted})
 
+        # Reflect the change on the ESPHome mute switch so Home Assistant
+        # stays in sync no matter where the request came from (HA itself,
+        # hardware buttons, tray client via MQTT, peripheral API clients).
+        if self.state.mute_switch_entity is not None:
+            self.state.mute_switch_entity.publish_state()
+
         if self.state.muted:
             # voice_assistant.stop behavior
             _LOGGER.debug("Muting voice assistant (voice_assistant.stop)")

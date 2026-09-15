@@ -344,14 +344,13 @@ class PeripheralAPIServer:
                 satellite.stop()
 
         elif command == LVACommand.MUTE_MIC:
+            # _set_muted publishes the ESPHome mute switch state itself.
             if satellite is not None and not state.muted:
                 satellite._set_muted(True)  # pylint: disable=protected-access
-                await self._push_mute_switch(satellite, muted=True)
 
         elif command == LVACommand.UNMUTE_MIC:
             if satellite is not None and state.muted:
                 satellite._set_muted(False)  # pylint: disable=protected-access
-                await self._push_mute_switch(satellite, muted=False)
 
         elif command in (LVACommand.VOLUME_UP, LVACommand.VOLUME_DOWN):
             delta = self._volume_step if command == LVACommand.VOLUME_UP else -self._volume_step
@@ -607,20 +606,6 @@ class PeripheralAPIServer:
                 return
 
         self._pending_entity_reconnect_task = self._loop.create_task(_trigger())
-
-    async def _push_mute_switch(self, satellite: Any, *, muted: bool) -> None:
-        """Reflect a peripheral-triggered mute change to Home Assistant."""
-        state = self._state
-        if state is None or state.mute_switch_entity is None:
-            return
-
-        entity = state.mute_switch_entity
-        entity._switch_state = muted  # pylint: disable=protected-access
-
-        # pylint: disable=no-name-in-module
-        from aioesphomeapi.api_pb2 import SwitchStateResponse  # type: ignore[attr-defined]
-
-        satellite.send_messages([SwitchStateResponse(key=entity.key, state=muted)])
 
     # ------------------------------------------------------------------
     # Event emission

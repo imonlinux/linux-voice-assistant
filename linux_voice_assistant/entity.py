@@ -309,6 +309,22 @@ class MuteSwitchEntity(ESPHomeEntity):
         # Sync internal switch state with the actual mute state.
         self._switch_state = self._get_muted()
 
+    def publish_state(self) -> None:
+        """Sync the internal state and push it to all connected clients.
+
+        Mute changes can originate outside the switch command path (hardware
+        buttons, the tray client via MQTT, peripheral API clients). Without
+        this push, Home Assistant keeps showing the stale switch position
+        until its next reconnect.
+        """
+        self.sync_with_state()
+        response = SwitchStateResponse(key=self.key, state=self._switch_state)
+        state = getattr(self.server, "state", None)
+        if state is not None:
+            state.broadcast([response])
+        else:  # pragma: no cover - no ServerState (e.g. a bare APIServer)
+            self.server.send_messages([response])
+
     def handle_message(self, msg: message.Message) -> Iterable[message.Message]:
         if isinstance(msg, SwitchCommandRequest) and (msg.key == self.key):
             # User toggled the switch - update our internal state and trigger actions
