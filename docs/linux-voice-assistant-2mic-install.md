@@ -62,6 +62,63 @@ overlay, registers it in `config.txt`, installs the mixer state
 configs keep working; the script also removes the legacy DKMS module if one
 is present.
 
+### Files in `respeaker2mic/`
+
+| File | Purpose |
+| --- | --- |
+| `install-respeaker-drivers.sh` | The installer (run with `sudo`). POSIX-safe — works under `sh` and `bash`. |
+| `seeed-2mic-voicecard-overlay.dts` | Overlay source: `simple-audio-card` + `wm8960` glue using only mainline drivers, compiled with `dtc` at install time. |
+| `asound_2mic.conf` | ALSA dmix/dsnoop defaults, installed as `/etc/asound.conf`. |
+| `wm8960_asound.state` | Mixer state, symlinked to `/var/lib/alsa/asound.state` so `alsa-state.service` restores it on every boot. |
+
+### What the installer does
+
+1. Verifies the HAT responds on i2c bus 1 at address `0x1a` (`i2cdetect`).
+2. Verifies the running kernel provides `snd-soc-wm8960` and
+   `snd-soc-simple-card` (any kernel >= 5.4).
+3. Removes the legacy `seeed-voicecard` DKMS module and service if present.
+   The upgrade is in place: the ALSA card ID `seeed2micvoicec` is unchanged,
+   so existing LVA device strings keep working.
+4. Compiles the overlay with `dtc`, installs it into the boot partition's
+   `overlays/` directory, and appends `dtoverlay=seeed-2mic-voicecard`
+   (plus the `i2c_arm`, `i2s` and `spi` dtparams) to `config.txt`
+   idempotently.
+5. Installs the ALSA defaults and mixer state (see table above).
+6. Tries to register the card live via `dtoverlay` so no reboot is needed;
+   otherwise it asks for a single reboot.
+
+After this, kernel upgrades are a no-op for audio: there is no out-of-tree
+module to rebuild and no per-kernel driver branch to wait for.
+
+### Verify
+
+```bash
+aplay -l | grep seeed2micvoicec
+arecord -D hw:CARD=seeed2micvoicec -f S16_LE -r 48000 -c 2 -d 3 /tmp/t48.wav; echo $?
+~/linux-voice-assistant/script/run --list-input-devices
+dmesg | grep -i wm8960    # expect no errors
+```
+
+A silent `rc=0` from `arecord` plus a source in `--list-input-devices`
+means the card is fully up, including its PipeWire/PulseAudio source.
+
+### Troubleshooting
+
+- **`wm8960 1-001a: No MCLK configured` in dmesg; every playback/capture
+  fails** — an older copy of the overlay is installed that places the codec
+  clock on the wrong device tree node. `git pull` and re-run the installer,
+  then reboot.
+- **Card listed by `aplay -l` but no source/sink in the sound server**
+  (`wpctl status` shows only Dummy Output) — PipeWire probed the card before
+  it was usable. Restart the sound server
+  (`systemctl --user restart wireplumber pipewire pipewire-pulse`) or reboot.
+- **A previous failed install left dpkg unconfigured** — remove the legacy
+  DKMS module first, then run `sudo dpkg --configure -a` (the failed DKMS
+  autoinstall can leave kernel packages unconfigured).
+- **Old kernel packages piling up** — once the mainline installer is active,
+  kernels that were only kept for the DKMS driver can be removed with
+  `sudo apt autoremove`.
+
 
 ## 4. Linux Voice Assistant (LVA)
 

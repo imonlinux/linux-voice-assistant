@@ -74,8 +74,7 @@ Pick **one** of the following install paths. Expand a section to see the exact s
 <details>
 <summary><strong>Optional (ReSpeaker 2‑Mic HAT drivers v1 or v2)</strong></summary>
 
-If you are using the **ReSpeaker 2‑Mic HAT v1** (seeed-2mic-voicecard), install the vendor driver + overlay using the project helper script:
-*Instructions to reinstall after a kernel upgrade below*
+If you are using the **ReSpeaker 2‑Mic HAT v1** (seeed-2mic-voicecard), install the audio driver using the project helper script. It uses only mainline kernel drivers via a device tree overlay — no DKMS, no kernel headers, works on any kernel >= 5.4, and never requires a kernel downgrade (kernel upgrades are a no-op for audio). Legacy DKMS installs upgrade in place. Details and troubleshooting: [the 2‑Mic install guide](linux-voice-assistant-2mic-install.md).
 
 ```bash
 chmod +x ~/linux-voice-assistant/respeaker2mic/install-respeaker-drivers.sh

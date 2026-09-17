@@ -1,5 +1,13 @@
 # Linux Voice Assistant
 
+> [!IMPORTANT]
+> **Major advancements in this fork**
+>
+> - **Kernel-independent ReSpeaker 2-Mic HAT (v1) audio** — mainline `snd-soc-wm8960` + `snd-soc-simple-card` drivers via a device-tree overlay. No DKMS, no kernel headers, works on any kernel >= 5.4, and kernel upgrades can no longer break audio. Legacy DKMS installs upgrade in place, keeping the same ALSA card ID. ([2-Mic install guide](docs/linux-voice-assistant-2mic-install.md))
+> - **Re-founded on the upstream core** — the upstream architecture (`satellite.py`, `entity.py`, `player/`, peripheral API) is used as-is and the fork's differentiating features are add-on modules, so upstream releases merge cleanly again. ([docs/RESYNC_PLAN.md](docs/RESYNC_PLAN.md))
+> - **Sendspin rebuilt on `aiosendspin` 9.x** — the deprecated pre-encryption wire protocol is gone; encrypted pairing with a PIN spoken through the speaker (Piper), persistent player identity, Music Assistant multiroom.
+> - **Self-updating fleet** — `script/update_lva` deploys its own freshly fetched version in place, with `--rollback` and `--branch` support, while untracked per-device data (thresholds, wake words, credentials, `config.json`) survives every update.
+
 > Forked from [OHF-Voice/linux-voice-assistant][ohf-voice] Release v1.0.0.
 >
 > **Re-founded on upstream v1.1.15+** (2026-09): this fork now tracks upstream's
@@ -71,7 +79,7 @@ When MQTT is enabled, *(See Section 5 of [the tutorial](docs/linux-voice-assista
 
 ### Hardware Integrations *(See Section 5 of [the tutorial](docs/linux-voice-assistant-install.md))*
 
-- **ReSpeaker 2-Mic Pi HAT v1 or v2** — GPIO button (mute toggle, short/long press) and SPI LEDs
+- **ReSpeaker 2-Mic Pi HAT v1 or v2** — GPIO button (mute toggle, short/long press) and SPI LEDs. v1 audio runs on mainline kernel drivers via a device-tree overlay (no DKMS/kernel headers, any kernel >= 5.4)
 - **ReSpeaker XVF3800 4-Mic USB Array** — Hardware mute button, red mute LED sync, USB LED ring, and 4-mic input with AEC support. No vendor binaries required — LVA communicates directly via USB control transfers.
 
 ### LED Support
@@ -309,7 +317,10 @@ linux-voice-assistant/
 ├── pyproject.toml
 ├── README.md
 ├── respeaker2mic                                # reSpeaker 2mic hat audio support (mainline drivers, kernel-independent)
-│   └── install-respeaker-drivers.sh            # HAT installer: overlay + mixer state, no DKMS/kernel headers
+│   ├── asound_2mic.conf                       # ALSA dmix/dsnoop defaults, installed as /etc/asound.conf
+│   ├── install-respeaker-drivers.sh            # HAT installer: overlay + mixer state, no DKMS/kernel headers
+│   ├── seeed-2mic-voicecard-overlay.dts        # Mainline-only overlay source (simple-audio-card + wm8960)
+│   └── wm8960_asound.state                     # Mixer state, restored by alsa-state on every boot
 ├── script
 │   ├── format
 │   ├── lint
