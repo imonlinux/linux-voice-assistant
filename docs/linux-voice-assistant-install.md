@@ -208,21 +208,21 @@ systemctl --user restart linux-voice-assistant.service
 systemctl --user status linux-voice-assistant --no-pager -l
 ```
 
-### Reinstall the reSpeaker 2Mic v1 driver after a kernel upgrade (only if the upgrade breakes the driver)
+### ReSpeaker 2Mic v1 driver notes
 
-Remove the existing DKMS entries for the driver:
+The 2-Mic HAT installer uses only mainline kernel drivers
+(snd-soc-simple-card + snd-soc-wm8960) via a device tree overlay, so it does
+**not** need to be reinstalled after a kernel upgrade — there is no out-of-tree
+module to rebuild (kernels >= 5.4).
 
-```bash
-sudo rm -rf /var/lib/dkms/seeed-voicecard/0.3
-sudo rm -rf /usr/src/seeed-voicecard-0.3
-```
-
-Reinstall the driver:
+Re-run the installer only if audio stops working after a distro upgrade:
 
 ```bash
-sudo ./install-respeaker-drivers.sh 
-sudo reboot
+sudo ~/linux-voice-assistant/respeaker2mic/install-respeaker-drivers.sh
 ```
+
+Running it on a device with the old DKMS driver (kernels <= 6.14 installs)
+upgrades it in place and removes the legacy module automatically.
 
 </details>
 

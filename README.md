@@ -308,8 +308,8 @@ linux-voice-assistant/
 ├── pylintrc
 ├── pyproject.toml
 ├── README.md
-├── respeaker2mic                                # reSpeaker 2mic hat driver installers
-│   └── install-respeaker-drivers.sh            # verion 1.0 hardware driver installer
+├── respeaker2mic                                # reSpeaker 2mic hat audio support (mainline drivers, kernel-independent)
+│   └── install-respeaker-drivers.sh            # HAT installer: overlay + mixer state, no DKMS/kernel headers
 ├── script
 │   ├── format
 │   ├── lint

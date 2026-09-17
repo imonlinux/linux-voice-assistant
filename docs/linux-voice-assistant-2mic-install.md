@@ -43,11 +43,24 @@ git clone https://github.com/imonlinux/linux-voice-assistant.git
 
 ## 3. Install ReSpeaker drivers
 
+The installer uses only mainline kernel drivers (`snd-soc-simple-card` +
+`snd-soc-wm8960`) via a device tree overlay — no DKMS, no kernel headers, and
+no per-kernel driver branches. It works on any kernel >= 5.4, including
+Trixie and rolling distros, and never requires a kernel downgrade.
+
 ```bash
 chmod +x ~/linux-voice-assistant/respeaker2mic/install-respeaker-drivers.sh
-sudo ~/linux-voice-assistant/respeaker2mic/install-respeaker-drivers.sh 
+sudo ~/linux-voice-assistant/respeaker2mic/install-respeaker-drivers.sh
 sudo reboot
 ```
+
+The script detects the HAT on i2c (address 0x1a), compiles and installs the
+overlay, registers it in `config.txt`, installs the mixer state
+(`/var/lib/alsa/asound.state` is restored on every boot) and an
+`/etc/asound.conf` with dmix/dsnoop defaults. The ALSA card ID
+(`seeed2micvoicec`) is identical to the legacy DKMS driver, so existing
+configs keep working; the script also removes the legacy DKMS module if one
+is present.
 
 
 ## 4. Linux Voice Assistant (LVA)
