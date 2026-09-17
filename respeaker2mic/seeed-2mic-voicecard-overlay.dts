@@ -40,9 +40,12 @@
 		};
 	};
 
-	/* Codec reference clock: the mainline wm8960/simple-card glue computes
-	 * clock dividers from this 12.288 MHz rate, exactly like the proven
-	 * Seeed and Raspberry Pi overlays do. */
+	/* Codec reference clock: the wm8960 driver reads this clock from the
+	 * codec DEVICE node at probe time (devm_clk_get(dev, "mclk")) and
+	 * computes clock dividers from its 12.288 MHz rate. It must live on
+	 * the wm8960@1a node itself, not on the simple-audio-card dai-link
+	 * node - without it the driver probes with freq_in == 0 and every
+	 * open fails with "No MCLK configured". */
 	fragment@1 {
 		target-path = "/";
 		__overlay__ {
@@ -69,6 +72,8 @@
 				compatible = "wlf,wm8960";
 				reg = <0x1a>;
 				#sound-dai-cells = <0>;
+				clocks = <&wm8960_mclk>;
+				clock-names = "mclk";
 				status = "okay";
 			};
 		};
@@ -107,8 +112,6 @@
 
 				simple-audio-card,codec {
 					sound-dai = <&wm8960>;
-					clocks = <&wm8960_mclk>;
-					clock-names = "mclk";
 				};
 			};
 		};
