@@ -30,7 +30,9 @@ if [ "$(id -u)" -ne 0 ]; then
   exit 1
 fi
 
-script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# POSIX-safe: $0 works under bash AND sh (dash); ${BASH_SOURCE[0]} does not,
+# and under sh its failure silently degrades script_dir to the CWD.
+script_dir="$(cd "$(dirname "$0")" && pwd)"
 
 # Locate the boot partition (bookworm moved config/overlays to /boot/firmware)
 if [ -d /boot/firmware/overlays ]; then
@@ -42,6 +44,12 @@ config="${boot_dir}/config.txt"
 overlays_dir="${boot_dir}/overlays"
 
 # --- sanity checks -----------------------------------------------------------
+
+if [ ! -f "${script_dir}/seeed-2mic-voicecard-overlay.dts" ]; then
+  echo "ERROR: seeed-2mic-voicecard-overlay.dts not found next to this script"
+  echo "       (looked in: ${script_dir})."
+  exit 1
+fi
 
 kernel_major_minor="$(uname -r | cut -f1,2 -d.)"
 # version-aware floor check (naive numeric comparison would reject 5.15 < 5.4)
