@@ -74,42 +74,11 @@ Pick **one** of the following install paths. Expand a section to see the exact s
 <details>
 <summary><strong>Optional (ReSpeaker 2‑Mic HAT drivers v1 or v2)</strong></summary>
 
-If you are using the **ReSpeaker 2‑Mic HAT v1** (seeed-2mic-voicecard), install the audio driver using the project helper script. It uses only mainline kernel drivers via a device tree overlay — no DKMS, no kernel headers, works on any kernel >= 5.4, and never requires a kernel downgrade (kernel upgrades are a no-op for audio). Legacy DKMS installs upgrade in place. Details and troubleshooting: [the 2‑Mic install guide](linux-voice-assistant-2mic-install.md).
+If you are using a **ReSpeaker 2‑Mic HAT (v1 or v2)**, install the audio driver using the project helper script. It auto-detects the HAT revision on the i2c bus — v1 (WM8960, address 0x1a) or v2 (TLV320AIC3104, address 0x18) — and installs the matching overlay. It uses only mainline kernel drivers via a device tree overlay — no DKMS, no kernel headers, works on any kernel >= 5.4, and never requires a kernel downgrade (kernel upgrades are a no-op for audio). Legacy DKMS installs upgrade in place. Details and troubleshooting: [the 2‑Mic install guide](linux-voice-assistant-2mic-install.md).
 
 ```bash
 chmod +x ~/linux-voice-assistant/respeaker2mic/install-respeaker-drivers.sh
 sudo ~/linux-voice-assistant/respeaker2mic/install-respeaker-drivers.sh
-sudo reboot
-```
-
-If you are using the **ReSpeaker 2-Mic HAT v2** (seeed2micvoicec), install the following packages and the device tree overlay from Seeed Studio.
-
-**Packages:**
-
-```bash
-sudo apt update
-sudo apt install git device-tree-compiler make
-```
-
-**Get the DTB Overlay:**
-
-```bash
-cd ~
-git clone https://github.com/Seeed-Studio/seeed-linux-dtoverlays.git
-cd ~/seeed-linux-dtoverlays/
-make overlays/rpi/respeaker-2mic-v2_0-overlay.dtbo
-```
-
-**Install the DTB Overlay and Reboot:**
-
-```bash
-sudo cp overlays/rpi/respeaker-2mic-v2_0-overlay.dtbo /boot/firmware/overlays/respeaker-2mic-v2_0.dtbo
-echo "dtoverlay=respeaker-2mic-v2_0" | sudo tee -a /boot/firmware/config.txt
-```
-
-**Reboot:**
-
-```bash
 sudo reboot
 ```
 

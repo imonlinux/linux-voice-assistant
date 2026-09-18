@@ -43,10 +43,13 @@ git clone https://github.com/imonlinux/linux-voice-assistant.git
 
 ## 3. Install ReSpeaker drivers
 
-The installer uses only mainline kernel drivers (`snd-soc-simple-card` +
-`snd-soc-wm8960`) via a device tree overlay — no DKMS, no kernel headers, and
-no per-kernel driver branches. It works on any kernel >= 5.4, including
-Trixie and rolling distros, and never requires a kernel downgrade.
+The installer auto-detects the HAT revision on the i2c bus and installs the
+matching overlay — v1 (WM8960 codec, address `0x1a`) or v2 (TLV320AIC3104
+codec, address `0x18`). Both use only mainline kernel drivers
+(`snd-soc-simple-card` + the revision's codec driver) via a device tree
+overlay — no DKMS, no kernel headers, and no per-kernel driver branches. It
+works on any kernel >= 5.4, including Trixie and rolling distros, and never
+requires a kernel downgrade.
 
 ```bash
 chmod +x ~/linux-voice-assistant/respeaker2mic/install-respeaker-drivers.sh
@@ -54,36 +57,41 @@ sudo ~/linux-voice-assistant/respeaker2mic/install-respeaker-drivers.sh
 sudo reboot
 ```
 
-The script detects the HAT on i2c (address 0x1a), compiles and installs the
-overlay, registers it in `config.txt`, installs the mixer state
-(`/var/lib/alsa/asound.state` is restored on every boot) and an
-`/etc/asound.conf` with dmix/dsnoop defaults. The ALSA card ID
-(`seeed2micvoicec`) is identical to the legacy DKMS driver, so existing
-configs keep working; the script also removes the legacy DKMS module if one
-is present.
+The script detects the HAT revision on i2c bus 1, compiles and installs the
+matching overlay, registers it in `config.txt`, installs an
+`/etc/asound.conf` with dmix/dsnoop defaults and — on v1 — the mixer state
+(`/var/lib/alsa/asound.state` is restored on every boot). The ALSA card ID
+(`seeed2micvoicec`) is identical on both revisions and to the legacy DKMS
+driver, so existing configs keep working; the script also removes the legacy
+DKMS module if one is present.
 
 ### Files in `respeaker2mic/`
 
 | File | Purpose |
 | --- | --- |
-| `install-respeaker-drivers.sh` | The installer (run with `sudo`). POSIX-safe — works under `sh` and `bash`. |
-| `seeed-2mic-voicecard-overlay.dts` | Overlay source: `simple-audio-card` + `wm8960` glue using only mainline drivers, compiled with `dtc` at install time. |
-| `asound_2mic.conf` | ALSA dmix/dsnoop defaults, installed as `/etc/asound.conf`. |
-| `wm8960_asound.state` | Mixer state, symlinked to `/var/lib/alsa/asound.state` so `alsa-state.service` restores it on every boot. |
+| `install-respeaker-drivers.sh` | The installer (run with `sudo`). POSIX-safe — works under `sh` and `bash`. Auto-detects v1/v2. |
+| `seeed-2mic-voicecard-overlay.dts` | v1 overlay source: `simple-audio-card` + `wm8960` glue using only mainline drivers, compiled with `dtc` at install time. |
+| `seeed-2mic-v2-voicecard-overlay.dts` | v2 overlay source: `simple-audio-card` + `tlv320aic3104` glue (2.5 V micbias for the onboard mics). |
+| `asound_2mic.conf` | ALSA dmix/dsnoop defaults, installed as `/etc/asound.conf`. Shared by both revisions. |
+| `wm8960_asound.state` | v1 mixer state, symlinked to `/var/lib/alsa/asound.state` so `alsa-state.service` restores it on every boot. v2-only installs leave the default state file alone (the AIC3104 mixer has different controls). |
 
 ### What the installer does
 
-1. Verifies the HAT responds on i2c bus 1 at address `0x1a` (`i2cdetect`).
-2. Verifies the running kernel provides `snd-soc-wm8960` and
+1. Probes i2c bus 1 for the HAT: `0x1a` selects the v1/WM8960 overlay,
+   `0x18` selects the v2/AIC3104 overlay; finding both (or neither) aborts
+   with an explanation.
+2. Verifies the running kernel provides the revision's codec driver
+   (`snd-soc-wm8960` or `snd-soc-tlv320aic3x`) and
    `snd-soc-simple-card` (any kernel >= 5.4).
 3. Removes the legacy `seeed-voicecard` DKMS module and service if present.
    The upgrade is in place: the ALSA card ID `seeed2micvoicec` is unchanged,
    so existing LVA device strings keep working.
-4. Compiles the overlay with `dtc`, installs it into the boot partition's
-   `overlays/` directory, and appends `dtoverlay=seeed-2mic-voicecard`
-   (plus the `i2c_arm`, `i2s` and `spi` dtparams) to `config.txt`
-   idempotently.
-5. Installs the ALSA defaults and mixer state (see table above).
+4. Compiles the matching overlay with `dtc`, installs it into the boot
+   partition's `overlays/` directory, and appends the corresponding
+   `dtoverlay=` line (plus the `i2c_arm`, `i2s` and `spi` dtparams) to
+   `config.txt` idempotently; a stale entry for the other revision is
+   removed (HAT swapped).
+5. Installs the ALSA defaults and, on v1, the mixer state (see table above).
 6. Tries to register the card live via `dtoverlay` so no reboot is needed;
    otherwise it asks for a single reboot.
 
@@ -96,7 +104,7 @@ module to rebuild and no per-kernel driver branch to wait for.
 aplay -l | grep seeed2micvoicec
 arecord -D hw:CARD=seeed2micvoicec -f S16_LE -r 48000 -c 2 -d 3 /tmp/t48.wav; echo $?
 ~/linux-voice-assistant/script/run --list-input-devices
-dmesg | grep -i wm8960    # expect no errors
+dmesg | grep -iE "wm8960|aic3104"    # expect no errors
 ```
 
 A silent `rc=0` from `arecord` plus a source in `--list-input-devices`
