@@ -126,7 +126,7 @@ your sink is named differently, list them:
 pactl list short sinks
 ```
 
-> **Note:** The generic-looking `alsa_output.platform-soc_sound.stereo-fallback`
+> **Note:** The generic-looking `alsa_output.platform-seeed-2mic-sound.stereo-fallback`
 > is a different card — on this HAT the correct sink is
 > `alsa_output.platform-seeed-2mic-sound.stereo-fallback`.
 
@@ -459,9 +459,9 @@ Output devices
 ==============
 auto: Autoselect device
 pipewire: Default (pipewire)
-pipewire/alsa_output.platform-soc_sound.stereo-fallback: Built-in Audio Stereo
+pipewire/alsa_output.platform-seeed-2mic-sound.stereo-fallback: Built-in Audio Stereo
 pipewire/echo-cancel-sink: Echo-Cancel Sink
-pulse/alsa_output.platform-soc_sound.stereo-fallback: Built-in Audio Stereo
+pulse/alsa_output.platform-seeed-2mic-sound.stereo-fallback: Built-in Audio Stereo
 pulse/echo-cancel-sink: Echo-Cancel Sink
 alsa: Default (alsa)
 alsa/sysdefault: Default Audio Device
