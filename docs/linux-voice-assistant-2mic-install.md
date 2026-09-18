@@ -102,6 +102,31 @@ dmesg | grep -i wm8960    # expect no errors
 A silent `rc=0` from `arecord` plus a source in `--list-input-devices`
 means the card is fully up, including its PipeWire/PulseAudio source.
 
+### Output volume
+
+Set the HAT's output sink to 100% so TTS and announcements play at full
+level (the default can be well below that):
+
+```bash
+pactl set-sink-volume alsa_output.platform-seeed-2mic-sound.stereo-fallback 100%
+```
+
+The sink name comes from the overlay's sound card (`seeed-2mic-sound`). If
+your sink is named differently, list them:
+
+```bash
+pactl list short sinks
+```
+
+> **Note:** The generic-looking `alsa_output.platform-soc_sound.stereo-fallback`
+> is a different card — on this HAT the correct sink is
+> `alsa_output.platform-seeed-2mic-sound.stereo-fallback`.
+
+PipeWire/PulseAudio remembers the per-device volume across reboots, and the
+installer's `wm8960_asound.state` restores the ALSA mixer levels on every
+boot, so this is a one-time step. Input level is controlled separately from
+the Home Assistant device page (mic volume / auto gain entities).
+
 ### Troubleshooting
 
 - **`wm8960 1-001a: No MCLK configured` in dmesg; every playback/capture
