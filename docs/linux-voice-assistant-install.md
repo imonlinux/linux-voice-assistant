@@ -757,19 +757,19 @@ script/setup --sendspin
 nano ~/linux-voice-assistant/linux_voice_assistant/config.json
 ```
 
-***Add a Sendspin block (minimum — server_host is required):***
+***Add a Sendspin block:***
 
 ```json
   ,
   "sendspin": {
     "enabled": true,
-    "connection": {
-      "server_host": "192.168.0.100"
-    }
+    "pairing": { "voice_engine": "piper" }
   }
 ```
 
-Replace `192.168.0.100` with your Music Assistant server's address. Port (8927) and path (`/sendspin`) have sensible defaults.
+That is the whole minimum: the client discovers your Music Assistant server automatically via mDNS (`connection.mdns` defaults to true). Piper speaks the pairing PIN through the device speaker (the ~60 MB voice model downloads on first use; espeak-ng is the fallback).
+
+To pin a static MA address instead, add `"connection": { "server_host": "192.168.0.100" }` — if you set server_host, discovery is bypassed. Port (8927) and path (`/sendspin`) have sensible defaults.
 
 ***Pairing (one-time per MA server):***
 
@@ -789,6 +789,7 @@ For fully unattended pairing, set a fixed code: `"pairing": { "pin": "12345678" 
     "connection": {
       "server_host": "192.168.0.100"
     },
+
     "player": {
       "sync_target_latency_ms": 350,
       "output_latency_ms": 0,
@@ -801,6 +802,7 @@ For fully unattended pairing, set a fixed code: `"pairing": { "pin": "12345678" 
   }
 ```
 
+- `connection.mdns` / `server_host` — discovery is on by default; set `server_host` to pin a static MA address (discovery is bypassed).
 - `sync_target_latency_ms` — audio the server keeps buffered at this player; also the playback start gate. Higher = more jitter headroom, more startup latency (default 250).
 - `output_latency_ms` — static delay compensation, **clamped to 0–5000 ms**. The old negative tuning from the previous client is obsolete: the new time filter is self-correcting, so start at 0 and only raise this if the device consistently plays early relative to others in the group.
 - `output_device` — pin playback to a specific sounddevice name; omit for the system default.

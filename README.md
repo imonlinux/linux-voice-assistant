@@ -8,10 +8,17 @@
 > - **Sendspin rebuilt on `aiosendspin` 9.x** — the deprecated pre-encryption wire protocol is gone; encrypted pairing with a PIN spoken through the speaker (Piper), persistent player identity, Music Assistant multiroom.
 > - **Self-updating fleet** — `script/update_lva` deploys its own freshly fetched version in place, with `--rollback` and `--branch` support, while untracked per-device data (thresholds, wake words, credentials, `config.json`) survives every update.
 
-> [!WARNING]
-> **Breaking change in 2.0 (Sendspin):** the Sendspin client was rebuilt on `aiosendspin` 9.x. The deprecated pre-encryption wire protocol is gone and Python >= 3.12 is required.
+> [!TIP]
+> **Sendspin (Music Assistant multiroom):** the client finds your Music Assistant server automatically via mDNS (`sendspin.connection.mdns`, default `true`). To pin a static address instead, set `sendspin.connection.server_host` — if you set server_host, discovery is bypassed. For the best pairing experience, let Piper speak the pairing PIN through the device speaker:
 >
-> Existing `config.json` files need no manual Sendspin edits: mDNS auto-discovery (`sendspin.connection.mdns`, default `true`) locates the Music Assistant server on the network. To pin a static address instead, set `sendspin.connection.server_host` — if you set server_host, discovery is bypassed. Run `script/migrate_config.py` after updating: it strips the obsolete `sendspin.connection` keys (the old `mdns` value is a live setting again) and warns only when both discovery is disabled and `server_host` is missing. Devices without Sendspin enabled are unaffected.
+> ```json
+> "sendspin": {
+>   "enabled": true,
+>   "pairing": { "voice_engine": "piper" }
+> }
+> ```
+>
+> Piper ships with the `sendspin` extra (`script/setup --sendspin`); the ~60 MB voice model downloads on first use, with espeak-ng as the fallback. See [docs/sendspin.md](docs/sendspin.md). Python >= 3.12 is required for Sendspin.
 
 > Forked from [OHF-Voice/linux-voice-assistant][ohf-voice] Release v1.0.0.
 >

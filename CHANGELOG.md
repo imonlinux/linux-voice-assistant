@@ -6,6 +6,8 @@
 
 ### Changed
 
+- `update_lva` now remembers the last-used setup flags (`--sendspin`, `--tray`, `--dev`) in `.lva-setup-flags` and reuses them when an update runs without flags. Previously a bare `update_lva` rebuilt the venv without the extras — silently dropping the Sendspin client (and piper-tts with it) after every update. Explicit flags on any update replace the remembered set.
+- Documentation: the README breaking-change warning is gone (mDNS discovery removed the need for it); the Sendspin docs now lead with the recommended setup — `enabled: true` plus `pairing.voice_engine: "piper"` for the spoken PIN announcement.
 - `sendspin.connection`: the stale `mode` key is no longer accepted as a setting (server-initiated connections do not exist in the aiosendspin client); unknown keys already log and are ignored.
 
 <a id="v2.0.0"></a>

@@ -20,9 +20,9 @@ synchronized output stage.
 ```json
 "sendspin": {
   "enabled": true,
-  "pairing": { "pin": null },
+  "pairing": { "pin": null, "voice_engine": "piper" },
   "connection": {
-    "server_host": "192.168.0.100",
+    "mdns": true,
     "server_port": 8927,
     "server_path": "/sendspin"
   },
@@ -40,8 +40,9 @@ synchronized output stage.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `connection.server_host` | *(required)* | Music Assistant server address. There is no discovery — this must be set. |
-| `connection.server_port` / `server_path` | 8927 / `/sendspin` | Where to connect. |
+| `connection.mdns` | true | Discover the Music Assistant server via mDNS (`_sendspin-server._tcp.local.`). Re-runs on every reconnect, so a moved server is picked up without a restart. |
+| `connection.server_host` | *(none)* | Static Music Assistant server address. If you set server_host, discovery is bypassed. |
+| `connection.server_port` / `server_path` | 8927 / `/sendspin` | Where to connect (also the discovery defaults). |
 | `pairing.pin` | *(none)* | Fixed code to enter in MA when pairing. If unset, a dynamic PIN is written to the daemon log. |
 | `pairing.speak_pin` | true | Announce the PIN through the device speaker; falls back to log-only if no TTS engine is available. |
 | `pairing.voice_engine` | auto | `auto` (piper if model downloaded, else espeak-ng), `piper` (neural voice; downloads ~60 MB model on first use), or `espeak-ng`. |
@@ -62,7 +63,9 @@ synchronized output stage.
 2. In Music Assistant, select the player, press **Setup**, and start pairing.
 3. LVA logs `Sendspin: PAIRING PIN — enter this in Music Assistant: <code>`
    (or use your configured static pin) **and speaks the code through its
-   speaker** when espeak-ng is installed. Enter it in MA.
+   speaker**. The Piper neural voice is preferred (`pairing.voice_engine`,
+   ~60 MB model download on first use); espeak-ng is the fallback. Enter
+   the code in MA.
 4. Pairing credentials persist in `sendspin_pairing.json` next to
    `preferences.json`, together with the player identity in
    `sendspin_identity.json`. Reboots reconnect without re-pairing.
@@ -89,8 +92,9 @@ Sendspin: music restored (gain 1.00)
 
 | Symptom | Cause / fix |
 |---|---|
-| `sendspin extra is not installed` warning at boot | aiosendspin isn't in the venv: rebuild with `script/setup --sendspin`. On Python 3.11 this is expected — upgrade Python first. |
-| `sendspin.connection.server_host is not configured` | Add `server_host` to config.json (see above). |
+| `sendspin extra is not installed` warning at boot | aiosendspin isn't in the venv: rebuild with `script/setup --sendspin` (updates via `script/update_lva --sendspin` keep it installed; the last-used flags are remembered). On Python 3.11 this is expected — upgrade Python first. |
+| `server_host is not configured and mdns is disabled` | Enable `connection.mdns` or set `server_host` to the MA address (see above). |
+| `no server advertised via mDNS` | MA is not reachable/announcing: check that Music Assistant runs and both devices are on the same network segment (mDNS does not cross VLANs). Or set `server_host` statically. |
 | Connection fails; MA logs a protocol/encryption error | Your MA server requires the current protocol; make sure you run the aiosendspin-based client (this document) and that MA is up to date. |
 | `Audio underflow detected` once at stream start | Harmless: the output re-anchors and continues. |
 | `Audio underflow detected` repeatedly during playback | Raise `sync_target_latency_ms` (more buffer headroom) — the Pi may not be keeping up at the current rate. |

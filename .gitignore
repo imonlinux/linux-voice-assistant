@@ -25,6 +25,9 @@ linux_voice_assistant/config.json
 # Revision recorded by script/update_lva for --rollback
 .lva-update-previous-rev
 
+# Last-used setup flags remembered by script/update_lva
+.lva-setup-flags
+
 # Docker
 .env
 dev.env

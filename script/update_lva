@@ -27,6 +27,13 @@
 #                   last update, then rebuild and restart
 #   -h, --help      Show this help
 #
+# Setup flags (--sendspin, --tray, --dev) are remembered in
+# .lva-setup-flags: an update run with flags saves them, and a later
+# update without flags reuses them. That keeps the Sendspin extra (and
+# piper-tts, which ships in it) installed across routine updates — a bare
+# `update_lva` alone would rebuild the venv without it. Explicit flags on
+# any update replace the remembered set.
+#
 # Rollback: if the new version misbehaves, run
 #   bash ~/linux-voice-assistant/script/update_lva --rollback
 # Roll forward again later by running a normal update.
@@ -41,6 +48,7 @@ PROJECT_NAME="$(basename "$PROJECT_DIR")"
 REPO_HINT="imonlinux/linux-voice-assistant"
 DEFAULT_BRANCH="main"
 PREV_REV_FILE="$PROJECT_DIR/.lva-update-previous-rev"
+SETUP_FLAGS_FILE="$PROJECT_DIR/.lva-setup-flags"
 
 DAEMON_UNIT="linux-voice-assistant.service"
 DAEMON_UNIT_XVF="linux-voice-assistant_xvf3800.service"
@@ -52,7 +60,7 @@ ROLLBACK=0
 SKIP_FETCH=0
 SETUP_ARGS=()
 
-usage() { sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,39p' "$0" | sed 's/^# \{0,1\}//'; }
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -66,6 +74,18 @@ while [ $# -gt 0 ]; do
         *)          SETUP_ARGS+=("$1"); shift ;;
     esac
 done
+
+# Remember or reuse the setup flags (see header): explicit flags win and
+# are saved; with no flags, reuse the last set so extras (sendspin, tray,
+# dev) survive updates — the venv is rebuilt from scratch each time.
+if [ ${#SETUP_ARGS[@]} -gt 0 ]; then
+    printf '%s\n' "${SETUP_ARGS[@]}" > "$SETUP_FLAGS_FILE"
+elif [ -f "$SETUP_FLAGS_FILE" ]; then
+    mapfile -t SETUP_ARGS < <(grep -v '^[[:space:]]*$' "$SETUP_FLAGS_FILE" || true)
+    if [ ${#SETUP_ARGS[@]} -gt 0 ]; then
+        echo "Reusing setup flags: ${SETUP_ARGS[*]}"
+    fi
+fi
 
 stop_services() {
     # Units may not exist (fresh installs, containers); failures are fine.
