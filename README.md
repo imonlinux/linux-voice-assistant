@@ -8,6 +8,15 @@
 > - **Sendspin rebuilt on `aiosendspin` 9.x** — the deprecated pre-encryption wire protocol is gone; encrypted pairing with a PIN spoken through the speaker (Piper), persistent player identity, Music Assistant multiroom.
 > - **Self-updating fleet** — `script/update_lva` deploys its own freshly fetched version in place, with `--rollback` and `--branch` support, while untracked per-device data (thresholds, wake words, credentials, `config.json`) survives every update.
 
+> [!WARNING]
+> **Breaking change in 2.0 (Sendspin):** the Sendspin client was rebuilt on `aiosendspin` 9.x. The deprecated pre-encryption wire protocol and mDNS auto-discovery are gone, and the Music Assistant server address is now **required** in `config.json`:
+>
+> ```json
+> "sendspin": { "connection": { "server_host": "<MA-SERVER-IP>" } }
+> ```
+>
+> Existing `config.json` files must add `sendspin.connection.server_host` before the client can connect. Run `script/migrate_config.py` after updating: it warns when the key is missing (it cannot guess your MA IP) and strips the other obsolete `sendspin.connection` keys. Devices without Sendspin enabled are unaffected.
+
 > Forked from [OHF-Voice/linux-voice-assistant][ohf-voice] Release v1.0.0.
 >
 > **Re-founded on upstream v1.1.15+** (2026-09): this fork now tracks upstream's
