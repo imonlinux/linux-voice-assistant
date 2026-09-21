@@ -19,6 +19,21 @@ docs/RESYNC_PLAN.md.
 - WebSocket peripheral API (port 6055) for out-of-process LED/button clients
 - Upstream test suite (tests/unit) and lint pipeline
 
+### Added (fork)
+
+- Kernel-independent ReSpeaker 2-Mic HAT audio, both hardware revisions:
+  audio runs on mainline kernel drivers (`snd-soc-simple-card` +
+  `snd-soc-wm8960` for v1, `snd-soc-tlv320aic3104` for v2) via device-tree
+  overlays compiled at install time — no DKMS, no kernel headers, no
+  per-kernel builds, works on any kernel >= 5.4, and kernel upgrades can no
+  longer break audio. One smart installer auto-detects the HAT revision by
+  I2C address (0x1a = v1 WM8960, 0x18 = v2 TLV320AIC3104), removes a stale
+  legacy install of the other revision, and preserves the same ALSA card ID
+  (`seeed2micvoicec`), so existing LVA configs keep working. Existing DKMS
+  installs upgrade in place. v1 gets proper MCLK wiring on the codec node
+  (fixes "No MCLK configured" PCM open failures) which also enables the
+  WM8960 PLL for the 44.1 kHz family.
+
 ### Preserved (fork)
 
 - config.json configuration (now injected as CLI defaults; CLI wins)
@@ -57,6 +72,11 @@ docs/RESYNC_PLAN.md.
   modifications are refused by default) and `--rollback` (returns to the
   pre-update revision). Services: stops the tray unit too, and restarts
   whichever daemon unit (main or XVF3800) was running.
+- As of this release the re-founded stack lives on `main` (upstream-core was
+  merged); `update_lva` defaults to `main`. Devices still tracking the old
+  `upstream-core` branch keep working: their updater self-migrates on the
+  first update after the release (the freshly fetched script defaults to
+  `main`, and `origin/upstream-core` is kept in sync through the merge).
 
 ### Fixed
 

@@ -348,7 +348,7 @@ linux-voice-assistant/
 │   │   └── timer_finished.flac
 │   └── wakeup                                    # Wake word triggered sounds
 │       └── wake_word_triggered.flac
-├── tests                                              # Test suite (606 passing: upstream unit + fork tests)
+├── tests                                              # Test suite (625 passing: upstream unit + fork tests)
 │   ├── conftest.py                                    # Shared pytest fixtures
 │   ├── unit/                                          # Upstream core unit tests (satellite, entity,
 │   │                                                  #   wake word, player, peripheral API, zeroconf…)
@@ -451,7 +451,7 @@ pytest tests/ -m "not hardware"
 
 ### Current Test Status
 
-- **Total**: 606 passing, 1 skipped (hardware-dependent)
+- **Total**: 625 passing, 1 skipped (timing-dependent threading test) with all install extras present; Sendspin and tray tests skip gracefully when their extras aren't installed
 - **Coverage**: upstream core unit tests (`tests/unit/`) + fork subsystem tests
 - **Sendspin tests** skip gracefully when the sendspin extra isn't installed
 - **Framework**: pytest with asyncio, mock, and coverage support (Python 3.12+ for the full suite)
