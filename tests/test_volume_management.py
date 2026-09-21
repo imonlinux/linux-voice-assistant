@@ -44,7 +44,7 @@ class TestVolumeManagementIntegration:
     def mock_preferences(self):
         """Create mock preferences with volume settings."""
         prefs = Preferences()
-        prefs.volume_level = 0.5
+        prefs.volume = 0.5
         return prefs
 
     @pytest.fixture
@@ -64,7 +64,7 @@ class TestVolumeManagementIntegration:
         )
 
         result = await ensure_output_volume(
-            volume=mock_preferences.volume_level,
+            volume=mock_preferences.volume,
             output_device=mock_output_device,
             max_volume_percent=100,
             attempts=3,
@@ -90,7 +90,7 @@ class TestVolumeManagementIntegration:
         mock_run.side_effect = side_effect
 
         result = await ensure_output_volume(
-            volume=mock_preferences.volume_level,
+            volume=mock_preferences.volume,
             output_device="alsa_output.pci-0000_00_1f.5.analog-stereo",
             max_volume_percent=100,
             attempts=3,
@@ -114,7 +114,7 @@ class TestVolumeManagementIntegration:
         mock_run.side_effect = side_effect
 
         result = await ensure_output_volume(
-            volume=mock_preferences.volume_level,
+            volume=mock_preferences.volume,
             output_device="default",
             max_volume_percent=100,
             attempts=3,
@@ -276,33 +276,33 @@ class TestVolumePersistence:
     def test_volume_persistence_to_preferences(self):
         """Test that volume changes persist to preferences."""
         prefs = Preferences()
-        initial_volume = prefs.volume_level
+        initial_volume = prefs.volume
 
         # Simulate volume change
         new_volume = 75
-        prefs.volume_level = new_volume
+        prefs.volume = new_volume
 
-        assert prefs.volume_level == new_volume
-        assert prefs.volume_level != initial_volume
+        assert prefs.volume == new_volume
+        assert prefs.volume != initial_volume
 
     def test_volume_preferences_serialization(self):
         """Test that volume preferences can be serialized."""
-        prefs = Preferences(volume_level=80)
+        prefs = Preferences(volume=80)
 
         # Simulate serialization
         from dataclasses import asdict
         prefs_dict = asdict(prefs)
 
-        assert 'volume_level' in prefs_dict
-        assert prefs_dict['volume_level'] == 80
+        assert 'volume' in prefs_dict
+        assert prefs_dict['volume'] == 80
 
     def test_volume_preferences_deserialization(self):
         """Test that volume preferences can be loaded."""
-        prefs_dict = {'volume_level': 65}
+        prefs_dict = {'volume': 65}
 
         prefs = Preferences(**prefs_dict)
 
-        assert prefs.volume_level == 65
+        assert prefs.volume == 65
 
 
 class TestVolumeValidation:

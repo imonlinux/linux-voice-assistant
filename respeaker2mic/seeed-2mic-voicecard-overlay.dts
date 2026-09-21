@@ -1,0 +1,119 @@
+/dts-v1/;
+/plugin/;
+
+/*
+ * ReSpeaker 2-Mics Pi HAT (and compatible WM8960 HATs) - kernel-independent
+ * device tree overlay.
+ *
+ * Uses only mainline kernel drivers:
+ *   - snd-soc-simple-card  (compatible = "simple-audio-card")
+ *   - snd-soc-wm8960       (compatible = "wlf,wm8960")
+ * No out-of-tree kernel module is required, so this works on any kernel
+ * >= 5.4 that ships those two modules (stock Raspberry Pi OS, Debian,
+ * Kali/re4son and Fedora kernels all do).
+ *
+ * Derived from Seeed Studio's seeed-2mic-voicecard overlay (MIT license)
+ * and the Raspberry Pi kernel's wm8960-soundcard overlay (GPL-2.0). Both
+ * upstreams converged on this same simple-audio-card + wm8960 glue; this
+ * variant targets the i2s/i2c1 controllers by symbol so it applies to any
+ * base device tree that exposes __symbols__ (standard on rpi downstream,
+ * Debian, Kali/re4son and Fedora kernels), and it creates a new sound node
+ * instead of replacing the Pi's onboard audio node.
+ *
+ * The card name stays "seeed-2mic-voicecard", which yields the ALSA card
+ * ID "seeed2micvoicec" - identical to the old DKMS driver, so existing
+ * device strings (plughw:CARD=seeed2micvoicec) keep working.
+ *
+ * Compile:
+ *   dtc -@ -I dts -O dtb -o seeed-2mic-voicecard.dtbo \
+ *       seeed-2mic-voicecard-overlay.dts
+ */
+/ {
+	compatible = "brcm,bcm2835";
+
+	/* BCM2835 I2S (PCM) controller. Label-targeted: both the rpi
+	 * downstream and mainline trees expose the "i2s" symbol. */
+	fragment@0 {
+		target = <&i2s>;
+		__overlay__ {
+			status = "okay";
+		};
+	};
+
+	/* Codec reference clock: the wm8960 driver reads this clock from the
+	 * codec DEVICE node at probe time (devm_clk_get(dev, "mclk")) and
+	 * computes clock dividers from its 12.288 MHz rate. It must live on
+	 * the wm8960@1a node itself, not on the simple-audio-card dai-link
+	 * node - without it the driver probes with freq_in == 0 and every
+	 * open fails with "No MCLK configured". */
+	fragment@1 {
+		target-path = "/";
+		__overlay__ {
+			wm8960_mclk: wm8960_mclk {
+				compatible = "fixed-clock";
+				#clock-cells = <0>;
+				clock-frequency = <12288000>;
+			};
+		};
+	};
+
+	/* WM8960 codec on i2c1 at address 0x1a. Label-targeted because the
+	 * i2c1 controller sits at a different address in rpi-downstream
+	 * (0x7e804000) vs mainline (0x7e205000) base trees; the base tree's
+	 * own "i2c1" symbol always points at the right one. */
+	fragment@2 {
+		target = <&i2c1>;
+		__overlay__ {
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "okay";
+
+			wm8960: wm8960@1a {
+				compatible = "wlf,wm8960";
+				reg = <0x1a>;
+				#sound-dai-cells = <0>;
+				clocks = <&wm8960_mclk>;
+				clock-names = "mclk";
+				status = "okay";
+			};
+		};
+	};
+
+	/* The sound card itself. A new top-level node, so the Pi's onboard
+	 * audio (brcm,bcm2835-audio) keeps working alongside the HAT. */
+	fragment@3 {
+		target-path = "/";
+		__overlay__ {
+			seeed-2mic-sound {
+				compatible = "simple-audio-card";
+				simple-audio-card,format = "i2s";
+				simple-audio-card,name = "seeed-2mic-voicecard";
+				status = "okay";
+
+				simple-audio-card,widgets =
+					"Microphone", "Mic Jack",
+					"Line", "Line In",
+					"Line", "Line Out",
+					"Speaker", "Speaker",
+					"Headphone", "Headphone Jack";
+				simple-audio-card,routing =
+					"Headphone Jack", "HP_L",
+					"Headphone Jack", "HP_R",
+					"Speaker", "SPK_LP",
+					"Speaker", "SPK_LN",
+					"LINPUT1", "Mic Jack",
+					"LINPUT3", "Mic Jack",
+					"RINPUT1", "Mic Jack",
+					"RINPUT2", "Mic Jack";
+
+				simple-audio-card,cpu {
+					sound-dai = <&i2s>;
+				};
+
+				simple-audio-card,codec {
+					sound-dai = <&wm8960>;
+				};
+			};
+		};
+	};
+};

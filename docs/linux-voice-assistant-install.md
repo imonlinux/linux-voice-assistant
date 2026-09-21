@@ -18,7 +18,7 @@ This guide reproduces a working setup of the **linux-voice-assistant** project w
 ## Prerequisites
 
 - Raspberry Pi OS Lite (64-bit) (Bookworm or Trixie)
-- Default Python 3.11+ recommended
+- Default Python 3.11+ recommended (Python 3.12+ required for the optional Sendspin client)
 - A microphone and speaker (see the options for reSpeaker devices in section 5)
 - Network access to your Home Assistant instance
 
@@ -28,7 +28,7 @@ This guide reproduces a working setup of the **linux-voice-assistant** project w
 sudo apt update
 sudo apt upgrade
 sudo apt install build-essential git \
-      libmpv-dev mpv python3-dev python3-venv
+      libmpv-dev mpv python3-dev python3-venv libportaudio2
 sudo reboot
 ```
 
@@ -45,6 +45,7 @@ Instructions for the install (or re-install) of the ReSpeaker 2-Mic Hat (**versi
 
 ```bash
 git clone https://github.com/imonlinux/linux-voice-assistant.git
+cd linux-voice-assistant
 ```
 
 ## 4. Setup Linux Voice Assistant (LVA)
@@ -67,43 +68,11 @@ Pick **one** of the following install paths. Expand a section to see the exact s
 <details>
 <summary><strong>Optional (ReSpeaker 2‑Mic HAT drivers v1 or v2)</strong></summary>
 
-If you are using the **ReSpeaker 2‑Mic HAT v1** (seeed-2mic-voicecard), install the vendor driver + overlay using the project helper script:
-*Instructions to reinstall after a kernel upgrade below*
+If you are using a **ReSpeaker 2‑Mic HAT (v1 or v2)**, install the audio driver using the project helper script. It auto-detects the HAT revision on the i2c bus — v1 (WM8960, address 0x1a) or v2 (TLV320AIC3104, address 0x18) — and installs the matching overlay. It uses only mainline kernel drivers via a device tree overlay — no DKMS, no kernel headers, works on any kernel >= 5.4, and never requires a kernel downgrade (kernel upgrades are a no-op for audio). Legacy DKMS installs upgrade in place. Details and troubleshooting: [the 2‑Mic install guide](linux-voice-assistant-2mic-install.md).
 
 ```bash
 chmod +x ~/linux-voice-assistant/respeaker2mic/install-respeaker-drivers.sh
 sudo ~/linux-voice-assistant/respeaker2mic/install-respeaker-drivers.sh
-sudo reboot
-```
-
-If you are using the **ReSpeaker 2-Mic HAT v2** (seeed2micvoicec), install the following packages and the device tree overlay from Seeed Studio.
-
-**Packages:**
-
-```bash
-sudo apt update
-sudo apt install git device-tree-compiler make
-```
-
-**Get the DTB Overlay:**
-
-```bash
-cd ~
-git clone https://github.com/Seeed-Studio/seeed-linux-dtoverlays.git
-cd ~/seeed-linux-dtoverlays/
-make overlays/rpi/respeaker-2mic-v2_0-overlay.dtbo
-```
-
-**Install the DTB Overlay and Reboot:**
-
-```bash
-sudo cp overlays/rpi/respeaker-2mic-v2_0-overlay.dtbo /boot/firmware/overlays/respeaker-2mic-v2_0.dtbo
-echo "dtoverlay=respeaker-2mic-v2_0" | sudo tee -a /boot/firmware/config.txt
-```
-
-**Reboot:**
-
-```bash
 sudo reboot
 ```
 
@@ -201,21 +170,21 @@ systemctl --user restart linux-voice-assistant.service
 systemctl --user status linux-voice-assistant --no-pager -l
 ```
 
-### Reinstall the reSpeaker 2Mic v1 driver after a kernel upgrade (only if the upgrade breakes the driver)
+### ReSpeaker 2Mic v1 driver notes
 
-Remove the existing DKMS entries for the driver:
+The 2-Mic HAT installer uses only mainline kernel drivers
+(snd-soc-simple-card + snd-soc-wm8960) via a device tree overlay, so it does
+**not** need to be reinstalled after a kernel upgrade — there is no out-of-tree
+module to rebuild (kernels >= 5.4).
 
-```bash
-sudo rm -rf /var/lib/dkms/seeed-voicecard/0.3
-sudo rm -rf /usr/src/seeed-voicecard-0.3
-```
-
-Reinstall the driver:
+Re-run the installer only if audio stops working after a distro upgrade:
 
 ```bash
-sudo ./install-respeaker-drivers.sh 
-sudo reboot
+sudo ~/linux-voice-assistant/respeaker2mic/install-respeaker-drivers.sh
 ```
+
+Running it on a device with the old DKMS driver (kernels <= 6.14 installs)
+upgrades it in place and removes the legacy module automatically.
 
 </details>
 
@@ -232,6 +201,11 @@ sudo reboot
 If you are only using the Mic and or Speaker you do not need to do anything further. The LVA should load them automatically. If there is an issue, make sure that the "audio" section either omits the input_device and output_device or that they match the example config.json below.
 
 If you are using the **ReSpeaker XVF3800 USB 4‑Mic Array** LEDs and Mute Button
+
+> `config.json` is per-device and not tracked by git, so it is never overwritten or
+> merged on updates. A fresh clone ships only the annotated template; if
+> `config.json` does not exist yet, copy it once:
+> `cp linux_voice_assistant/config.json.example linux_voice_assistant/config.json`
 
 Edit the config.json file:
 
@@ -379,7 +353,7 @@ systemctl --user status linux-voice-assistant --no-pager -l
 
 ## 🔌 MQTT Controls Overview
 
-MQTT is only required for LED controls. Voice and audio controls (mute, sound selection, thinking sound loop, event sounds, alarm duration, and wake word sensitivity) are now ESPHome entities available on the Home Assistant device page under **Configuration** — no MQTT required for those.
+MQTT is only required for LED controls. Voice and audio controls are ESPHome entities on the Home Assistant device page under **Configuration** — no MQTT required for those. That includes: mute, thinking sound (on/off + loop), event sounds master toggle, wakeup/thinking/timer sound selection, alarm duration, wake word 1/2 and stop word sensitivity, and microphone auto gain / noise suppression / mic volume.
 
 > **Note:** The desktop tray client also uses MQTT internally to mirror mute state and display voice state colors, but this does not require MQTT Discovery to be configured for mute in Home Assistant.
 
@@ -565,7 +539,26 @@ systemctl --user status linux-voice-assistant --no-pager -l
 <details>
 <summary><strong>Optional (Acoustic Echo Cancellation) </strong></summary>
 
-This optional configuration support the use AEC and require either a working PipeWire-Pulse or PulseAudio backend.
+This optional configuration adds **acoustic echo cancellation (AEC)**: it removes the LVA's own assistant audio from the microphone signal so the wake word and interrupt commands work *while the assistant is talking*. It requires a working PipeWire-Pulse or PulseAudio backend.
+
+> **AEC vs WebRTC Noise Suppression — different problems, they complement each other.**
+> The WebRTC processing below ("Mic Noise Suppression" / "Mic Auto Gain" on the HA
+> device page) removes *room noise* and normalizes *mic level*; it does **not** remove
+> echo. This PipeWire module removes echo. If both are active, note that this module's
+> `aec_args` can also do noise suppression — avoid stacking heavy suppression in both
+> layers or speech may sound "underwater".
+>
+> Upstream also supports **server-side AEC** (dual-channel mic input, see
+> `docs/enabling_aec.md`); this PipeWire approach remains the device-side alternative
+> and requires no HA changes.
+
+> **Persistence:** PulseAudio/PipeWire modules do not survive a reboot. A ready-made
+> systemd unit ships with LVA — install it after verifying the manual load below:
+> ```bash
+> cp service/aec-module-load.service ~/.config/systemd/user/
+> systemctl --user daemon-reload
+> systemctl --user enable --now aec-module-load.service
+> ```
 
 Enable the echo cancel PulseAudio module:
 
@@ -600,9 +593,9 @@ Output devices
 ==============
 auto: Autoselect device
 pipewire: Default (pipewire)
-pipewire/alsa_output.platform-soc_sound.stereo-fallback: Built-in Audio Stereo
+pipewire/alsa_output.platform-seeed-2mic-sound.stereo-fallback: Built-in Audio Stereo
 pipewire/echo-cancel-sink: Echo-Cancel Sink
-pulse/alsa_output.platform-soc_sound.stereo-fallback: Built-in Audio Stereo
+pulse/alsa_output.platform-seeed-2mic-sound.stereo-fallback: Built-in Audio Stereo
 pulse/echo-cancel-sink: Echo-Cancel Sink
 alsa: Default (alsa)
 alsa/sysdefault: Default Audio Device
@@ -715,77 +708,107 @@ systemctl --user status linux-voice-assistant --no-pager -l
 </details>
 
 <details>
+<summary><strong>Optional (WebRTC Noise Suppression & Mic Auto Gain)</strong></summary>
+
+LVA includes WebRTC-based microphone processing: **noise suppression** and
+**automatic gain control**. This cleans up the mic signal for wake-word
+detection and speech-to-text. It is different from the Acoustic Echo
+Cancellation above (which removes the assistant's own audio from the mic) —
+the two complement each other.
+
+**No configuration file changes are needed.** Both controls live on the
+Home Assistant device page:
+
+- **Mic Noise Suppression** — Off / Low / Medium / High / Max
+- **Mic Auto Gain** — 0 (off) to 31
+
+Defaults are Off/0: the processor is bypassed until you set a non-zero
+value. Settings apply live and persist automatically. Start with **Low**
+suppression — aggressive settings can degrade wake-word detection in quiet
+rooms. The processing package (`webrtc-noise-gain`) is installed with the
+base setup; no extra steps are required.
+
+</details>
+
+<details>
 <summary><strong>Optional (Sendspin client for Music Assistant)</strong></summary>
 
-This optional configuration enables the **Sendspin** client inside LVA so Music Assistant can stream audio to the device and control it (play/pause/stop, volume, mute, etc.). The Sendspin client will automatically show up in Music Assistant with the name of the LVA.
+This optional configuration enables the **Sendspin** client inside LVA so Music Assistant can stream synchronized multiroom audio to the device and control it (play/pause/stop, volume, mute). The client is built on **aiosendspin 9.x** and appears in Music Assistant under the LVA's name.
 
 **Requirements:**
 
-- ***Requires Python 3.12 or higher*** Recommend RaspberryPI OS (Trixie)
-- Music Assistant is running a Sendspin server on your network.
-- LVA is installed with a working **PipeWire-Pulse** (recommended) or **PulseAudio** stack (see Section 5 above).
-- FFMPEG for the FLAC codec if used.
+- ***Python 3.12 or higher*** — aiosendspin requires it (Raspberry Pi OS Trixie ships 3.13). On 3.11 the subsystem disables itself with a log warning.
+- Music Assistant running a Sendspin server on your network.
+- A working **PipeWire-Pulse** (recommended) or **PulseAudio** stack (see Section 5 above).
+- **PortAudio**: `sudo apt-get install libportaudio2` (Fedora: `sudo dnf install portaudio`)
+- **Piper TTS** (optional, for natural-voice PIN announcements): `pip install piper-tts` — installed automatically by `script/setup --sendspin`
 
-***Confirm FFMPEG is installed***
-
-```bash
-sudo apt-get install ffmpeg
-```
-
-***Setup LVA to implement the Sendspin Client***
+***Setup LVA with the Sendspin client***
 
 ```bash
 cd ~/linux-voice-assistant
+rm -rf .venv
 script/setup --sendspin
 ```
 
-***Edit LVA config.json file:***
+***Edit the LVA config.json file:***
 
 ```bash
 nano ~/linux-voice-assistant/linux_voice_assistant/config.json
 ```
 
-***Add a Sendspin block (minimum):***
+***Add a Sendspin block (minimum — server_host is required):***
 
 ```json
   ,
   "sendspin": {
     "enabled": true,
     "connection": {
-      "mdns": true
+      "server_host": "192.168.0.100"
     }
   }
 ```
 
-***As tested***
+Replace `192.168.0.100` with your Music Assistant server's address. Port (8927) and path (`/sendspin`) have sensible defaults.
 
-```bash
+***Pairing (one-time per MA server):***
+
+1. Restart LVA. When it connects and is not yet paired, it automatically opens a 10-minute pairing window and logs:
+   `Sendspin: PAIRING PIN — enter this in Music Assistant: <code>`
+2. In Music Assistant, select the LVA player and press **Setup**, then enter the PIN from the log.
+3. Pairing credentials persist in `sendspin_pairing.json` next to `preferences.json` — reboots never need re-pairing. (If migrating, keep `sendspin_identity.json` and `sendspin_pairing.json` or the player will pair as a new device.)
+
+For fully unattended pairing, set a fixed code: `"pairing": { "pin": "12345678" }` inside the sendspin block.
+
+***Optional tuning:***
+
+```json
   ,
   "sendspin": {
-  "enabled": true,
-  "connection": {
-    "time_sync_adaptive": true,
-    "time_sync_interval_seconds": 1.0
-  },
-  "player": {
-    "output_latency_ms": -600,
-    "sync_target_latency_ms": 350,
-    "sync_late_drop_ms": 250
+    "enabled": true,
+    "connection": {
+      "server_host": "192.168.0.100"
+    },
+    "player": {
+      "sync_target_latency_ms": 350,
+      "output_latency_ms": 0,
+      "output_device": null
+    },
+    "coordination": {
+      "duck_during_voice": true,
+      "duck_gain": 0.3
+    }
   }
-}
 ```
 
-Due to differences in chipsets and the mpv player pipeline, there may be a consistent lead/lag when compared to other sendspin clients. Especially when they are on other platforms (i.e. ESP32). The best knob for bringing the LVA sendspin client into initial sync (calibrate) is output_latency_ms. My client was a ~1 second behind the other player. The -600 value has closed that to a point that it is hard to hear a difference, but you may need to adjust accordingly based on what your testing shows.
+- `sync_target_latency_ms` — audio the server keeps buffered at this player; also the playback start gate. Higher = more jitter headroom, more startup latency (default 250).
+- `output_latency_ms` — static delay compensation, **clamped to 0–5000 ms**. The old negative tuning from the previous client is obsolete: the new time filter is self-correcting, so start at 0 and only raise this if the device consistently plays early relative to others in the group.
+- `output_device` — pin playback to a specific sounddevice name; omit for the system default.
+- `coordination.duck_during_voice` / `duck_gain` — duck the music while the voice assistant is active (logged at INFO: `Sendspin: music ducked (gain 0.30)`).
+- `pairing.voice_engine` — `"auto"` (piper if model downloaded, else espeak-ng), `"piper"` (neural voice — recommended), or `"espeak-ng"`. When pairing, LVA speaks the code through its speaker using a natural neural voice.
+- `pairing.piper_model` — HuggingFace voice model name (default: `en_US-lessac-medium`).
 
-Here is a good rule for tuning:
-
-`LVA player 1 second behind other player = "output_latency_ms": -600`
-
-`LVA player 1 second ahead other player = "output_latency_ms": 600`
-
-Then make adjustments until the two players are synchronized.
-
-> Take a look at ~/linux-voice-assistant/linux_voice_assistant/config.json.example for details on these settings as well as all available options.
+> Take a look at `~/linux-voice-assistant/linux_voice_assistant/config.json.example` for all available options.
 
 ***Restart LVA:***
 
@@ -797,11 +820,23 @@ systemctl --user restart linux-voice-assistant.service
 
 ```bash
 systemctl --user status linux-voice-assistant --no-pager -l
+journalctl --user -u linux-voice-assistant -f | grep -i sendspin
 ```
 
-</details>
+Look for `Sendspin: connected` and, after pairing, `Stream started with codec pcm` when music plays.</details>
 
 ## 6. Connect to Home Assistant
+
+### Known quirk: the first registration attempt may show a connection-test error
+
+When registering a **voice assistant** LVA for the first time, Home Assistant
+plays a short connection-test sound to the satellite. On the first attempt this
+can time out with the dialog *"The voice assistant is unable to connect to Home
+Assistant …"* even though the device fetched and played the test file correctly
+(verified to the same second on the device side). This is a race in Home
+Assistant's connection-test announcement path — simply submit the registration a
+second time and it succeeds. Enabling debug logging for the `esphome`
+integration in HA also masks it.
 
 ### If HA does not discover the new LVA:
 
@@ -892,94 +927,37 @@ systemctl --user disable pipewire.service pipewire-pulse.service wireplumber.ser
 
 ## 10. Safely Upgrade from previous version of LVA
 
-***You will need a minimum of 550 MB of free space to use this process.***
-
-Verify that you have enough free disk space:
-
-```bash
-df -h
-
-Filesystem      Size  Used Avail Use% Mounted on
-udev            912M     0  912M   0% /dev
-tmpfs           198M  3.4M  195M   2% /run
-# This is the entry that indicates available free space
-/dev/mmcblk1p1   57G  3.2G   53G   6% /
-#
-tmpfs           988M     0  988M   0% /dev/shm
-tmpfs           5.0M     0  5.0M   0% /run/lock
-tmpfs           1.0M     0  1.0M   0% /run/credentials/systemd-resolved.service
-tmpfs           1.0M     0  1.0M   0% /run/credentials/systemd-networkd.service
-tmpfs           988M     0  988M   0% /tmp
-/dev/zram1       47M  424K   43M   1% /var/log
-tmpfs           1.0M     0  1.0M   0% /run/credentials/systemd-journald.service
-tmpfs           198M  8.0K  198M   1% /run/user/1000
-tmpfs           1.0M     0  1.0M   0% /run/credentials/getty@tty1.service
-tmpfs           1.0M     0  1.0M   0% /run/credentials/serial-getty@ttyS0.service
-```
-Update LVA via included script:
-*Be sure to include any needed extra setup flags (i.e. --sendspin --tray)*
+Update LVA via the included script. It updates the checkout in place
+(`git fetch` + checkout), keeps every untracked per-device file
+(`config.json`, `preferences.json`, `sendspin_identity.json`,
+`sendspin_pairing.json`, `piper_voices/`, wake word models), migrates
+`config.json`, rebuilds the virtual environment and restarts the service.
+Be sure to include any needed extra setup flags (i.e. `--sendspin --tray`):
 
 ```bash
 bash ~/linux-voice-assistant/script/update_lva --sendspin
 ```
 
-Or manually update using the same process as the script.
-
-Stop any running LVA systemd unit files:
+Useful options:
 
 ```bash
-# Stop LVA Service
-systemctl --user stop linux-voice-assistant.service
+# Update to a specific branch or tag instead of main
+# (e.g. pin a fleet to a release tag)
+bash ~/linux-voice-assistant/script/update_lva --branch v2.0.0
 
-# Stop Tray Client Service if you are using it
-systemctl --user stop linux-voide-assistant-tray.service
+# The update refuses to run when tracked files have local modifications
+# (untracked per-device files are always fine). To discard them anyway:
+bash ~/linux-voice-assistant/script/update_lva --force
 ```
 
-Save current version of LVA (the safe part):
+If the new version misbehaves, roll back to the revision the updater found
+before the last update, then roll forward again later with a normal update:
 
 ```bash
-mv ~/linux-voice-assistant ~/linux-voice-assistant_save
+bash ~/linux-voice-assistant/script/update_lva --rollback
 ```
 
-Clone the latest version of the LVA project:
-
-```bash
-git clone https://github.com/imonlinux/linux-voice-assistant.git
-```
-
-Restore saved config.json and preferences.json files:
-
-```bash
-cp ~/linux-voice-assistant_save/preferences.json ~/linux-voice-assistant/
-cp ~/linux-voice-assistant_save/linux_voice_assistant/config.json ~/linux-voice-assistant/linux_voice_assistant/
-```
-
-Setup the new version of LVA:
-
-```bash
-cd ~/linux-voice-assistant
-
-# LVA without the Sendspin client or Tray client
-script/setup
-
-# LVA and the Sendspin client
-script/setup --sendspin
-
-# LVA with Tray and Sendspin client
-script/setup --tray --sendspin
-```
-
-If you're sure that everything went well, restart the LVA service
-
-```bash
-# LVA service
-systemctl --user restart linux-voice-assistant.service
-
-# LVA Tray service
-systemctl --user restart linux-voice-assistant-tray.service
-```
-
-If you're not sure, or if the LVA didn't start as expected, run the LVA via CLI with debug:
+If the LVA didn't start as expected, run it via CLI with debug:
 
 ```bash
 # LVA
@@ -989,9 +967,7 @@ script/run --debug
 script/run --tray
 ```
 
-Optionally, once you are comfortable with the new version, remove the older version of the LVA:
-
-```bash
-# !!! BE CAREFUL WITH THIS COMMAND !!!
-rm -rf ~/linux-voice-assistant_save
-```
+> Upgrading from a version that shipped the old fresh-clone updater? A
+> `~/linux-voice-assistant_save` directory may be left over from a previous
+> update. Once the new version works, it can be deleted:
+> `rm -rf ~/linux-voice-assistant_save`

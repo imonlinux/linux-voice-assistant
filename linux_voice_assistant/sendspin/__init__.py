@@ -1,1 +1,1 @@
-"""Sendspin protocol client subsystem for LVA."""
+"""Sendspin (Music Assistant multiroom) client, built on aiosendspin."""

@@ -1,11 +1,111 @@
 # Changelog
 
+## 2.0.0 (re-foundation on upstream v1.1.15+)
+
+The fork has been re-founded on upstream's current architecture: upstream core
+modules (`satellite.py`, `entity.py`, `models.py`, `player/`, `wake_word.py`,
+peripheral API) are used as-is, and the fork's differentiating features are
+add-on modules. Future upstream releases merge cleanly. See
+docs/RESYNC_PLAN.md.
+
+### Added (from upstream)
+
+- Full ESPHome device-page entity set: mic auto gain / noise suppression /
+  mic volume, per-slot wake word 1/2 and stop word numeric sensitivities,
+  MWW/OWW model switching from the UI, external wake word downloads
+- Dual music/TTS players (player/ package) with ducking, announcements and
+  caching; `--music-output-device`; `--listen-during-wake-sound`;
+  output-only mode; dual-channel AEC input
+- WebSocket peripheral API (port 6055) for out-of-process LED/button clients
+- Upstream test suite (tests/unit) and lint pipeline
+
+### Added (fork)
+
+- Kernel-independent ReSpeaker 2-Mic HAT audio, both hardware revisions:
+  audio runs on mainline kernel drivers (`snd-soc-simple-card` +
+  `snd-soc-wm8960` for v1, `snd-soc-tlv320aic3104` for v2) via device-tree
+  overlays compiled at install time — no DKMS, no kernel headers, no
+  per-kernel builds, works on any kernel >= 5.4, and kernel upgrades can no
+  longer break audio. One smart installer auto-detects the HAT revision by
+  I2C address (0x1a = v1 WM8960, 0x18 = v2 TLV320AIC3104), removes a stale
+  legacy install of the other revision, and preserves the same ALSA card ID
+  (`seeed2micvoicec`), so existing LVA configs keep working. Existing DKMS
+  installs upgrade in place. v1 gets proper MCLK wiring on the codec node
+  (fixes "No MCLK configured" PCM open failures) which also enables the
+  WM8960 PLL for the 44.1 kHz family.
+
+### Preserved (fork)
+
+- config.json configuration (now injected as CLI defaults; CLI wins)
+- EventBus + LED/button/XVF3800 controllers, MQTT (LED-only) + tray transport
+- Sendspin multiroom client — REBUILT on aiosendspin 9.x (the old hand-rolled
+  client spoke the deprecated pre-encryption protocol and was rejected by
+  current MA servers). Adds Noise-encrypted pairing (dynamic PIN in the log
+  or static PIN from config), persistent player identity, a sounddevice
+  output stage with server-synchronized buffering, and
+  `sendspin.connection.server_host` as a required setting. Requires
+  Python >= 3.12 and libportaudio2.
+- Event sounds master toggle + sound selects + thinking loop + alarm duration
+  as ESPHome entities (keys after upstream's)
+- Per-model wake word thresholds (three-tier precedence), 7 extra OWW models,
+  stable MAC identity, volume sync, systemd services, install docs
+
+### Changed
+
+- Alarm repeat scheduling is end-relative via loop.call_later (replaces the
+  blocking time.sleep loop)
+- preferences.json: legacy `volume_level` key migrates to `volume`; unknown
+  keys are ignored with a warning
+- Fork entities register after upstream's (keys 9-14) to keep upstream key
+  numbering stable
+- `config.json` is no longer tracked by git (it is per-device); the annotated
+  `config.json.example` remains the template, and update_lva bootstraps a
+  copy when none exists. Existing devices: set your local `config.json`
+  aside when pulling the commit that removes it from tracking, then move it
+  back — from then on pulls never touch it.
+- update_lva rewritten: in-place `git fetch` + checkout instead of
+  move-aside + fresh clone. Untracked per-device files (preferences,
+  Sendspin credentials, piper voices, per-model threshold files, external
+  wake words) are no longer touched at all. The script re-executes the
+  freshly fetched copy, so update logic always runs at the version being
+  deployed to. Adds `--branch`, `--force` (tracked files with local
+  modifications are refused by default) and `--rollback` (returns to the
+  pre-update revision). Services: stops the tray unit too, and restarts
+  whichever daemon unit (main or XVF3800) was running.
+- As of this release the re-founded stack lives on `main` (upstream-core was
+  merged); `update_lva` defaults to `main`. Devices still tracking the old
+  `upstream-core` branch keep working: their updater self-migrates on the
+  first update after the release (the freshly fetched script defaults to
+  `main`, and `origin/upstream-core` is kept in sync through the merge).
+
+### Fixed
+
+- Tray client showed a stale state (typically "thinking") after MQTT
+  (re)connects: per-state `<state>_light/state` topics are retained-ON for
+  every state that has been active and replay in broker topic order, so
+  deriving the active state from them landed on "thinking". The daemon now
+  publishes a consolidated retained `lva/<device_id>/state` topic on every
+  voice transition, and the tray derives its displayed state from it; light
+  topics configure colors only. State changes while the mic is muted are
+  also published to MQTT now instead of being swallowed by the mute LED
+  overlay.
+- Mute changes from outside Home Assistant (tray client via MQTT, GPIO and
+  XVF3800 hardware buttons) never updated the ESPHome mute switch, leaving
+  HA showing a stale position until its next reconnect. `VoiceSatellite-
+  Protocol._set_muted` now publishes the switch state to all connected API
+  clients, replacing the peripheral-API-only workaround.
+
 ## 1.0.0
 
 - Initial release (https://github.com/OHF-Voice/linux-voice-assistant)
 
-## Unreleased Fork 
+## Unreleased Fork
 (https://github.com/imonlinux/linux-voice-assistant)
+
+> **Historical (pre-2.0).** Everything below describes the original fork
+> before the 2.0 re-foundation. Some entries — notably the Sendspin client
+> internals (mDNS discovery, mpv IPC pipeline) — describe a subsystem that
+> has since been replaced. See the 2.0.0 section for the current state.
 
 ### Added
 

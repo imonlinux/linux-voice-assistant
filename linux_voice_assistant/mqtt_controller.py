@@ -67,6 +67,16 @@ class MqttController(EventHandler):
                 "command": f"{self._topic_prefix}/num_leds/set",
                 "state": f"{self._topic_prefix}/num_leds/state",
             },
+            # Consolidated voice-state truth topic. Published on every voice
+            # state transition with the active state name (idle/listening/
+            # thinking/responding/error), retained. Consumers (tray client)
+            # must derive current state from this topic, NOT from the
+            # per-state <state>_light/state topics: those are retained-ON
+            # per configured state and replay in arbitrary order on
+            # (re)connect, which cannot represent "which state is active".
+            "voice_state": {
+                "state": f"{self._topic_prefix}/state",
+            },
         }
 
         for state_name in self.CONFIGURABLE_STATES:
@@ -151,19 +161,13 @@ class MqttController(EventHandler):
         if rc == 0:
             _LOGGER.info("Connected to MQTT broker")
             self._connected = True
-
-            # Subscribe to command topics (must be done in paho callback thread)
-            client.subscribe(f"{self._topic_prefix}/+/set")
-            client.subscribe(f"{self._topic_prefix}/+/state")
-
-            # Marshal bootstrap timer setup and discovery config to asyncio loop
-            # for thread safety (loop.time() and handle manipulation)
-            self.loop.call_soon_threadsafe(self._setup_post_connect)
+            # Marshal all asyncio operations to the event loop thread
+            self.loop.call_soon_threadsafe(self._on_connect_impl, client)
         else:
             _LOGGER.error("Failed to connect to MQTT, return code %d", rc)
 
-    def _setup_post_connect(self) -> None:
-        """Asyncio-loop-callback for post-connect setup (thread-safe)."""
+    def _on_connect_impl(self, client):
+        """Bootstrap setup for MQTT connection - runs on asyncio loop."""
         # --- Bug 1 & 2 fix ---
         # Always reset bootstrap state sync on every (re)connect so that
         # retained messages flooding in after reconnect are handled correctly.
@@ -178,6 +182,9 @@ class MqttController(EventHandler):
         self._bootstrap_end_handle = self.loop.call_later(
             5.0, self._end_bootstrap_state_sync
         )
+
+        client.subscribe(f"{self._topic_prefix}/+/set")
+        client.subscribe(f"{self._topic_prefix}/+/state")
 
         self._publish_discovery_configs()
             
@@ -379,6 +386,13 @@ class MqttController(EventHandler):
                 },
             }
             self._client.publish(state_topics["light_state"], json.dumps(light_state), retain=True)
+
+            # Consolidated truth topic: exactly one retained message that
+            # names the currently-active state, so reconnect/replays cannot
+            # leave consumers on a stale state.
+            self._client.publish(
+                self.topics["voice_state"]["state"], state_name, retain=True
+            )
 
     @subscribe
     def mic_muted(self, data: dict):

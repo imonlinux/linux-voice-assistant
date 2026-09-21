@@ -3,32 +3,40 @@
 import asyncio
 import json
 import logging
-import threading
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, List, Optional, Set, Union
+from queue import Queue
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Union
 
 from .event_bus import EventBus
 
 if TYPE_CHECKING:
+    from google.protobuf import message
     from pymicro_wakeword import MicroWakeWord
     from pyopen_wakeword import OpenWakeWord
-    from .entity import ESPHomeEntity
+
+    from .entity import (
+        AlarmDurationNumberEntity,
+        ButtonEventSensorEntity,
+        ESPHomeEntity,
+        EventSoundsSwitchEntity,
+        LEDLightEntity,
+        MediaPlayerEntity,
+        MicSettingEntity,
+        MuteSwitchEntity,
+        SoundSelectEntity,
+        StopWordSensitivityNumberEntity,
+        ThinkingSoundEntity,
+        ThinkingSoundLoopSwitchEntity,
+        WakeWord1SensitivityNumberEntity,
+        WakeWord2SensitivityNumberEntity,
+    )
     from .mpv_player import MpvMediaPlayer
     from .satellite import VoiceSatelliteProtocol
 
 _LOGGER = logging.getLogger(__name__)
-
-
-class SatelliteState(str, Enum):
-    """Voice satellite state."""
-    STARTING = "starting"
-    IDLE = "idle"
-    LISTENING = "listening"
-    THINKING = "thinking"
-    RESPONDING = "responding"
-    ERROR = "error"
 
 
 class WakeWordType(str, Enum):
@@ -36,38 +44,15 @@ class WakeWordType(str, Enum):
     OPEN_WAKE_WORD = "openWakeWord"
 
 
-def _clamp_0_1(name: str, value: float) -> float:
-    """Clamp float to [0.0, 1.0] with warnings."""
-    try:
-        v = float(value)
-    except Exception:
-        _LOGGER.warning("%s is not a number (%r); ignoring", name, value)
-        return 0.5
+class SatelliteState(str, Enum):
+    """Voice satellite state (fork; used by MQTT state topics and LEDs)."""
 
-    if v < 0.0:
-        _LOGGER.warning("%s < 0.0; clamping to 0.0 (was %s)", name, v)
-        return 0.0
-    if v > 1.0:
-        _LOGGER.warning("%s > 1.0; clamping to 1.0 (was %s)", name, v)
-        return 1.0
-    return v
-
-
-def _clamp_0_100(name: str, value: object, default: int = 100) -> int:
-    """Clamp an int to [0, 100] with warnings; fallback to default on parse errors."""
-    try:
-        v = int(value)  # type: ignore[arg-type]
-    except Exception:
-        _LOGGER.warning("%s is not an int (%r); using default %d", name, value, default)
-        return int(default)
-
-    if v < 0:
-        _LOGGER.warning("%s < 0; clamping to 0 (was %s)", name, v)
-        return 0
-    if v > 100:
-        _LOGGER.warning("%s > 100; clamping to 100 (was %s)", name, v)
-        return 100
-    return v
+    STARTING = "starting"
+    IDLE = "idle"
+    LISTENING = "listening"
+    THINKING = "thinking"
+    RESPONDING = "responding"
+    ERROR = "error"
 
 
 @dataclass
@@ -77,14 +62,12 @@ class AvailableWakeWord:
     wake_word: str
     trained_languages: List[str]
     wake_word_path: Path
-
-    # Optional per-model override for OpenWakeWord activation threshold.
-    # If set, AudioEngine will prefer this over the global config threshold.
-    oww_threshold: Optional[float] = None
+    probability_cutoff: float = 0.7
 
     def load(self) -> "Union[MicroWakeWord, OpenWakeWord]":
         if self.type == WakeWordType.MICRO_WAKE_WORD:
             from pymicro_wakeword import MicroWakeWord
+
             return MicroWakeWord.from_config(config_path=self.wake_word_path)
 
         if self.type == WakeWordType.OPEN_WAKE_WORD:
@@ -93,121 +76,196 @@ class AvailableWakeWord:
             oww_model = OpenWakeWord.from_model(model_path=self.wake_word_path)
             setattr(oww_model, "wake_word", self.wake_word)
 
-            # Attach per-model threshold if configured
-            if self.oww_threshold is not None:
-                thr = _clamp_0_1(f"wakeword[{self.id}].threshold", self.oww_threshold)
-                setattr(oww_model, "threshold", thr)
-
             return oww_model
 
         raise ValueError(f"Unexpected wake word type: {self.type}")
 
 
 @dataclass
-class Preferences:
-    active_wake_words: List[str] = field(default_factory=list)
-    volume_level: float = 1.0
-    # Persisted MAC address for stable device identity across reboots.
-    # Empty string = not yet persisted (first boot will detect and save).
-    mac_address: str = ""
-    # New: last-known Sendspin (MA) player volume (0-100), independent of LVA master volume_level.
-    sendspin_volume: int = 100
+class LightRegistration:
+    """Capabilities a peripheral declares for one of its Light entities.
 
+    The peripheral sends this with the register_light command after
+    connecting. LVA materialises a matching LEDLightEntity so HA can
+    control it.
+    """
+
+    name: str
+    object_id: str
+    icon: str = "mdi:led-strip-variant"
+    effects: List[str] = field(default_factory=list)
+    supports_rgb: bool = True
+    supports_brightness: bool = True
+
+
+@dataclass
+class Preferences:
+    active_wake_words: List[Optional[str]] = field(default_factory=list)
+    volume: Optional[float] = None
+    thinking_sound: int = 0  # 0 = disabled, 1 = enabled
+    wake_word_1_sensitivity: Optional[float] = None
+    wake_word_2_sensitivity: Optional[float] = None
+    stop_word_sensitivity: Optional[float] = None
+
+    mic_auto_gain: int = 0
+    mic_noise_suppression: int = 0
+    mic_volume: int = 100  # 1–100, default maximum
+
+    # --- Fork: persisted state for fork features ---
+    # (older fork preferences.json files may carry these; the defensive
+    # loader in __main__ migrates legacy names and drops unknown keys)
+    # Persisted MAC address for stable device identity across reboots/NIC
+    # changes. Empty string = not yet persisted.
+    mac_address: str = ""
+    # Last-known Sendspin (Music Assistant) player volume 0-100, independent
+    # of the LVA master volume.
+    sendspin_volume: int = 100
+    # Number of addressable LEDs (consumed by the fork's LED controller).
     num_leds: int = 3
-    # New: configurable alarm duration in seconds.
-    # 0 = infinite alarm (only Stop/wake word stops it)
-    # >0 = auto-stop alarm after this many seconds
+    # Timer alarm auto-stop duration in seconds. 0 = ring until interrupted.
     alarm_duration_seconds: int = 0
-    # MQTT sound selection overrides.
-    # Stores the selected filename (e.g. "chime.flac") or "None" to disable.
-    # Empty string = no MQTT override, use config.json / config.py default.
+    # Selected sound filename per category ("" = use config/CLI default,
+    # "None" = category disabled). Resolved against sounds/<category>/.
     selected_wakeup_sound: str = ""
     selected_thinking_sound: str = ""
     selected_timer_sound: str = ""
-    # MQTT override for thinking sound loop.
-    # Empty string = no override (use config.json / config.py value).
-    # "ON" / "OFF" = explicit MQTT selection.
+    # "ON" / "OFF" explicit loop selection; "" = config default.
     selected_thinking_sound_loop: str = ""
-    # Runtime-adjustable event sounds toggle.
-    # None = no preference override (use config.json value).
-    # True/False = explicit ESPHome entity selection.
+    # Event sounds master toggle (wakeup + thinking; timer alarm unaffected).
+    # None = no explicit selection (use config default).
     event_sounds_enabled: Optional[bool] = None
-    # Persisted wake word sensitivity level.
-    # Wake word sensitivity preset name (e.g., "Slightly sensitive")
+    # Legacy fork preset name kept so old preferences round-trip; the numeric
+    # per-slot sensitivity entities superseded it.
     wake_word_sensitivity: str = "Slightly sensitive"
-
-    # When true, audio streaming starts immediately on wake word detection;
-    # the wakeup sound plays concurrently. When false, waits for the sound.
+    # Persisted listen-during-wake-sound selection (fork default True).
     listen_during_wake_sound: bool = True
 
 
 @dataclass
 class ServerState:
-    """A simple dataclass to hold core application state."""
-    # --- Fields WITHOUT default values ---
     name: str
+    friendly_name: str
     mac_address: str
-    event_bus: EventBus
-    loop: asyncio.AbstractEventLoop
+    ip_address: str
+    network_interface: str
+    version: str
+    esphome_version: str
+    audio_queue: "Queue[Optional[bytes]]"
     entities: "List[ESPHomeEntity]"
-    music_player: "MpvMediaPlayer"
-    tts_player: "MpvMediaPlayer"
     available_wake_words: "Dict[str, AvailableWakeWord]"
     wake_words: "Dict[str, Union[MicroWakeWord, OpenWakeWord]]"
     active_wake_words: Set[str]
     stop_word: "MicroWakeWord"
+    music_player: "MpvMediaPlayer"
+    tts_player: "MpvMediaPlayer"
     wakeup_sound: str
-    thinking_sound: str
+    start_listening_sound: str
+    processing_sound: str
     timer_finished_sound: str
+    mute_sound: str
+    unmute_sound: str
+    button_double_press_sound: str
+    button_triple_press_sound: str
+    button_long_press_sound: str
+    preferences: Preferences
     preferences_path: Path
     download_dir: Path
-    preferences: Preferences
+    continue_conversation_delay: float = 0.5  # seconds to wait after TTS before opening mic
 
-    # --- Fields WITH default values ---
+    media_player_entity: "Optional[MediaPlayerEntity]" = None
     satellite: "Optional[VoiceSatelliteProtocol]" = None
+    connections: "List[VoiceSatelliteProtocol]" = field(default_factory=list)
+    mute_switch_entity: "Optional[MuteSwitchEntity]" = None
+    thinking_sound_entity: "Optional[ThinkingSoundEntity]" = None
+    button_event_sensor_entity: "Optional[ButtonEventSensorEntity]" = None
+
+    # Lights declared by peripherals via register_light. Survives HA
+    # reconnects so the satellite can rebuild its entities whenever it
+    # is constructed again.
+    pending_lights: "List[LightRegistration]" = field(default_factory=list)
+    # Materialised LightEntities keyed by object_id, so light_command
+    # events can be routed back to the right peripheral hardware.
+    led_light_entities: "Dict[str, LEDLightEntity]" = field(default_factory=dict)
+
+    # True once a peripheral sends register_button. Gates creation of
+    # ButtonEventSensorEntity so the HA device page only shows the button
+    # entity when hardware that actually supports button presses is present.
+    # Survives HA reconnects so the entity is re-registered automatically.
+    pending_button: bool = False
+
+    # Optional peripheral WebSocket API (LEDs, buttons, HAT boards).
+    # Assigned in __main__ before the event loop starts.
+    peripheral_api: "Optional[Any]" = None  # PeripheralAPIServer at runtime
+
+    sensitivity_1_number_entity: "Optional[WakeWord1SensitivityNumberEntity]" = None
+    sensitivity_2_number_entity: "Optional[WakeWord2SensitivityNumberEntity]" = None
+    stop_sensitivity_number_entity: "Optional[StopWordSensitivityNumberEntity]" = None
+    mic_gain_entity: "Optional[MicSettingEntity]" = None
+    mic_noise_suppression_entity: "Optional[MicSettingEntity]" = None
+    mic_volume_entity: "Optional[MicSettingEntity]" = None
     wake_words_changed: bool = False
     refractory_seconds: float = 2.0
-    mic_muted: bool = False
+    thinking_sound_enabled: bool = False
+    output_only: bool = False
+    muted: bool = False
+    connected: bool = False
+    # Fork: set on shutdown so controller poll loops exit promptly.
     shutdown: bool = False
+    volume: float = 1.0
+    oww_probability_cutoff: float = 0.7  # Dynamic threshold for OpenWakeWord
+    oww_second_probability_cutoff: float = 0.7  # Dynamic threshold for second OpenWakeWord
+    oww_stop_probability_cutoff: float = 0.5  # Dynamic threshold for Stop word
+    # Fork: global OpenWakeWord threshold tier — used for models without an
+    # explicit per-model threshold in their JSON. From
+    # wake_word.openwakeword_threshold (config.json) / --wake-word-threshold.
+    oww_global_threshold: float = 0.7
+    wake_word_1_threshold: float = 0.7
+    wake_word_2_threshold: float = 0.7
+    stop_word_threshold: float = 0.5
+    mic_auto_gain: int = 0
+    mic_noise_suppression: int = 0
+    mic_volume: int = 100  # 1–100, default maximum
+    audio_input_channels: int = 2  # number of mic channels to stream
+    timer_max_ring_seconds: float = 900.0
+    listen_during_wake_sound: bool = False
 
-    # Master toggle for event sounds (wakeup + thinking).
-    # The timer alarm is NOT gated by this — it always plays.
+    # --- Fork: internal pub/sub for hardware controllers and subsystems ---
+    # Voice-state / mute / timer events are published here (see satellite
+    # _emit) and consumed by the LED, button, XVF3800 and MQTT controllers.
+    event_bus: EventBus = field(default_factory=EventBus)
+    # Running asyncio loop; assigned in __main__ once the server is up.
+    # Controllers running on their own threads use it to marshal calls.
+    loop: Optional[asyncio.AbstractEventLoop] = None
+
+    # --- Fork: runtime state for fork entities and behaviors ---
+    # Master toggle for event sounds (wakeup + thinking). Timer alarm
+    # always plays regardless.
     event_sounds_enabled: bool = True
+    # When True the thinking sound repeats until the pipeline leaves the
+    # thinking phase.
     thinking_sound_loop: bool = False
+    # Available sound filenames per category (wakeup_sound/thinking_sound/
+    # timer_sound), scanned in __main__ and used by SoundSelectEntity.
+    sound_options: Dict[str, List[str]] = field(default_factory=dict)
+    event_sounds_entity: "Optional[EventSoundsSwitchEntity]" = None
+    thinking_sound_loop_entity: "Optional[ThinkingSoundLoopSwitchEntity]" = None
+    sound_select_entities: "Dict[str, SoundSelectEntity]" = field(default_factory=dict)
+    alarm_duration_entity: "Optional[AlarmDurationNumberEntity]" = None
 
-    # Sound file options per category, populated by _scan_sound_files().
-    # Used by SoundSelectEntity to populate options lists.
-    sound_options: "Dict[str, List[str]]" = field(default_factory=dict)
-    
-    # Wake word sensitivity preset name (e.g., "Slightly sensitive")
-    wake_word_sensitivity: str = "Slightly sensitive"
+    def broadcast(self, msgs: "Iterable[message.Message]") -> None:
+        """Send messages to every connected API client.
 
-    # When true, audio streaming starts immediately on wake word detection;
-    # the wakeup sound plays concurrently. When false, waits for the sound.
-    listen_during_wake_sound: bool = True
-    
-    # Threading event to pause the audio thread efficiently when muted
-    # set() = Mic is ON (Audio processing running)
-    # clear() = Mic is OFF (Audio processing paused)
-    mic_muted_event: threading.Event = field(default_factory=threading.Event)
-
-    def __post_init__(self):
-        """Ensure the threading event matches the boolean state on init."""
-        if not self.mic_muted:
-            self.mic_muted_event.set()
-        else:
-            self.mic_muted_event.clear()
-
-        # Ensure sendspin_volume is sane if loaded from older/malformed prefs
-        try:
-            self.preferences.sendspin_volume = _clamp_0_100(
-                "preferences.sendspin_volume",
-                getattr(self.preferences, "sendspin_volume", 100),
-                default=100,
-            )
-        except Exception:
-            # If anything weird happens, keep a safe default
-            self.preferences.sendspin_volume = 100
+        Entity state changes that happen asynchronously (not in response to a
+        request) must reach *all* subscribed clients, not just whichever
+        connection happens to be referenced by an entity's ``server``. Without
+        this fan-out a second API client leaves Home Assistant stuck on a stale
+        state (e.g. ``playing`` after playback has finished).
+        """
+        messages = list(msgs)
+        if not messages:
+            return
+        for connection in list(self.connections):
+            connection.send_messages(messages)
 
     def save_preferences(self) -> None:
         """Save preferences as JSON."""
@@ -220,3 +278,77 @@ class ServerState:
                 ensure_ascii=False,
                 indent=4,
             )
+
+    def persist_volume(self, volume: float) -> None:
+        """Persist the normalized media volume (0.0 - 1.0)."""
+        clamped_volume = max(0.0, min(1.0, volume))
+        _LOGGER.debug(
+            "persist_volume called: new=%s, current=%s, prefs=%s",
+            clamped_volume,
+            self.volume,
+            self.preferences.volume,
+        )
+
+        if abs(self.volume - clamped_volume) < 0.0001 and self.preferences.volume is not None and abs(self.preferences.volume - clamped_volume) < 0.0001:
+            _LOGGER.debug("Skipping save - volume unchanged")
+            return
+
+        previous_muted = self.volume == 0.0
+        self.volume = clamped_volume
+        self.preferences.volume = clamped_volume
+        _LOGGER.info("Saving volume %s to %s", clamped_volume, self.preferences_path)
+        self.save_preferences()
+        _LOGGER.info("Volume saved successfully")
+
+        # Notify peripheral container (thread-safe; may be called from mpv callbacks)
+        api = self.peripheral_api
+        if api is not None:
+            from .peripheral_api import LVAEvent  # local import avoids circular dep
+
+            api.emit_event_sync(LVAEvent.VOLUME_CHANGED, {"volume": round(clamped_volume, 3)})
+
+            new_muted = clamped_volume == 0.0
+            if previous_muted != new_muted:
+                api.emit_event_sync(LVAEvent.VOLUME_MUTED, {"muted": new_muted})
+
+    def persist_mic_gain(self, gain: float) -> None:
+        """Persist the microphone auto gain value."""
+        gain_int = int(gain)
+        if self.mic_auto_gain == gain_int and self.preferences.mic_auto_gain == gain_int:
+            return
+
+        self.mic_auto_gain = gain_int
+        self.preferences.mic_auto_gain = gain_int
+        self.save_preferences()
+
+    def persist_mic_noise(self, noise: float) -> None:
+        """Persist the microphone noise suppression value."""
+        noise_int = int(noise)
+        if self.mic_noise_suppression == noise_int and self.preferences.mic_noise_suppression == noise_int:
+            return
+
+        self.mic_noise_suppression = noise_int
+        self.preferences.mic_noise_suppression = noise_int
+        self.save_preferences()
+
+    def persist_mic_volume(self, volume: float) -> None:
+        """Persist the microphone input volume (0–100)."""
+        volume_int = max(1, min(100, int(round(volume))))
+        if self.mic_volume == volume_int and self.preferences.mic_volume == volume_int:
+            return
+
+        self.mic_volume = volume_int
+        self.preferences.mic_volume = volume_int
+        _LOGGER.info("Saving mic_volume %s to %s", volume_int, self.preferences_path)
+        self.save_preferences()
+
+
+def initial_stop_word_threshold(saved_sensitivity: Optional[float]) -> float:
+    """
+    Resolve the stop word probability cutoff to start from, clamped to 0.0-1.0.
+    :param saved_sensitivity: Value persisted in preferences, or None if it has never been set.
+    """
+    if saved_sensitivity is None:
+        return ServerState.stop_word_threshold
+
+    return max(0.0, min(1.0, float(saved_sensitivity)))

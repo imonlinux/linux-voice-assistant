@@ -1,9 +1,16 @@
 #!/usr/bin/env python3
+"""XVF3800 microphone capture probe (soundcard backend).
+
+Lists input devices, opens the selected mic, records a short block and
+prints shape / sample range so capture problems (wrong device, silent
+channel, sample-rate mismatch) are visible before starting the satellite.
+
+Uses the same `soundcard` library as the daemon itself.
+"""
 import argparse
-import time
 
 import numpy as np
-import sounddevice as sd
+import soundcard as sc
 
 
 def main():
@@ -27,56 +34,52 @@ def main():
     )
     args = parser.parse_args()
 
-    print("=== sounddevice.query_devices() (input subset) ===")
-    devices = sd.query_devices()
-    for idx, dev in enumerate(devices):
-        if dev["max_input_channels"] > 0:
-            flag = "*" if args.device in (dev["name"], str(idx)) else " "
-            print(
-                f"{flag} [{idx}] {dev['name']} "
-                f"(max_input_channels={dev['max_input_channels']}, "
-                f"default_samplerate={dev['default_samplerate']})"
+    mics = sc.all_microphones()
+    try:
+        default_id = sc.default_microphone().id
+    except Exception:
+        default_id = None
+    print("=== soundcard.all_microphones() ===")
+    selected = None
+    for idx, mic in enumerate(mics):
+        flag = "*" if args.device in (mic.name, str(idx)) else " "
+        marker = " [system default]" if mic.id == default_id else ""
+        print(
+            f"{flag} [{idx}] {mic.name} "
+            f"(channels={mic.channels}){marker}"
+        )
+        if flag == "*":
+            selected = mic
+
+    if selected is None:
+        # Fallback: soundcard's fuzzy name match (substring, case-insensitive)
+        try:
+            selected = sc.get_microphone(args.device)
+        except Exception as err:
+            raise SystemExit(
+                f"Device {args.device!r} not found by exact name or substring; "
+                f"pick one from the list above ({err})"
             )
 
-    print("\n=== Opening stream ===")
-    sd.default.samplerate = args.samplerate
-    sd.default.dtype = "int16"
+    print(f"\n=== Opening recorder: {selected.name} ===")
+    num_frames = int(args.seconds * args.samplerate)
+    print(f"Recording {args.seconds} seconds ({num_frames} frames @ {args.samplerate:g} Hz)...")
 
-    # Allow using either index or full name
-    device = args.device
-    try:
-        device = int(args.device)
-    except ValueError:
-        pass
+    with selected.recorder(samplerate=int(args.samplerate), channels=1) as rec:
+        chunk = rec.record(numframes=num_frames)
 
-    # First just open/close the stream to see what PortAudio says
-    with sd.InputStream(device=device, channels=0) as stream:
-        print(f"Opened stream with device={device}")
-        print(f"  samplerate: {stream.samplerate}")
-        print(f"  channels:   {stream.channels}")
-        print(f"  dtype:      {stream.dtype}")
-        print(f"  blocksize:  {stream.blocksize}")
-
-    # Now actually record a short block and inspect the shape
-    print("\n=== Recording test block ===")
-    duration = args.seconds
-    num_frames = int(duration * args.samplerate)
-    print(f"Recording {duration} seconds ({num_frames} frames)...")
-
-    recorded = sd.rec(frames=num_frames, samplerate=args.samplerate,
-                      channels=0, dtype="int16", device=device)
-    sd.wait()
-
-    arr = np.array(recorded)
+    arr = np.asarray(chunk)
     print(f"Recorded array shape: {arr.shape}, dtype={arr.dtype}")
-    if arr.ndim == 1:
-        print("-> Mono (1D) array returned")
-    elif arr.ndim == 2:
-        print(f"-> Multichannel: {arr.shape[1]} channels")
-    else:
-        print("-> Unexpected ndim:", arr.ndim)
-
-    print(f"Sample min/max: {arr.min()} / {arr.max()}")
+    if arr.ndim == 2:
+        print(f"-> {arr.shape[1]} channel(s)")
+    # soundcard yields float32 in [-1.0, 1.0]; report as int16 like the
+    # previous sounddevice-based probe did
+    pcm16 = np.clip(arr.flatten() * 32767.0, -32768, 32767).astype(np.int16)
+    print(f"Sample min/max (int16): {pcm16.min()} / {pcm16.max()}")
+    peak = np.max(np.abs(pcm16))
+    if peak < 100:
+        print("-> WARNING: capture is essentially silent (peak < 100). "
+              "Check the device is the XVF3800 and its input gain/mute state.")
 
 
 if __name__ == "__main__":

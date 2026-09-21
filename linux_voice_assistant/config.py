@@ -8,13 +8,12 @@ This module is intentionally defensive:
 
 from __future__ import annotations
 
+import argparse
 import json
 import logging
 from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Type, TypeVar
-
-from .util import load_jsonc
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -24,6 +23,46 @@ T = TypeVar("T")
 # -----------------------------------------------------------------------------
 # Helpers
 # -----------------------------------------------------------------------------
+
+def _load_json_with_comments(path: Path) -> dict:
+    """Load JSON from file, stripping JSON-with-comments (JSONC) comments.
+
+    Supports both // comments and /* block comments */. Strips comments
+    before parsing to allow documented config files while using stdlib json.
+    """
+    import re
+
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            content = f.read()
+    except FileNotFoundError:
+        _LOGGER.critical("Configuration file not found at: %s", path)
+        raise
+
+    # Strip // comments (but not inside strings)
+    # First pass: remove // comments outside of quotes
+    lines = []
+    for line in content.splitlines():
+        # Simple heuristic: split on " and // to find // outside strings
+        # This is conservative - it may miss some edge cases but works for typical configs
+        in_string = False
+        i = 0
+        while i < len(line):
+            c = line[i]
+            if c == '"' and (i == 0 or line[i-1] != '\\'):
+                in_string = not in_string
+            elif not in_string and c == '/' and i + 1 < len(line) and line[i+1] == '/':
+                # Found // comment, strip rest of line
+                line = line[:i]
+                break
+            i += 1
+        lines.append(line)
+    content = '\n'.join(lines)
+
+    # Strip /* block comments */
+    content = re.sub(r'/\*.*?\*/', '', content, flags=re.DOTALL)
+
+    return json.loads(content)
 
 def _clamp_0_1(name: str, value: float) -> float:
     """Clamp a float to [0.0, 1.0], logging a warning if clamped."""
@@ -128,6 +167,11 @@ class AppConfig:
     # the wakeup sound bleeding into the microphone (poor AEC setup).
     listen_during_wake_sound: bool = True
 
+    # Delay in seconds before reopening the mic after TTS finishes when
+    # continue_conversation is enabled. This prevents the TTS tail from being
+    # captured as new audio. Default is 0.5s to match upstream behavior.
+    continue_conversation_delay: float = 0.5
+
     preferences_file: str = "preferences.json"
     debug: bool = False
 
@@ -223,6 +267,12 @@ class ButtonConfig:
 
     # Press duration (in seconds) to be considered a "long press" (gpio mode).
     long_press_seconds: float = 2.0
+
+    # Button state polling interval in seconds (xvf3800 mode; the GPIO
+    # controller uses edge interrupts). The XVF3800 controller defaults to
+    # 0.05 (20 Hz) when absent; 0.15 trades a little latency for less USB
+    # traffic on slower boards.
+    poll_interval_seconds: float = 0.05
 
 @dataclass
 class TrayConfig:
@@ -320,11 +370,16 @@ class SendspinPlayerConfig:
     # This value is retained for backwards compatibility and for UI/Docs.
     duck_volume_percent: int = 20
 
-    # Local playback process configuration
+    # Local playback process configuration (legacy mpv pipeline; unused by the
+    # aiosendspin-based client, kept so existing config files load silently)
     mpv_path: str = "mpv"
     mpv_ao: Optional[str] = None
     mpv_audio_device: Optional[str] = None
     mpv_extra_args: List[str] = field(default_factory=list)
+
+    # sounddevice output device name for the aiosendspin player.
+    # None/omitted = system default output device.
+    output_device: Optional[str] = None
 
     # Decoder configuration (Milestone 4: wired-through, used in later milestones)
     decoder_backend: str = "auto"  # auto|ffmpeg|none
@@ -399,9 +454,47 @@ class SendspinCoordinationConfig:
 
 
 @dataclass
+class SendspinPairingConfig:
+    """Pairing settings for the Sendspin client (headless-friendly)."""
+
+    # Static PIN entered in Music Assistant when pairing this player.
+    # Optional: if unset, a dynamic PIN is generated during pairing and
+    # written to the daemon log (journalctl).
+    pin: Optional[str] = None
+
+    # Speak the pairing PIN through the device speaker via espeak-ng
+    # (Voice-PE style pairing). Falls back to log-only when espeak-ng
+    # is not installed.
+    speak_pin: bool = True
+
+    # Optional espeak-ng voice override (e.g. "en-us"). When unset, the
+    # voice is chosen from the language preferences the server reports.
+    voice: Optional[str] = None
+
+    # Speaking rate for the PIN announcement in words-per-minute.
+    # espeak-ng's default (175) is too fast for 6-digit codes; slower
+    # (110-130) is much easier to catch. Only applies to the espeak-ng
+    # engine.
+    voice_speed: int = 120
+
+    # TTS engine for the spoken PIN:
+    #   "auto"      -> piper if a voice model is already downloaded,
+    #                  otherwise espeak-ng
+    #   "piper"     -> neural voice (piper-tts); downloads the model
+    #                  (~60 MB, one-time) on first use. RECOMMENDED -
+    #                  same engine Home Assistant uses for Piper TTS.
+    #   "espeak-ng" -> classic robotic espeak
+    voice_engine: str = "auto"
+
+    # Piper voice model (HuggingFace name or local .onnx path).
+    piper_model: str = "en_US-lessac-medium"
+
+
+@dataclass
 class SendspinConfig:
     """Top-level Sendspin config block."""
     enabled: bool = False
+    pairing: SendspinPairingConfig = field(default_factory=SendspinPairingConfig)
     connection: SendspinConnectionConfig = field(default_factory=SendspinConnectionConfig)
     roles: SendspinRolesConfig = field(default_factory=SendspinRolesConfig)
     player: SendspinPlayerConfig = field(default_factory=SendspinPlayerConfig)
@@ -429,15 +522,11 @@ class Config:
 def load_config_from_json(config_path: Path) -> Config:
     """Loads configuration from a JSON file and populates dataclasses.
 
-    Supports JSONC (JSON with comments) - // and /* */ style comments are
-    stripped before parsing, allowing inline documentation in config files.
+    Supports JSON-with-comments (JSONC) format - comments are stripped before parsing.
     """
 
     try:
-        raw_data = load_jsonc(config_path)
-    except FileNotFoundError:
-        _LOGGER.critical("Configuration file not found at: %s", config_path)
-        raise
+        raw_data = _load_json_with_comments(config_path)
     except json.JSONDecodeError as e:
         _LOGGER.critical("Error parsing configuration file: %s", e)
         raise
@@ -460,6 +549,9 @@ def load_config_from_json(config_path: Path) -> Config:
 
     sendspin_cfg = SendspinConfig(
         enabled=bool(sendspin_raw.get("enabled", False)),
+        pairing=_dataclass_from_dict(
+            SendspinPairingConfig, (sendspin_raw.get("pairing", {}) or {}), context="sendspin.pairing"
+        ),
         connection=_dataclass_from_dict(
             SendspinConnectionConfig, (sendspin_raw.get("connection", {}) or {}), context="sendspin.connection"
         ),
@@ -580,3 +672,86 @@ def load_config_from_json(config_path: Path) -> Config:
         button=button_config,
         sendspin=sendspin_cfg,
     )
+
+
+# -----------------------------------------------------------------------------
+# Argparse bridge (fork)
+#
+# config.json remains the fork's single source of truth for configuration, but
+# the daemon's CLI (and therefore the upstream core it tracks) stays authoritative
+# at runtime: values from config.json are injected as argparse *defaults*, so any
+# explicit CLI flag still wins. Fork-only sections (led/mqtt/button/sendspin)
+# have no CLI counterpart and are consumed directly from the Config object by
+# their subsystems.
+# -----------------------------------------------------------------------------
+
+_REPO_ROOT = Path(__file__).parent.parent
+
+
+def _resolve_repo_path(value: str) -> str:
+    """Resolve a config path relative to the repo root (absolute paths pass through)."""
+    path = Path(value)
+    if not path.is_absolute():
+        path = _REPO_ROOT / path
+    return str(path)
+
+
+def apply_config_defaults(parser: "argparse.ArgumentParser", config: Config) -> None:
+    """Map config.json values onto argparse defaults for the daemon CLI.
+
+    Only overlapping settings are mapped; fork-only sections (led, mqtt,
+    button, sendspin) are read from the Config object by their subsystems.
+    """
+    defaults: Dict[str, Any] = {}
+
+    # --- app ---
+    if config.app.name:
+        defaults["name"] = config.app.name
+    if config.app.debug:
+        defaults["debug"] = True
+    if config.app.wakeup_sound:
+        defaults["wakeup_sound"] = _resolve_repo_path(config.app.wakeup_sound)
+    if config.app.thinking_sound:
+        # Fork "thinking sound" == upstream "--processing-sound"
+        defaults["processing_sound"] = _resolve_repo_path(config.app.thinking_sound)
+    if config.app.timer_finished_sound:
+        defaults["timer_finished_sound"] = _resolve_repo_path(config.app.timer_finished_sound)
+    if config.app.preferences_file:
+        defaults["preferences_file"] = _resolve_repo_path(config.app.preferences_file)
+    defaults["listen_during_wake_sound"] = config.app.listen_during_wake_sound
+    if config.app.continue_conversation_delay is not None:
+        defaults["continue_conversation_delay"] = config.app.continue_conversation_delay
+
+    # --- audio ---
+    if config.audio.input_device:
+        defaults["audio_input_device"] = config.audio.input_device
+    if config.audio.input_block_size:
+        defaults["audio_input_block_size"] = config.audio.input_block_size
+    if config.audio.output_device:
+        defaults["audio_output_device"] = config.audio.output_device
+
+    # --- wake_word ---
+    if config.wake_word.directories:
+        defaults["wake_word_dir"] = [
+            _resolve_repo_path(d) for d in config.wake_word.directories
+        ]
+    if config.wake_word.model:
+        defaults["wake_model"] = config.wake_word.model
+    if config.wake_word.stop_model:
+        defaults["stop_model"] = config.wake_word.stop_model
+    if config.wake_word.refractory_seconds is not None:
+        defaults["refractory_seconds"] = config.wake_word.refractory_seconds
+    if config.wake_word.download_dir:
+        defaults["download_dir"] = _resolve_repo_path(config.wake_word.download_dir)
+
+    # --- esphome ---
+    # A wildcard host (0.0.0.0 / ::) means "auto-detect" here: upstream uses
+    # --host for BOTH the TCP bind and the zeroconf advertisement, and
+    # advertising 0.0.0.0 makes the device undiscoverable by Home Assistant.
+    if config.esphome.host and config.esphome.host not in ("0.0.0.0", "::"):
+        defaults["host"] = config.esphome.host
+    if config.esphome.port:
+        defaults["port"] = config.esphome.port
+
+    if defaults:
+        parser.set_defaults(**defaults)

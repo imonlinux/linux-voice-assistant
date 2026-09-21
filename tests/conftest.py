@@ -192,7 +192,7 @@ def mock_state(event_loop, event_bus):
     state.loop = event_loop
     state.event_bus = event_bus
     state.preferences = MagicMock(spec=Preferences)
-    state.preferences.volume_level = 0.5
+    state.preferences.volume = 0.5
     state.mic_mute = False
     return state
 

@@ -1,112 +1,79 @@
 """Utility methods."""
 
-import json
-import logging
-import uuid
 from collections.abc import Callable
-from typing import Any
+from importlib.metadata import PackageNotFoundError, version
+from pathlib import Path
+from typing import Optional
 
-_LOGGER = logging.getLogger(__name__)
-_CACHED_MAC: Optional[str] = None
+# netifaces lib is from netifaces2
+import netifaces
+
+# Cache for version to avoid repeated file reading
+_version_cache: Optional[str] = None
+_esphome_version_cache: Optional[str] = None
 
 
-def load_jsonc(path: str, encoding: str = "utf-8") -> Any:
+def get_version() -> str:
     """
-    Load a JSON file, stripping JSONC comments (// and /* */).
+    Read the version from version.txt file.
 
-    This allows config files to contain comments for documentation
-    while maintaining compatibility with json.load() for standard JSON.
-
-    Args:
-        path: Path to the JSON file
-        encoding: File encoding (default: utf-8)
+    This function reads the content safely without risk of code injection,
+    as it only reads raw text and performs no evaluation.
 
     Returns:
-        Parsed JSON data as Python dict/list
-
-    Raises:
-        FileNotFoundError: If file doesn't exist
-        json.JSONDecodeError: If JSON is malformed after comment stripping
+        str:    The version from version.txt or 'unknown' if the file
+                does not exist or cannot be read.
     """
-    with open(path, "r", encoding=encoding) as f:
-        content = f.read()
+    global _version_cache
 
-    # Strip // comments (not inside strings)
-    lines = []
-    in_string = False
-    string_char = None
+    if _version_cache is not None:
+        return _version_cache
 
-    for line in content.split('\n'):
-        i = 0
-        stripped_line = []
-        while i < len(line):
-            char = line[i]
+    version_file = Path(__file__).parent.parent / "version.txt"
 
-            # Track if we're inside a string literal
-            if char in ('"', "'") and (i == 0 or line[i-1] != '\\'):
-                if in_string and char == string_char:
-                    in_string = False
-                    string_char = None
-                elif not in_string:
-                    in_string = True
-                    string_char = char
+    try:
+        # Sicher lesen: nur Rohtext, keine Evaluierung
+        file_version = version_file.read_text(encoding="utf-8").strip()
+        _version_cache = file_version if file_version else "unknown"
+    except (FileNotFoundError, PermissionError, OSError):
+        _version_cache = "unknown"
 
-            # If not in string, check for comment start
-            if not in_string:
-                if char == '/' and i + 1 < len(line) and line[i+1] == '/':
-                    # Line comment - skip rest of line
-                    break
-                elif char == '/' and i + 1 < len(line) and line[i+1] == '*':
-                    # Block comment start - find end
-                    end_idx = line.find('*/', i + 2)
-                    if end_idx != -1:
-                        i = end_idx + 2
-                    else:
-                        # Multi-line comment - skip rest of line, will handle in subsequent lines
-                        break
-
-            stripped_line.append(char)
-            i += 1
-
-        if stripped_line:
-            lines.append(''.join(stripped_line).rstrip())
-
-    return json.loads('\n'.join(lines))
+    return _version_cache
 
 
-def get_mac_address() -> str:
+def get_esphome_version() -> str:
     """
-    Get the MAC address as a hex string (lowercase, no colons).
-    Example: "b827eb123456"
+    Read the version of the installed aioesphomeapi package.
 
-    This is a thin wrapper around uuid.getnode(), cached so we only
-    compute/log it once per process.
+    This function uses importlib.metadata to safely retrieve the version
+    of an installed Python package without executing any code from the
+    package itself.
+
+    Returns:
+        str:    The version of aioesphomeapi (e.g., '42.7.0'), or 'unknown'
+                if the package is not installed or the version cannot be read.
     """
-    global _CACHED_MAC
-    if _CACHED_MAC:
-        return _CACHED_MAC
+    global _esphome_version_cache
 
-    node = uuid.getnode()
-    mac_hex = f"{node:012x}"
+    if _esphome_version_cache is not None:
+        return _esphome_version_cache
 
-    # If the multicast bit is set, this is probably not a real hardware MAC.
-    if (node >> 40) & 1:
-        _LOGGER.warning(
-            "uuid.getnode() returned a MAC with the multicast bit set; "
-            "discovery identity may change on reboot."
-        )
+    try:
+        _esphome_version_cache = version("aioesphomeapi")
+    except PackageNotFoundError:
+        _esphome_version_cache = "unknown"
 
-    _LOGGER.debug("Using MAC address from uuid.getnode(): %s", mac_hex)
-    _CACHED_MAC = mac_hex
-    return _CACHED_MAC
+    return _esphome_version_cache
+
+
+def call_all(*callables: Optional[Callable[[], None]]) -> None:
+    for item in filter(None, callables):
+        item()
 
 
 def format_mac(mac: str) -> str:
-    """Format a hex MAC string with colons (e.g., aa:bb:cc:dd:ee:ff)."""
-    # Remove existing colons and other separators
+    """Format a hex MAC string with colons (e.g. aa:bb:cc:dd:ee:ff)."""
     clean_mac = mac.replace(":", "").replace("-", "").replace(".", "")
-
-    # Format with colons every 2 characters
     return ":".join(clean_mac[i : i + 2] for i in range(0, 12, 2))
 
 
@@ -115,20 +82,34 @@ def slugify_device_id(name: str) -> str:
     return name.strip().lower().replace(" ", "_")
 
 
-def call_all(*callables: Optional[Callable[[], None]]) -> None:
-    for item in filter(None, callables):
-        item()
+def get_default_interface():
+    """Return the default network interface name, or None if not found."""
+    default_gateway = netifaces.default_gateway()
+
+    if not default_gateway:
+        print("No default gateway found")
+        return None
+
+    # default_gateway is e.g. {InterfaceType.AF_INET: ('192.168.33.1', 'wlp0s20f3')}
+    gateway_info = default_gateway.get(netifaces.AF_INET)
+    if not gateway_info:
+        print("No default IPv4 gateway found")
+        return None
+
+    # gateway_info is a tuple: (gateway_ip, interface_name)
+    interface_name = gateway_info[1]
+    # print(f"Default interface: {interface_name}")
+    return interface_name
 
 
-def is_arm() -> bool:
-    """Detect if running on ARM architecture (e.g., Raspberry Pi)."""
-    try:
-        import platform
-        return platform.machine().startswith(('arm', 'aarch'))
-    except Exception:
-        # Fallback: try to read from /proc/cpuinfo
-        try:
-            with open('/proc/cpuinfo', 'r') as f:
-                return 'ARM' in f.read()
-        except Exception:
-            return False
+def get_default_ipv4(interface: str):
+    if not interface:
+        return None
+
+    addresses = netifaces.ifaddresses(interface)
+    ipv4_info = addresses.get(netifaces.AF_INET)  # type: ignore
+
+    if not ipv4_info:
+        return None
+
+    return ipv4_info[0]["addr"]

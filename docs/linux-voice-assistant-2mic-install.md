@@ -43,11 +43,114 @@ git clone https://github.com/imonlinux/linux-voice-assistant.git
 
 ## 3. Install ReSpeaker drivers
 
+The installer auto-detects the HAT revision on the i2c bus and installs the
+matching overlay — v1 (WM8960 codec, address `0x1a`) or v2 (TLV320AIC3104
+codec, address `0x18`). Both use only mainline kernel drivers
+(`snd-soc-simple-card` + the revision's codec driver) via a device tree
+overlay — no DKMS, no kernel headers, and no per-kernel driver branches. It
+works on any kernel >= 5.4, including Trixie and rolling distros, and never
+requires a kernel downgrade.
+
 ```bash
 chmod +x ~/linux-voice-assistant/respeaker2mic/install-respeaker-drivers.sh
-sudo ~/linux-voice-assistant/respeaker2mic/install-respeaker-drivers.sh 
+sudo ~/linux-voice-assistant/respeaker2mic/install-respeaker-drivers.sh
 sudo reboot
 ```
+
+The script detects the HAT revision on i2c bus 1, compiles and installs the
+matching overlay, registers it in `config.txt`, installs an
+`/etc/asound.conf` with dmix/dsnoop defaults and — on v1 — the mixer state
+(`/var/lib/alsa/asound.state` is restored on every boot). The ALSA card ID
+(`seeed2micvoicec`) is identical on both revisions and to the legacy DKMS
+driver, so existing configs keep working; the script also removes the legacy
+DKMS module if one is present.
+
+### Files in `respeaker2mic/`
+
+| File | Purpose |
+| --- | --- |
+| `install-respeaker-drivers.sh` | The installer (run with `sudo`). POSIX-safe — works under `sh` and `bash`. Auto-detects v1/v2. |
+| `seeed-2mic-voicecard-overlay.dts` | v1 overlay source: `simple-audio-card` + `wm8960` glue using only mainline drivers, compiled with `dtc` at install time. |
+| `seeed-2mic-v2-voicecard-overlay.dts` | v2 overlay source: `simple-audio-card` + `tlv320aic3104` glue (2.5 V micbias for the onboard mics). |
+| `asound_2mic.conf` | ALSA dmix/dsnoop defaults, installed as `/etc/asound.conf`. Shared by both revisions. |
+| `wm8960_asound.state` | v1 mixer state, symlinked to `/var/lib/alsa/asound.state` so `alsa-state.service` restores it on every boot. v2-only installs leave the default state file alone (the AIC3104 mixer has different controls). |
+
+### What the installer does
+
+1. Probes i2c bus 1 for the HAT: `0x1a` selects the v1/WM8960 overlay,
+   `0x18` selects the v2/AIC3104 overlay; finding both (or neither) aborts
+   with an explanation.
+2. Verifies the running kernel provides the revision's codec driver
+   (`snd-soc-wm8960` or `snd-soc-tlv320aic3x`) and
+   `snd-soc-simple-card` (any kernel >= 5.4).
+3. Removes the legacy `seeed-voicecard` DKMS module and service if present.
+   The upgrade is in place: the ALSA card ID `seeed2micvoicec` is unchanged,
+   so existing LVA device strings keep working.
+4. Compiles the matching overlay with `dtc`, installs it into the boot
+   partition's `overlays/` directory, and appends the corresponding
+   `dtoverlay=` line (plus the `i2c_arm`, `i2s` and `spi` dtparams) to
+   `config.txt` idempotently; a stale entry for the other revision is
+   removed (HAT swapped).
+5. Installs the ALSA defaults and, on v1, the mixer state (see table above).
+6. Tries to register the card live via `dtoverlay` so no reboot is needed;
+   otherwise it asks for a single reboot.
+
+After this, kernel upgrades are a no-op for audio: there is no out-of-tree
+module to rebuild and no per-kernel driver branch to wait for.
+
+### Verify
+
+```bash
+aplay -l | grep seeed2micvoicec
+arecord -D hw:CARD=seeed2micvoicec -f S16_LE -r 48000 -c 2 -d 3 /tmp/t48.wav; echo $?
+~/linux-voice-assistant/script/run --list-input-devices
+dmesg | grep -iE "wm8960|aic3104"    # expect no errors
+```
+
+A silent `rc=0` from `arecord` plus a source in `--list-input-devices`
+means the card is fully up, including its PipeWire/PulseAudio source.
+
+### Output volume
+
+Set the HAT's output sink to 100% so TTS and announcements play at full
+level (the default can be well below that):
+
+```bash
+pactl set-sink-volume alsa_output.platform-seeed-2mic-sound.stereo-fallback 100%
+```
+
+The sink name comes from the overlay's sound card (`seeed-2mic-sound`). If
+your sink is named differently, list them:
+
+```bash
+pactl list short sinks
+```
+
+> **Note:** The generic-looking `alsa_output.platform-seeed-2mic-sound.stereo-fallback`
+> is a different card — on this HAT the correct sink is
+> `alsa_output.platform-seeed-2mic-sound.stereo-fallback`.
+
+PipeWire/PulseAudio remembers the per-device volume across reboots, and the
+installer's `wm8960_asound.state` restores the ALSA mixer levels on every
+boot, so this is a one-time step. Input level is controlled separately from
+the Home Assistant device page (mic volume / auto gain entities).
+
+### Troubleshooting
+
+- **`wm8960 1-001a: No MCLK configured` in dmesg; every playback/capture
+  fails** — an older copy of the overlay is installed that places the codec
+  clock on the wrong device tree node. `git pull` and re-run the installer,
+  then reboot.
+- **Card listed by `aplay -l` but no source/sink in the sound server**
+  (`wpctl status` shows only Dummy Output) — PipeWire probed the card before
+  it was usable. Restart the sound server
+  (`systemctl --user restart wireplumber pipewire pipewire-pulse`) or reboot.
+- **A previous failed install left dpkg unconfigured** — remove the legacy
+  DKMS module first, then run `sudo dpkg --configure -a` (the failed DKMS
+  autoinstall can leave kernel packages unconfigured).
+- **Old kernel packages piling up** — once the mainline installer is active,
+  kernels that were only kept for the DKMS driver can be removed with
+  `sudo apt autoremove`.
 
 
 ## 4. Linux Voice Assistant (LVA)
@@ -356,9 +459,9 @@ Output devices
 ==============
 auto: Autoselect device
 pipewire: Default (pipewire)
-pipewire/alsa_output.platform-soc_sound.stereo-fallback: Built-in Audio Stereo
+pipewire/alsa_output.platform-seeed-2mic-sound.stereo-fallback: Built-in Audio Stereo
 pipewire/echo-cancel-sink: Echo-Cancel Sink
-pulse/alsa_output.platform-soc_sound.stereo-fallback: Built-in Audio Stereo
+pulse/alsa_output.platform-seeed-2mic-sound.stereo-fallback: Built-in Audio Stereo
 pulse/echo-cancel-sink: Echo-Cancel Sink
 alsa: Default (alsa)
 alsa/sysdefault: Default Audio Device

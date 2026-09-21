@@ -1,24 +1,32 @@
 # Linux Voice Assistant
 
+> [!IMPORTANT]
+> **Major advancements in this fork**
+>
+> - **Kernel-independent ReSpeaker 2-Mic HAT (v1 and v2) audio** — mainline kernel drivers via a device-tree overlay, with the installer auto-detecting the HAT revision (v1 WM8960, v2 TLV320AIC3104). No DKMS, no kernel headers, works on any kernel >= 5.4, and kernel upgrades can no longer break audio. Legacy DKMS installs upgrade in place, keeping the same ALSA card ID. ([2-Mic install guide](docs/linux-voice-assistant-2mic-install.md))
+> - **Re-founded on the upstream core** — the upstream architecture (`satellite.py`, `entity.py`, `player/`, peripheral API) is used as-is and the fork's differentiating features are add-on modules, so upstream releases merge cleanly again. ([docs/RESYNC_PLAN.md](docs/RESYNC_PLAN.md))
+> - **Sendspin rebuilt on `aiosendspin` 9.x** — the deprecated pre-encryption wire protocol is gone; encrypted pairing with a PIN spoken through the speaker (Piper), persistent player identity, Music Assistant multiroom.
+> - **Self-updating fleet** — `script/update_lva` deploys its own freshly fetched version in place, with `--rollback` and `--branch` support, while untracked per-device data (thresholds, wake words, credentials, `config.json`) survives every update.
+
 > Forked from [OHF-Voice/linux-voice-assistant][ohf-voice] Release v1.0.0.
-> 
-> Upstream concepts incorporated since the fork point:
-> 
->     - `soundcard` audio library replacing `sounddevice` (upstream alignment)
-> 
->     - `pymicro-wakeword` and `pyopen-wakeword` pip packages replacing local wake word code
-> 
->     - Timer alarm auto-stop ([upstream PR #261](https://github.com/OHF-Voice/linux-voice-assistant/pull/261)) — extended with runtime HA control
-> 
->     - Wake word sensitivity presets ([upstream PR #207](https://github.com/OHF-Voice/linux-voice-assistant/pull/207)) — integrated with fork's per-model threshold system
-> 
->     - Mute switch and thinking sound toggle as ESPHome entities (upstream pattern)
+>
+> **Re-founded on upstream v1.1.15+** (2026-09): this fork now tracks upstream's
+> architecture directly — the upstream core (`satellite.py`, `entity.py`,
+> `player/`, `wake_word.py`, peripheral API) is used as-is and the fork's
+> differentiating features are add-on modules on top. Upstream releases merge
+> cleanly again. See [docs/RESYNC_PLAN.md](docs/RESYNC_PLAN.md).
+>
+> From upstream, this brings the full ESPHome device-page entity set (mic
+> auto gain, noise suppression, mic volume, per-slot wake word and stop word
+> sensitivities), dual music/TTS players with ducking and announcements,
+> `--music-output-device`, output-only mode, external wake word downloads,
+> MWW/OWW model switching from the UI, and the WebSocket peripheral API.
 
 A Linux-based voice satellite for [Home Assistant][homeassistant] that speaks the [ESPHome][esphome] protocol via [aioesphomeapi][aioesphomeapi]. It turns any Linux device — from a Raspberry Pi Zero 2 W to a full desktop — into a capable voice assistant with wake word detection, speech-to-text, TTS playback, timers, LED feedback, and optional multiroom audio via Sendspin.
 
 Runs on `aarch64` and `x86_64`
 
-Tested with Python 3.11, 3.13, and 3.14 on Raspberry Pi OS (Trixie), Fedora, Arch, and Nobara.
+Tested with Python 3.11, 3.13, and 3.14 on Raspberry Pi OS (Trixie), Fedora, Arch, and Nobara. Base install requires Python 3.11+; the optional Sendspin client requires **Python 3.12+**.
 
 See [the tutorial](docs/linux-voice-assistant-install.md) for complete instructions to install LVA.
 
@@ -29,12 +37,28 @@ See [the tutorial](docs/linux-voice-assistant-install.md) for complete instructi
 ### Voice Assistant Core
 
 - **Dual wake word engines** — MicroWakeWord and OpenWakeWord models can run simultaneously. Wake words are selectable from the Home Assistant UI and persisted across reboots.
-- **Wake word sensitivity** — Adjustable detection sensitivity (Slightly/Moderately/Very sensitive) controllable from the Home Assistant device page. Per-model OpenWakeWord thresholds from `.json` files take precedence over the global preset. (More details in the Wake Word Models section below)
-- **Conversational flow** — Supports announcements, start/continue conversation, and timers with configurable alarm duration and auto-stop.
-- **Configurable event sounds** — Wakeup, thinking, and timer sounds selectable from the Home Assistant device page, with a master toggle (`Event Sounds`). Thinking sound supports optional looping. Timer alarm is a functional alert and always plays regardless of the toggle.
-- **Acoustic Echo Cancellation** — WebRTC-based AEC via PipeWire filter chains for clean wake word detection during TTS playback.
+- **Wake word sensitivity** — Per-slot numeric sensitivity controls (Wake Word 1/2, Stop Word) on the Home Assistant device page. Precedence: entity value > per-model `.json` threshold > global threshold (config.json / `--wake-word-threshold`).
+- **Microphone tuning** — Mic auto gain, noise suppression, and mic volume entities on the device page (upstream WebRTC processing).
+- **Conversational flow** — Supports announcements, start/continue conversation (configurable delay), and timers with configurable alarm duration and auto-stop.
+- **Configurable event sounds** — Wakeup, thinking, and timer sounds selectable from the Home Assistant device page, with a master toggle (`Event Sounds`). Thinking sound supports optional looping. Timer alarm is a functional alert and always plays regardless of the toggle. The wake chime always plays at full volume.
+- **Acoustic Echo Cancellation** — WebRTC-based AEC via PipeWire filter chains for clean wake word detection during TTS playback, plus optional dual-channel input for server-side AEC.
 - **Stop word** — A dedicated MicroWakeWord model can interrupt TTS playback or silence a ringing timer alarm.
-- **Alarm Duration** — Set the time in seconds for the alarm to play (0 = play until interrupted by the Stop wake word). Configurable from the Home Assistant device page.
+- **Alarm Duration** — Set the time in seconds for the alarm to play (0 = play until interrupted by the Stop wake word). Configurable from the Home Assistant device page. Alarm repeats are scheduled end-relative (no stutter on long alarm sounds), and a wake word while the alarm rings starts listening immediately.
+
+### ESPHome Device Page (no MQTT required)
+
+All voice/audio controls appear on the HA device page via the native ESPHome API:
+
+| Entity | Type |
+| --- | --- |
+| Media Player (music + announcements) | `media_player` |
+| Mute | `switch` |
+| Thinking Sound / Thinking Sound Loop | `switch` ×2 |
+| Event Sounds (master toggle) | `switch` |
+| Sound Wakeup / Thinking / Timer | `select` ×3 |
+| Alarm Duration | `number` |
+| Wake Word 1/2 & Stop Word Sensitivity | `number` ×3 |
+| Mic Auto Gain / Noise Suppression / Volume | `number`/`select` |
 
 ### MQTT Device Controls
 
@@ -48,14 +72,14 @@ When MQTT is enabled, *(See Section 5 of [the tutorial](docs/linux-voice-assista
 
 *LED states: Idle, Listening, Thinking, Responding, Error. Available effects: Off, Solid, Slow/Medium/Fast Pulse, Slow/Medium/Fast Blink, Spin*
 
-> **Note:** Mute, sound selection, thinking sound loop, alarm duration, event sounds, and wake word sensitivity are now controlled via the ESPHome device page in Home Assistant — no MQTT required. MQTT is only needed for LED controls. The tray client continues to use MQTT for mute state mirroring but the entity is not published in HA.
+> **Note:** MQTT is only needed for LED controls and the desktop tray client (which mirrors state over MQTT). Everything else lives on the ESPHome device page.
 
 <img width="515" height="1033" alt="image" src="https://github.com/user-attachments/assets/cfc9e462-b301-4323-a3d8-5bab0322a548" />
 
 
 ### Hardware Integrations *(See Section 5 of [the tutorial](docs/linux-voice-assistant-install.md))*
 
-- **ReSpeaker 2-Mic Pi HAT v1 or v2** — GPIO button (mute toggle, short/long press) and SPI LEDs
+- **ReSpeaker 2-Mic Pi HAT v1 or v2** — GPIO button (mute toggle, short/long press) and SPI LEDs. Audio for both revisions runs on mainline kernel drivers via auto-detected device-tree overlays (no DKMS/kernel headers, any kernel >= 5.4)
 - **ReSpeaker XVF3800 4-Mic USB Array** — Hardware mute button, red mute LED sync, USB LED ring, and 4-mic input with AEC support. No vendor binaries required — LVA communicates directly via USB control transfers.
 
 ### LED Support
@@ -69,13 +93,27 @@ When MQTT is enabled, *(See Section 5 of [the tutorial](docs/linux-voice-assista
 
 The optional Sendspin client turns LVA into a multiroom audio player for [Music Assistant][music-assistant]. The LVA automatically appears as a player in Music Assistant using the device name.
 
-- **Codec support** — PCM, FLAC (via ffmpeg), and Opus (via opuslib or ffmpeg)
-- **Clock-synchronized playback** — Kalman filter clock sync with configurable target latency and late-drop policy for tight multiroom alignment
-- **Transport controls** — Play, pause, stop, volume, and mute from Music Assistant
-- **Voice coordination** — Automatic audio ducking during voice interactions
-- **Tunable timing** — `output_latency_ms`, `sync_target_latency_ms`, and `sync_late_drop_ms` for per-device calibration
+- **Transport controls** — Play, pause, stop, volume, and mute from Music Assistant, with state echoed back so the MA UI always reflects the device
+- **Voice coordination** — Automatic audio ducking during voice interactions (`coordination.duck_during_voice`, `coordination.duck_gain`); logged at INFO
+- **Persistent identity** — the player's cryptographic identity and pairing credentials persist next to `preferences.json`; pair once per MA server, never again
+- **Headless-friendly pairing** — when you pair the player in Music Assistant, LVA **speaks the pairing code through its speaker** using a natural neural voice (Piper — the same engine HA uses for Piper TTS). A fixed code can also be set with `sendspin.pairing.pin`, and the code is always written to the daemon log as a fallback
+- **Tunable timing** — `sync_target_latency_ms` (server send-ahead target; also the playback start gate) and `output_latency_ms` (static delay compensation, clamped to 0–5000 ms — the old negative tuning is obsolete)
+- **Format** — PCM is advertised to the server; Music Assistant transcodes (PCM is mandatory for all Sendspin servers)
 
-#### *Requires Python 3.12+ and the `--sendspin` install extra.*
+#### Voice engine selection
+
+The pairing announcement uses the best available TTS engine, selected automatically:
+
+| Engine | Quality | Extra dependency |
+|---|---|---|
+| **Piper** (default when installed) | Natural neural voice | `piper-tts` (installed with `--sendspin`) |
+| **espeak-ng** | Robotic fallback | `espeak-ng` system package |
+
+Override with `pairing.voice_engine` in config.json (`"auto"`, `"piper"`, or `"espeak-ng"`). Additional tuning: `pairing.piper_model` (HuggingFace voice model, default `en_US-lessac-medium`), `pairing.voice` and `pairing.voice_speed` (espeak-ng only).
+
+See [the tutorial's Sendspin section](docs/linux-voice-assistant-install.md) for configuration and pairing, including the required `sendspin.connection.server_host` setting.
+
+#### *Requires Python 3.12+, the `--sendspin` install extra (includes Piper TTS), and `libportaudio2`.*
 
 ### Desktop Tray Client *(See [this tutorial](docs/lva-desktop.md))*
 
@@ -93,7 +131,7 @@ LVA persists its MAC address to `preferences.json` on first boot. This ensures t
 
 ### Persistent Settings
 
-Volume, wake word selection, LED count, alarm duration, sound selections, and Sendspin volume are all persisted to `preferences.json` and restored on startup.
+Volume, wake word selection, LED count, alarm duration, sound selections, and Sendspin volume are all persisted to `preferences.json` and restored on startup. The Sendspin player's cryptographic identity and pairing credentials persist alongside it (`sendspin_identity.json` / `sendspin_pairing.json`) — keep these files when migrating or the player will need re-pairing in Music Assistant.
 
 ---
 
@@ -126,7 +164,9 @@ script/setup --dev         # Development tools
 Copy and edit the example configuration:
 
 ```bash
-nano ~/linux_voice_assistant/config.json
+cp ~/linux-voice-assistant/linux_voice_assistant/config.json.example \
+   ~/linux-voice-assistant/linux_voice_assistant/config.json
+nano ~/linux-voice-assistant/linux_voice_assistant/config.json
 ```
 
 *At minimum, set the `app.name` field. See [`config.json.example`](linux_voice_assistant/config.json.example) for all available options with inline documentation.*
@@ -258,13 +298,12 @@ linux-voice-assistant/
 │   ├── openwakeword.py                              # Open wake word detection module
 │   ├── satellite.py                            # ESPHome voice assistant protocol
 │   ├── sendspin                                # Sendspin client subsystem
-│   │   ├── client.py                            # WebSocket connection and protocol
-│   │   ├── clock_sync.py                        # Kalman filter time synchronization
-│   │   ├── controller.py                        # EventBus handlers for ducking/commands
-│   │   ├── discovery.py                        # mDNS server discovery
-│   │   ├── __init__.py
-│   │   ├── models.py                            # Sendspin internal state
-│   │   └── player.py                            # PCM sink and decoder pipeline
+│   │   ├── client.py                            # LVA wrapper on aiosendspin: pairing, EventBus
+│   │   ├── output.py                            # Synchronized PCM output (reference player)
+│   │   ├── audio_devices.py                     # sounddevice output enumeration
+│   │   ├── identity.py                          # Persistent player identity
+│   │   ├── controller.py                        # Voice-coordination ducking handlers
+│   │   └── __init__.py
 │   ├── tray_client                                # Desktop tray client
 │   │   ├── client.py                            # PyQt5 system tray application
 │   │   ├── __init__.py
@@ -277,8 +316,12 @@ linux-voice-assistant/
 ├── pylintrc
 ├── pyproject.toml
 ├── README.md
-├── respeaker2mic                                # reSpeaker 2mic hat driver installers
-│   └── install-respeaker-drivers.sh            # verion 1.0 hardware driver installer
+├── respeaker2mic                                # reSpeaker 2mic hat audio support (mainline drivers, kernel-independent)
+│   ├── asound_2mic.conf                       # ALSA dmix/dsnoop defaults, installed as /etc/asound.conf
+│   ├── install-respeaker-drivers.sh            # HAT installer: auto-detects v1/v2, no DKMS/kernel headers
+│   ├── seeed-2mic-v2-voicecard-overlay.dts     # v2 overlay source (simple-audio-card + tlv320aic3104)
+│   ├── seeed-2mic-voicecard-overlay.dts        # v1 overlay source (simple-audio-card + wm8960)
+│   └── wm8960_asound.state                     # v1 mixer state, restored by alsa-state on every boot
 ├── script
 │   ├── format
 │   ├── lint
@@ -305,29 +348,24 @@ linux-voice-assistant/
 │   │   └── timer_finished.flac
 │   └── wakeup                                    # Wake word triggered sounds
 │       └── wake_word_triggered.flac
-├── tests                                              # Comprehensive test suite (293 tests, 99.3% passing)
-│   ├── README.md                                      # Test documentation
+├── tests                                              # Test suite (625 passing: upstream unit + fork tests)
 │   ├── conftest.py                                    # Shared pytest fixtures
-│   ├── diagnose_imports.py                            # Import diagnostic utility
-│   ├── test_audio_engine.py                           # Audio engine tests
+│   ├── unit/                                          # Upstream core unit tests (satellite, entity,
+│   │                                                  #   wake word, player, peripheral API, zeroconf…)
 │   ├── test_button_controller.py                      # Button controller tests
-│   ├── test_configuration.py                         # Configuration management tests
-│   ├── test_end_to_end_workflows.py                  # End-to-end integration tests
+│   ├── test_configuration.py                          # Configuration management tests
 │   ├── test_event_bus.py                              # Event system architecture tests
 │   ├── test_format_mac.py                             # MAC address formatting tests
 │   ├── test_led_controller.py                         # LED control tests
-│   ├── test_microwakeword.py                          # MicroWakeWord detection tests
-│   ├── test_mqtt_controller.py                        # MQTT integration tests
-│   ├── test_openwakeword.py                           # OpenWakeWord detection tests
-│   ├── test_sendspin_client.py                        # Sendspin client tests
-│   ├── test_sendspin_discovery.py                     # Sendspin discovery tests
-│   ├── test_state_management.py                       # State management tests
+│   ├── test_mqtt_controller.py                        # MQTT LED/tray integration tests
+│   ├── test_sendspin_client.py                        # Sendspin client + library contract tests
+│   ├── test_sendspin_identity.py                      # Sendspin identity persistence tests
 │   ├── test_volume_management.py                      # Volume control tests
-│   ├── test_xvf3800_button_controller.py             # XVF3800 button hardware tests
-│   ├── test_xvf3800_led_backend.py                   # XVF3800 LED hardware tests
+│   ├── test_xvf3800_button_controller.py              # XVF3800 button hardware tests
+│   ├── test_xvf3800_led_backend.py                    # XVF3800 LED hardware tests
 │   ├── lva_mic_capture.py                             # Audio capture utility
 │   ├── ok_nabu.wav                                    # Test audio file
-│   ├── xvf3800_hid_mute_probe.py                     # XVF3800 hardware probe
+│   ├── xvf3800_hid_mute_probe.py                      # XVF3800 hardware probe
 │   └── xvf3800_probe.py                               # XVF3800 device probe
 ├── wakewords                                    # Wake word models
 │   ├── alexa.json
@@ -410,16 +448,15 @@ pytest tests/ -m "not hardware"
 - **Unit Tests**: Core architecture (EventBus, State, Configuration)
 - **Integration Tests**: Controllers and hardware abstractions
 - **Hardware Tests**: Physical device integration (XVF3800, ReSpeaker)
-- **End-to-End Tests**: Complete voice assistant workflows
 
 ### Current Test Status
 
-- **Total Tests**: 293
-- **Passing**: 291 (99.3%)
-- **Skipped**: 2 (hardware-dependent tests)
-- **Test Framework**: pytest 7.4.4 with asyncio, mock, and coverage support
+- **Total**: 625 passing, 1 skipped (timing-dependent threading test) with all install extras present; Sendspin and tray tests skip gracefully when their extras aren't installed
+- **Coverage**: upstream core unit tests (`tests/unit/`) + fork subsystem tests
+- **Sendspin tests** skip gracefully when the sendspin extra isn't installed
+- **Framework**: pytest with asyncio, mock, and coverage support (Python 3.12+ for the full suite)
 
-See [Testing Guide](docs/testing-guide.md) for detailed testing documentation and [tests/README.md](tests/README.md) for test-specific information.
+See [Testing Guide](docs/testing-guide.md) for detailed testing documentation.
 
 ### Code Quality
 

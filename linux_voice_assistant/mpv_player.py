@@ -1,334 +1,146 @@
-"""Media player using mpv in a subprocess.
-
-This wrapper focuses on:
-- Simple playback control (play / pause / resume / stop)
-- Volume control and ducking
-- Notifying a done_callback when playback finishes
-- Letting mpv choose the best audio backend by default
-
-If a specific audio device is provided, it is passed directly to mpv as
-`audio-device`. Otherwise, mpv's own automatic backend/device selection is used.
-
-Note about volume:
-- mpv has its own per-player volume (0..100).
-- PipeWire/PulseAudio/ALSA also has a system output volume.
-
-LVA persists a single user volume (0.0..1.0) in preferences.json. To avoid
-"mystery caps" where the OS sink is stuck at e.g. 40% while LVA shows 100%,
-LVA treats the OS output volume as the "master" and keeps mpv at 100% for normal
-playback. Ducking still uses mpv's per-player volume.
-"""
-
-from __future__ import annotations
-
-import asyncio
+# mpv_player.py
 import logging
-import os
-from threading import Lock
-from typing import Callable, List, Optional, Sequence, Union
+from typing import Callable, List, Optional, Union
 
-# Note: python-mpv must be installed; imported at runtime.
-from mpv import MPV
-
-from .audio_volume import set_output_volume
-
-_LOGGER = logging.getLogger(__name__)
+from .player.libmpv import LibMpvPlayer
+from .player.state import PlayerState
 
 
 class MpvMediaPlayer:
-    """A media player class that wraps the python-mpv library."""
+    """
+    Linux Voice Assistant MediaPlayer implementation based on libmpv.
 
-    def __init__(
-        self,
-        loop: Optional[asyncio.AbstractEventLoop],
-        device: Optional[str] = None,
-        initial_volume: float = 1.0,
-    ) -> None:
-        """Initialize the mpv player.
+    This class provides the MediaPlayer interface expected by LVA and
+    delegates all playback logic to LibMpvPlayer.
+    """
 
-        :param loop: The asyncio loop used to schedule done_callback.
-                     May be None in one-off utility contexts (e.g. listing devices).
-        :param device: Optional mpv audio device name (e.g.
-                       "pipewire/alsa_output.pci-0000_00_1f.3.analog-stereo").
-        :param initial_volume: Initial volume as a float 0.0–1.0, applied directly
-                               to mpv's internal volume on startup to restore
-                               persisted volume across reboots.
-        """
-        self.loop = loop
-        self.device = device
-        self.initial_volume = max(0.0, min(1.0, float(initial_volume)))
-
-        self.player = MPV(
-            video=False,
-            terminal=False,
-            log_handler=self._mpv_log,
-            audio_samplerate=44100,
-            audio_channels="stereo",
-            keep_open="no",
-            network_timeout=7,
-            ytdl=False,
-            msg_level=os.environ.get("LVA_MPV_MSG_LEVEL", "all=warn"),
-            # Reduced buffer and stream silence for lower audio latency
-            # Trades CPU for responsiveness; may need acceptance testing on low-end hardware
-            audio_buffer=0.5,
-            stream_silence=True,
-        )
-
-        # Optional: allow forcing ao via environment for power users/debugging.
-        ao_env = os.environ.get("LVA_AO")
-        if ao_env:
-            try:
-                self.player["ao"] = ao_env
-                _LOGGER.info("Forcing mpv ao=%r from LVA_AO", ao_env)
-            except Exception:
-                _LOGGER.exception("Failed to set mpv ao=%r", ao_env)
-
-        # If the caller provided a specific device, honor it directly.
-        if device:
-            try:
-                self.player["audio-device"] = device
-                _LOGGER.info("Using mpv audio-device=%r", device)
-            except Exception:
-                _LOGGER.exception("Failed to set mpv audio-device %r", device)
-
-        # Log final backend/device selection and available devices (best-effort)
-        try:
-            ao_effective = self.player["ao"]
-            # python-mpv may expose an unset option as [] – normal for "auto"
-            if isinstance(ao_effective, list) and not ao_effective:
-                ao_display = "<unset/auto>"
-            else:
-                ao_display = ao_effective
-
-            audio_device_effective = self.player["audio-device"]
-
-            try:
-                dev_list = self.player.audio_device_list or []
-                dev_summary = [
-                    f"{dev.get('name')} ({dev.get('description')})" for dev in dev_list
-                ]
-            except Exception:
-                dev_summary = ["<unavailable>"]
-
-            _LOGGER.debug(
-                "mpv audio config: ao=%r, audio-device=%r, devices=%s",
-                ao_display,
-                audio_device_effective,
-                dev_summary,
-            )
-        except Exception:
-            _LOGGER.exception("Failed to query mpv audio properties")
-
-        # Apply the initial (persisted) volume to mpv on startup.
-        # Falls back to 100% if initial_volume=1.0 (default/fresh install).
-        self.set_volume(int(self.initial_volume * 100))
-
-        self.is_playing: bool = False
+    def __init__(self, device: str | None = None) -> None:
+        self._log = logging.getLogger(self.__class__.__name__)
+        self._player = LibMpvPlayer(device=device)
         self._done_callback: Optional[Callable[[], None]] = None
-        self._done_callback_lock = Lock()
-        self._pre_duck_volume: Optional[int] = None
+        self._playlist: List[str] = []
 
-        # When mpv becomes idle, we treat it as end-of-playback.
-        self.player.observe_property("idle-active", self._on_idle_active)
-
-    # -------------------------------------------------------------------------
-    # Public API
-    # -------------------------------------------------------------------------
+        self._log.debug("MpvMediaPlayer initialized (device=%s)", device)
 
     def play(
         self,
-        url: Union[str, Sequence[str], bytes],
+        url: Union[str, List[str]],
         done_callback: Optional[Callable[[], None]] = None,
-        volume_override: Optional[int] = None,
+        stop_first: bool = False,
+        volume_override: Optional[float] = None,
     ) -> None:
-        """Plays a URL or sequence of URLs.
-
-        :param url: A single URL (str/bytes) or a sequence of URLs.
-        :param done_callback: Called once when playback finishes or is stopped.
-        :param volume_override: If set, temporarily overrides mpv volume (0-200)
-            for this playback only, restoring the previous level when done.
-            Useful for sounds recorded at a lower amplitude than others.
         """
-        # Ensure player is in a clean state
-        # Use _stop_for_replacement() instead of stop() to avoid firing
-        # the previous media's done_callback when new media replaces it.
-        self._stop_for_replacement()
+        Play a media URL.
 
-        # Apply temporary volume override, wrapping done_callback to restore
-        if volume_override is not None:
-            try:
-                prev_volume = int(self.player.volume)
-                self.player.volume = max(0, min(200, volume_override))
-            except Exception:
-                _LOGGER.exception("play() volume_override failed")
-                prev_volume = None
-
-            if prev_volume is not None:
-                original_callback = done_callback
-                def _restore_volume_then_callback(pv: int = prev_volume, cb: Optional[Callable[[], None]] = original_callback) -> None:
-                    try:
-                        self.player.volume = pv
-                    except Exception:
-                        pass
-                    if cb:
-                        cb()
-                done_callback = _restore_volume_then_callback
-
-        with self._done_callback_lock:
-            self._done_callback = done_callback
-
-        playlist: List[str] = []
-        if isinstance(url, (list, tuple)):
-            playlist = list(url)
-        elif isinstance(url, bytes):
-            playlist = [url.decode(errors="ignore")]
-        elif isinstance(url, str):
-            playlist = [url]
+        Args:
+            url: Media URL or list of URLs for sequential playback.
+            done_callback: Optional callback invoked when playback finishes.
+            stop_first: Kept for API compatibility.
+            volume_override: Fork — play this media at a fixed volume
+                (0.0-100.0) instead of the current user volume; restored
+                when playback ends or is stopped.
+        """
+        # Handle single URL vs list
+        if isinstance(url, str):
+            urls = [url]
         else:
-            _LOGGER.error("play() expected str, bytes, or sequence, got %r", type(url))
-            self._run_done_callback()
+            urls = list(url)  # Copy the list
+
+        if not urls:
+            self._log.warning("play() called with empty URL list")
             return
 
-        if not playlist:
-            self._run_done_callback()
-            return
+        # Track is changing - stop if needed
+        if self._done_callback is not None:
+            if self._player.state() != PlayerState.IDLE:
+                self._log.debug("Stopping active playback before starting new media")
+                self._player.stop(for_replacement=True)
+            self._done_callback = None
 
-        # Load the full playlist into mpv
-        self.player.playlist_clear()
-        for item in playlist:
-            self.player.playlist_append(item)
+        self._log.info("Playing %d URL(s): %s", len(urls), urls[0])
 
-        self.is_playing = True
-        self.player.playlist_pos = 0  # Start playing from the first item
+        # Store playlist and callback
+        self._playlist = urls
+        self._done_callback = done_callback
 
-        # Ensure playback starts even if player was previously paused
-        try:
-            self.player.pause = False
-        except Exception:
-            _LOGGER.exception("Failed to reset pause state in play()")
+        # Start playing first URL
+        next_url = self._playlist.pop(0)
+        self._player.play(
+            next_url,
+            done_callback=self._on_track_finished,
+            stop_first=stop_first,
+            volume_override=volume_override,
+        )
+
+    def _on_track_finished(self) -> None:
+        """Called when a track finishes - plays next or invokes done callback."""
+        if self._playlist:
+            # More tracks to play
+            next_url = self._playlist.pop(0)
+            self._log.debug("Playing next URL from playlist: %s", next_url)
+            self._player.play(next_url, done_callback=self._on_track_finished, stop_first=False)
+        else:
+            # Playlist finished
+            callback = self._done_callback
+            self._done_callback = None
+
+            if callback:
+                self._log.debug("Playlist finished, invoking done_callback")
+                try:
+                    callback()
+                except Exception as e:
+                    self._log.exception("Error in done_callback: %s", e)
 
     def pause(self) -> None:
-        """Pauses playback."""
-        try:
-            self.player.pause = True
-        except Exception:
-            _LOGGER.exception("pause() failed")
+        """Pause playback."""
+        self._log.debug("pause() called")
+        self._player.pause()
 
     def resume(self) -> None:
-        """Resumes playback."""
-        try:
-            self.player.pause = False
-        except Exception:
-            _LOGGER.exception("resume() failed")
+        """Resume playback."""
+        self._log.debug("resume() called")
+        self._player.resume()
 
     def stop(self) -> None:
-        """Stops playback and clears the playlist."""
-        if self.is_playing:
-            self.is_playing = False
+        """Stop playback and invoke the done callback if present."""
+        self._log.debug("stop() called")
+
+        self._player.stop()
+
+        if self._done_callback:
+            self._log.debug("Invoking done_callback due to stop()")
             try:
-                self.player.playlist_clear()
-                self.player.command("stop")
-            except Exception:
-                _LOGGER.exception("stop() failed")
+                self._done_callback()
             finally:
-                self._run_done_callback()
+                self._done_callback = None
 
-    def _stop_for_replacement(self) -> None:
-        """Stop playback without firing the pending done_callback.
+    @property
+    def is_playing(self) -> bool:
+        """Check if the player is currently playing or paused."""
+        state = self._player.state()
+        return state in (PlayerState.PLAYING, PlayerState.PAUSED, PlayerState.LOADING)
 
-        Used by play() to ensure a clean state when new media replaces
-        existing playback, preventing the previous media's callback from
-        firing erroneously.
+    def set_volume(self, volume: float) -> None:
         """
-        # Clear the callback without firing it
-        with self._done_callback_lock:
-            self._done_callback = None
+        Set playback volume.
 
-        if self.is_playing:
-            self.is_playing = False
-            try:
-                self.player.playlist_clear()
-                self.player.command("stop")
-            except Exception:
-                _LOGGER.exception("stop-for-replacement failed")
-
-    def set_volume(self, volume: int) -> None:
-        """Sets the player (mpv) volume from 0 to 100."""
-        try:
-            self.player.volume = max(0, min(100, volume))
-        except Exception:
-            _LOGGER.exception("set_volume() failed")
-
-    def set_master_volume(self, volume_level: float) -> bool:
-        """Sets the *OS output* volume (PipeWire/PulseAudio/ALSA).
-
-        :param volume_level: 0.0–1.0
-        :returns: True if any backend succeeded.
+        Args:
+            volume: Volume in percent (0.0-100.0).
         """
-        return set_output_volume(volume_level=volume_level, output_device=self.device)
+        self._log.debug("set_volume(volume=%.2f)", volume)
+        self._player.set_volume(volume)
 
-    def duck(self, target_percent: int = 20) -> None:
-        """Lowers the mpv volume for an announcement."""
-        if self._pre_duck_volume is not None:
-            return
-        try:
-            self._pre_duck_volume = int(self.player.volume)
-            self.set_volume(target_percent)
-        except Exception:
-            _LOGGER.exception("duck() failed")
+    def duck(self, factor: float = 0.5) -> None:
+        """
+        Temporarily reduce volume.
+
+        Args:
+            factor: Volume multiplier (0.0-1.0).
+        """
+        self._log.debug("duck(factor=%.2f)", factor)
+        self._player.duck(factor)
 
     def unduck(self) -> None:
-        """Restores the mpv volume after an announcement."""
-        if self._pre_duck_volume is None:
-            return
-        try:
-            self.set_volume(self._pre_duck_volume)
-        except Exception:
-            _LOGGER.exception("unduck() failed")
-        finally:
-            self._pre_duck_volume = None
-
-    # -------------------------------------------------------------------------
-    # Internal callbacks
-    # -------------------------------------------------------------------------
-
-    def _on_idle_active(self, _name: str, active: bool) -> None:
-        """Callback triggered when mpv enters or leaves the idle state."""
-        if active and self.is_playing:
-            _LOGGER.debug("mpv became idle; treating as end-of-playback")
-            self.is_playing = False
-            self._run_done_callback()
-
-    def _run_done_callback(self) -> None:
-        """Safely runs the done_callback on the main asyncio loop (if any)."""
-        with self._done_callback_lock:
-            cb = self._done_callback
-            self._done_callback = None
-
-        if not cb:
-            return
-
-        # If we have an asyncio loop, schedule callback there.
-        if self.loop is not None:
-            try:
-                self.loop.call_soon_threadsafe(cb)
-            except Exception:
-                _LOGGER.exception("Error scheduling done_callback on loop")
-        else:
-            # Fallback: call directly (used in contexts where no loop is passed).
-            try:
-                cb()
-            except Exception:
-                _LOGGER.exception("Error running done_callback directly")
-
-    def _mpv_log(self, level: str, prefix: str, text: str) -> None:
-        """Routes mpv's internal logs to our logger."""
-        msg = f"mpv[{prefix}]: {text}".rstrip()
-        if level == "error":
-            _LOGGER.error(msg)
-        elif level == "warn":
-            _LOGGER.warning(msg)
-        elif level == "info":
-            _LOGGER.info(msg)
-        else:
-            _LOGGER.debug(msg)
+        """Restore volume after ducking."""
+        self._log.debug("unduck() called")
+        self._player.unduck()

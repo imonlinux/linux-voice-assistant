@@ -1,738 +1,279 @@
 #!/usr/bin/env python3
 import argparse
 import asyncio
+import errno
 import json
 import logging
 import os
-import time
 import sys
-from dataclasses import dataclass, fields
+import threading
+import time
+from dataclasses import fields as dataclass_fields
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple, Union, Any
+from queue import Queue
+from typing import Any, Dict, List, Optional, Union
 
+import numpy as np
 import soundcard as sc
+from aioesphomeapi.api_pb2 import NumberStateResponse  # type: ignore  # pylint: disable=no-name-in-module
+from getmac import get_mac_address  # type: ignore
+from pymicro_wakeword import MicroWakeWord, MicroWakeWordFeatures
+from pyopen_wakeword import OpenWakeWord, OpenWakeWordFeatures
 
-from pymicro_wakeword import MicroWakeWord
-from pyopen_wakeword import OpenWakeWord
+from .config import Config, apply_config_defaults, load_config_from_json
+from .models import Preferences, ServerState, WakeWordType, initial_stop_word_threshold
+from .mpv_player import MpvMediaPlayer
+from .peripheral_api import LVAEvent, PeripheralAPIServer
+from .satellite import VoiceSatelliteProtocol
+from .util import (
+    format_mac,
+    get_default_interface,
+    get_default_ipv4,
+    get_esphome_version,
+    get_version,
+)
+from .wake_word import find_available_wake_words, load_stop_model, load_wake_models
+from .webrtc import WebRTCProcessor
+from .zeroconf import HomeAssistantZeroconf
 
-from .audio_engine import AudioEngine
+# Fork: hardware controllers and subsystems (all optional, config-gated)
+from .audio_volume import ensure_output_volume
 from .button_controller import ButtonController
-from .config import Config, load_config_from_json
 from .event_bus import EventBus, EventHandler, subscribe
 from .led_controller import LedController
 from .mqtt_controller import MqttController
-from .models import AvailableWakeWord, Preferences, ServerState, WakeWordType
-from .mpv_player import MpvMediaPlayer
-from .audio_volume import ensure_output_volume
-from .satellite import VoiceSatelliteProtocol
-from .util import get_mac_address, format_mac, load_jsonc
-from .zeroconf import HomeAssistantZeroconf
-from .xvf3800_button_controller import XVF3800ButtonController  # NEW
+from .xvf3800_button_controller import XVF3800ButtonController
 
-# NEW: Sendspin (optional - websockets may not be installed)
+# Fork: Sendspin (optional — needs the sendspin extra)
 try:
-    from .sendspin.client import SendspinClient  # type: ignore
+    from .sendspin.client import LVASendspinClient  # type: ignore
 except ImportError:
-    SendspinClient = None  # type: ignore
+    LVASendspinClient = None  # type: ignore[assignment,misc]
 
 _LOGGER = logging.getLogger(__name__)
 _MODULE_DIR = Path(__file__).parent
 _REPO_DIR = _MODULE_DIR.parent
+_WAKEWORDS_DIR = _REPO_DIR / "wakewords"
+_SOUNDS_DIR = _REPO_DIR / "sounds"
+
+# Legacy preference keys written by earlier fork releases, mapped to the
+# current field names so existing preferences.json files keep working.
+_PREFERENCE_ALIASES = {
+    "volume_level": "volume",
+}
+
 
 # -----------------------------------------------------------------------------
-# Helper dataclasses
-# -----------------------------------------------------------------------------
-
-@dataclass
-class WakeWordData:
-    """Dataclass to hold all wake word models and settings."""
-    available: Dict[str, AvailableWakeWord]
-    models: Dict[str, Union[MicroWakeWord, OpenWakeWord]]
-    active: Set[str]
-    stop_model: MicroWakeWord
-
-
-@dataclass
-class MediaPlayers:
-    """Dataclass to hold media player instances."""
-    music: MpvMediaPlayer
-    tts: MpvMediaPlayer
-
-# -----------------------------------------------------------------------------
-# Sound File Scanning
+# Fork: sound file scanning / selection resolution
 # -----------------------------------------------------------------------------
 
 SOUND_EXTENSIONS = {".flac", ".wav", ".mp3"}
 
-# category_key -> (scan_subdir, pref_field, state_field, allow_none)
+# category key -> (scan_subdir, pref_field, allow_none)
 SOUND_CATEGORIES = {
     "wakeup_sound": {
         "scan_dir": "sounds/wakeup",
         "pref_field": "selected_wakeup_sound",
-        "state_field": "wakeup_sound",
         "allow_none": True,
     },
     "thinking_sound": {
         "scan_dir": "sounds/thinking",
         "pref_field": "selected_thinking_sound",
-        "state_field": "thinking_sound",
         "allow_none": True,
     },
     "timer_sound": {
         "scan_dir": "sounds/timer",
         "pref_field": "selected_timer_sound",
-        "state_field": "timer_finished_sound",
         "allow_none": False,
     },
 }
 
 
 def _scan_sound_files(repo_dir: Path) -> Dict[str, List[str]]:
-    """
-    Scan sound subdirectories and return available filenames per category.
+    """Scan sound subdirectories and return available filenames per category.
 
-    Auto-creates subdirectories if they don't exist.
-    Returns e.g. {"wakeup_sound": ["chime.flac", "wake_word_triggered.flac"], ...}
+    Auto-creates subdirectories if missing so users can drop files in.
     """
     result: Dict[str, List[str]] = {}
     for cat_key, cat_info in SOUND_CATEGORIES.items():
         scan_dir = repo_dir / cat_info["scan_dir"]
         if not scan_dir.is_dir():
             scan_dir.mkdir(parents=True, exist_ok=True)
-            _LOGGER.info(
-                "Created sound directory: %s — add .flac/.wav/.mp3 files here",
-                scan_dir,
-            )
+            _LOGGER.info("Created sound directory: %s — add .flac/.wav/.mp3 files here", scan_dir)
         files = sorted(
             f.name
             for f in scan_dir.iterdir()
             if f.is_file() and f.suffix.lower() in SOUND_EXTENSIONS
         )
-        if files:
-            _LOGGER.debug("Sound category '%s': %s", cat_key, files)
-        else:
-            _LOGGER.info("No sound files in %s", scan_dir)
         result[cat_key] = files
     return result
 
-def _resolve_thinking_sound_loop(preferences: Preferences, config_value: bool) -> bool:
-    """
-    Resolve thinking_sound_loop setting.
 
-    Precedence: preferences (MQTT) > config.json > config.py default.
+def _resolve_sound_path(repo_dir: Path, cat_key: str, pref_value: str, cli_value: str) -> str:
+    """Resolve which sound file a category uses.
+
+    Precedence: persisted selection (ESPHome entity) > CLI/config default.
+    Returns an absolute path string, or "" if disabled ("None").
     """
+    cat_info = SOUND_CATEGORIES[cat_key]
+    subdir = cat_info["scan_dir"]
+
+    if pref_value == "None":
+        _LOGGER.debug("Sound '%s' disabled via selection (None)", cat_key)
+        return ""
+    if pref_value:
+        pref_path = repo_dir / subdir / pref_value
+        if pref_path.is_file():
+            return str(pref_path)
+        _LOGGER.warning(
+            "Persisted sound '%s' not found in %s, falling back to default",
+            pref_value,
+            subdir,
+        )
+
+    if not cli_value:
+        return ""
+    cli_path = Path(cli_value)
+    if not cli_path.is_absolute():
+        cli_path = repo_dir / cli_path
+    if cli_path.is_file():
+        return str(cli_path)
+
+    _LOGGER.warning("Sound file not found: %s", cli_path)
+    return ""
+
+
+def _resolve_event_sounds_enabled(preferences: Preferences, config_value: Optional[bool]) -> bool:
+    """Event sounds toggle precedence: preference > config.json > default (True)."""
+    if preferences.event_sounds_enabled is not None:
+        return bool(preferences.event_sounds_enabled)
+    if config_value is not None:
+        return bool(config_value)
+    return True
+
+
+def _resolve_thinking_sound_loop(preferences: Preferences, config_value: Optional[bool]) -> bool:
+    """Thinking loop precedence: preference > config.json > default (False)."""
     pref = preferences.selected_thinking_sound_loop
     if pref == "ON":
         return True
     if pref == "OFF":
         return False
-    return config_value
-    
-def _resolve_event_sounds_enabled(preferences: Preferences, config_value: bool) -> bool:
-    """
-    Resolve event_sounds_enabled setting.
+    if config_value is not None:
+        return bool(config_value)
+    return False
 
-    Precedence: preferences (ESPHome entity) > config.json > config.py default.
-    """
-    pref = getattr(preferences, "event_sounds_enabled", None)
-    if pref is not None:
-        return bool(pref)
-    return config_value
-
-def _resolve_sound_path(
-    repo_dir: Path,
-    cat_key: str,
-    pref_value: str,
-    config_value: str,
-) -> str:
-    """
-    Resolve which sound file to use for a category.
-
-    Precedence: preferences (MQTT) > config.json > config.py default.
-    Returns an absolute path string, or empty string if disabled ("None").
-    """
-    cat_info = SOUND_CATEGORIES[cat_key]
-    subdir = cat_info["scan_dir"]
-
-    # 1. Check MQTT/preferences override
-    if pref_value == "None":
-        _LOGGER.debug("Sound '%s' disabled via MQTT selection (None)", cat_key)
-        return ""
-    if pref_value:
-        pref_path = repo_dir / subdir / pref_value
-        if pref_path.is_file():
-            _LOGGER.debug("Sound '%s' using MQTT selection: %s", cat_key, pref_value)
-            return str(pref_path)
-        _LOGGER.warning(
-            "Persisted sound '%s' not found in %s, falling back to config",
-            pref_value,
-            subdir,
-        )
-
-    # 2. Fall back to config.json / config.py value (full relative path)
-    if not config_value:
-        return ""
-    config_path = repo_dir / config_value
-    if config_path.is_file():
-        return str(config_path)
-
-    _LOGGER.warning("Sound file not found: %s", config_path)
-    return ""
 
 # -----------------------------------------------------------------------------
-# Mic Mute / Preferences Handler
+# Fork: hardware controller wiring
 # -----------------------------------------------------------------------------
 
-class MicMuteHandler(EventHandler):
+class MicMuteBridge(EventHandler):
+    """Routes hardware mute requests into the upstream mute pipeline.
+
+    Button controllers (GPIO, XVF3800) publish ``set_mic_mute`` on the event
+    bus from their own threads; this bridge marshals the request onto the
+    asyncio loop and drives ``VoiceSatelliteProtocol._set_muted`` so the HA
+    mute switch, event-bus mirroring and mute sound all stay in sync.
     """
-    Manages the mic_muted state and saves preferences.
-    This is the only controller that writes to ServerState.
-    """
-    def __init__(
-        self,
-        event_bus: EventBus,
-        state: ServerState,
-        mqtt_controller: Optional[MqttController],
-    ):
+
+    def __init__(self, event_bus: EventBus, state: ServerState) -> None:
         super().__init__(event_bus)
         self.state = state
-        self.mqtt_controller = mqtt_controller
         self._subscribe_all_methods()
 
     @subscribe
-    def set_mic_mute(self, data: dict):
-        """Event handler for mic mute commands."""
-        is_muted = data.get("state", False)
-        if self.state.mic_muted != is_muted:
-            self.state.mic_muted = is_muted
-
-            # Synchronize the threading event for the audio loop
-            if is_muted:
-                self.state.mic_muted_event.clear()  # Pauses audio thread
-            else:
-                self.state.mic_muted_event.set()    # Resumes audio thread
-
-            _LOGGER.debug("Mic muted = %s", is_muted)
-
-            if self.mqtt_controller:
-                self.mqtt_controller.publish_mute_state(is_muted)
-
-            # Sync ESPHome mute switch entity so HA reflects changes
-            # from non-ESPHome sources (hardware button, XVF3800, MQTT)
-            if (
-                self.state.satellite is not None
-                and hasattr(self.state.satellite, "mute_switch_entity")
-                and self.state.satellite.mute_switch_entity is not None
-            ):
-                try:
-                    self.state.satellite.mute_switch_entity.sync_state_to_ha()
-                except Exception:
-                    _LOGGER.debug("Failed to sync mute state to ESPHome", exc_info=True)
-
-            if is_muted:
-                self.event_bus.publish("mic_muted")
-            else:
-                self.event_bus.publish("mic_unmuted")
-
-    @subscribe
-    def set_num_leds(self, data: dict):
-        """Event handler to save num_leds to preferences."""
-        num_leds = data.get("num_leds")
-        if (num_leds is not None) and (self.state.preferences.num_leds != num_leds):
-            self.state.preferences.num_leds = num_leds
-            self.state.save_preferences()
-
-    @subscribe
-    def set_alarm_duration(self, data: dict):
-        """
-        Event handler to save alarm_duration_seconds to preferences.
-
-        Expected payload from MQTT controller:
-            { "alarm_duration_seconds": <int> }
-
-        Semantics:
-            0  -> infinite alarm (only Stop/wake word stops it)
-            >0 -> auto-stop alarm after N seconds (plus Stop wake word support)
-        """
-        duration = data.get("alarm_duration_seconds")
-        if duration is None:
+    def set_mic_mute(self, data: dict) -> None:
+        target = bool(data.get("state", False))
+        satellite = self.state.satellite
+        loop = self.state.loop
+        if satellite is None or loop is None:
+            _LOGGER.debug("MicMuteBridge: satellite/loop not ready; dropping mute request")
             return
-
-        try:
-            duration = int(duration)
-        except (TypeError, ValueError):
-            _LOGGER.warning(
-                "Invalid alarm_duration_seconds value received: %r", duration
-            )
-            return
-
-        if duration < 0:
-            _LOGGER.warning(
-                "Negative alarm_duration_seconds (%d) is not allowed; ignoring",
-                duration,
-            )
-            return
-
-        current = getattr(self.state.preferences, "alarm_duration_seconds", 0)
-        if current != duration:
-            _LOGGER.debug(
-                "Updating alarm_duration_seconds: %s -> %s", current, duration
-            )
-            self.state.preferences.alarm_duration_seconds = duration
-            self.state.save_preferences()
-
-    @subscribe
-    def set_thinking_sound_loop(self, data: dict):
-        """Event handler for thinking sound loop toggle from MQTT."""
-        payload = data.get("state", "").upper()
-        if payload not in ("ON", "OFF"):
-            return
-
-        new_value = payload == "ON"
-        self.state.thinking_sound_loop = new_value
-        self.state.preferences.selected_thinking_sound_loop = payload
-        self.state.save_preferences()
-
-        if self.mqtt_controller:
-            self.mqtt_controller.publish_thinking_sound_loop_state(new_value)
-
-        _LOGGER.debug("Thinking sound loop set to: %s", new_value)
+        if loop.is_running():
+            loop.call_soon_threadsafe(satellite._set_muted, target)
+        else:
+            satellite._set_muted(target)
 
 
 class SendspinPreferencesHandler(EventHandler):
-    """
-    Persists Sendspin player volume (0-100) into preferences.json.
+    """Persists Sendspin player volume (0-100) into preferences.json.
 
     Expects SendspinClient to publish:
         event_bus.publish("sendspin_volume_changed", {"volume": <0-100>})
     """
-    def __init__(self, event_bus: EventBus, state: ServerState):
+
+    def __init__(self, event_bus: EventBus, state: ServerState) -> None:
         super().__init__(event_bus)
         self.state = state
         self._subscribe_all_methods()
 
     @subscribe
     def sendspin_volume_changed(self, data: dict) -> None:
-        v = data.get("volume")
-        if v is None:
-            return
-
         try:
-            v_i = int(v)
+            v = int(data.get("volume", 100))
         except (TypeError, ValueError):
-            _LOGGER.warning("Invalid sendspin volume received: %r", v)
+            _LOGGER.warning("Invalid sendspin volume received: %r", data)
             return
-
-        if v_i < 0:
-            v_i = 0
-        elif v_i > 100:
-            v_i = 100
-
-        current = getattr(self.state.preferences, "sendspin_volume", 100)
-        if current != v_i:
-            self.state.preferences.sendspin_volume = v_i
+        v = max(0, min(100, v))
+        current = int(getattr(self.state.preferences, "sendspin_volume", 100))
+        if v != current:
+            self.state.preferences.sendspin_volume = v
             self.state.save_preferences()
-            _LOGGER.debug("Saved sendspin_volume=%s to preferences.json", v_i)
+            _LOGGER.debug("Saved sendspin_volume=%s to preferences.json", v)
 
-class SoundSelectionHandler(EventHandler):
-    """
-    Handles MQTT sound file selection events.
 
-    Subscribes to set_wakeup_sound, set_thinking_sound, set_timer_sound.
-    Updates ServerState sound paths at runtime and persists to preferences.
-    """
-    def __init__(
-        self,
-        event_bus: EventBus,
-        state: ServerState,
-        mqtt_controller: Optional[MqttController],
-        repo_dir: Path,
-    ):
-        super().__init__(event_bus)
-        self.state = state
-        self.mqtt_controller = mqtt_controller
-        self._repo_dir = repo_dir
-        self._subscribe_all_methods()
-
-    def _handle_sound_selection(self, cat_key: str, data: dict):
-        """Common handler for all sound selection events."""
-        filename = data.get("filename", "")
-        if not filename:
-            return
-
-        cat_info = SOUND_CATEGORIES[cat_key]
-
-        # Resolve the file path
-        if filename == "None":
-            if not cat_info["allow_none"]:
-                _LOGGER.warning(
-                    "Sound '%s' does not support 'None'; ignoring", cat_key
-                )
-                return
-            resolved_path = ""
-        else:
-            if Path(filename).name != filename:
-                _LOGGER.warning(
-                    "Rejecting sound filename with path components: %r", filename
-                )
-                return
-            resolved_path = str(
-                self._repo_dir / cat_info["scan_dir"] / filename
-            )
-            if not Path(resolved_path).is_file():
-                _LOGGER.warning("Sound file not found: %s", resolved_path)
-                return
-
-        # Update runtime state
-        setattr(self.state, cat_info["state_field"], resolved_path)
-
-        # Persist to preferences
-        setattr(self.state.preferences, cat_info["pref_field"], filename)
-        self.state.save_preferences()
-
-        # Publish state back to MQTT
-        if self.mqtt_controller:
-            self.mqtt_controller.publish_sound_state(cat_key, filename)
-
-        _LOGGER.debug("Sound '%s' set to: %s", cat_key, filename or "(None)")
-
-    @subscribe
-    def set_wakeup_sound(self, data: dict):
-        """Event handler for wakeup sound selection from MQTT."""
-        self._handle_sound_selection("wakeup_sound", data)
-
-    @subscribe
-    def set_thinking_sound(self, data: dict):
-        """Event handler for thinking sound selection from MQTT."""
-        self._handle_sound_selection("thinking_sound", data)
-
-    @subscribe
-    def set_timer_sound(self, data: dict):
-        """Event handler for timer sound selection from MQTT."""
-        self._handle_sound_selection("timer_sound", data)
-        
-# -----------------------------------------------------------------------------
-# Sendspin helpers
-# -----------------------------------------------------------------------------
-
-def _get_sendspin_section(raw_config: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Return the raw JSON dict for the 'sendspin' section.
-    This avoids passing a dataclass (or losing the section entirely) and ensures
-    SendspinClient sees 'enabled' correctly.
-    """
-    sec = raw_config.get("sendspin")
-    return sec if isinstance(sec, dict) else {}
-
-def _create_sendspin_client(
-    *,
+def _start_sendspin(
     loop: asyncio.AbstractEventLoop,
-    event_bus: EventBus,
-    sendspin_cfg: Dict[str, Any],
-    client_id: str,
-    client_name: str,
-) -> Any:
+    state: ServerState,
+    config: Optional[Config],
+) -> tuple:
+    """Start the Sendspin (Music Assistant multiroom) subsystem if enabled.
+
+    Returns (client, task); either may be None when disabled.
     """
-    Create SendspinClient while being resilient to constructor keyword differences
-    (cfg vs config) and without passing unsupported kwargs (e.g., preferences).
-    """
-    if SendspinClient is None:
-        raise RuntimeError("SendspinClient not available (websockets not installed)")
-
-    # Prefer keyword forms first; fall back to positional if needed.
+    client = None
+    task = None
     try:
-        return SendspinClient(
-            loop=loop,
-            event_bus=event_bus,
-            config=sendspin_cfg,
-            client_id=client_id,
-            client_name=client_name,
-        )
-    except TypeError:
-        pass
+        if config is None or not config.sendspin.enabled:
+            _LOGGER.debug("Sendspin subsystem disabled (sendspin.enabled=false or no config)")
+            return None, None
 
-    try:
-        return SendspinClient(
-            loop=loop,
-            event_bus=event_bus,
-            cfg=sendspin_cfg,
-            client_id=client_id,
-            client_name=client_name,
-        )
-    except TypeError:
-        pass
-
-    # Positional fallback: (loop, event_bus, cfg/config, client_id, client_name)
-    return SendspinClient(loop, event_bus, sendspin_cfg, client_id, client_name)
-
-# -----------------------------------------------------------------------------
-# Main Application
-# -----------------------------------------------------------------------------
-
-async def main() -> None:
-    # --- 1. Load Basics ---
-    config, raw_config, loop, event_bus, args = _init_basics()
-
-    # --- 2. Load Preferences ---
-    preferences = _load_preferences(config)
-
-    # --- 2b. XVF3800 Startup Workarounds (optional) ---
-    _xvf3800_startup_preflight(config)
-
-    # --- 3. Find Microphone ---
-    mic = _get_microphone(config)
-
-    # --- 4. Load Wake Words ---
-    wake_word_data = _load_wake_words(config, preferences)
-
-    # --- 5. Initialize Media Players ---
-    media_players = _init_media_players(loop, config, preferences)
-
-    # --- 5b. Sync OS sink volume to persisted volume ---
-    # mpv's per-player volume is kept at 100% and ducking is handled within mpv.
-    # The user-visible "volume" in HA maps to the OS output volume (PipeWire/Pulse/ALSA).
-    if getattr(config.audio, "volume_sync", False):
-        try:
-            loop.create_task(
-                ensure_output_volume(
-                    volume=preferences.volume_level,
-                    output_device=config.audio.output_device,
-                    max_volume_percent=getattr(config.audio, "max_volume_percent", 100),
-                    attempts=20,
-                    delay_seconds=0.5,
-                )
-            )
-        except Exception:
-            _LOGGER.exception("Failed to schedule output volume sync")
-    else:
-        _LOGGER.debug("Output volume sync disabled (audio.volume_sync=false)")
-
-    # --- 6. Create Server State ---
-    state = _create_server_state(
-        config, loop, event_bus, preferences,
-        wake_word_data, media_players
-    )
-    
-    state.sound_options = _scan_sound_files(_REPO_DIR)
-
-    # --- 7. Initialize Controllers ---
-    _init_controllers(loop, event_bus, state, config, preferences)
-
-    # --- 7b. Start Sendspin (optional) ---
-    sendspin_task: Optional[asyncio.Task] = None
-    sendspin_client: Optional[Any] = None
-    try:
-        sendspin_cfg = _get_sendspin_section(raw_config)
-        sendspin_enabled = bool(sendspin_cfg.get("enabled", False))
-
-        if sendspin_enabled and SendspinClient is None:
+        if LVASendspinClient is None:
             _LOGGER.warning(
-                "Sendspin enabled in config but websockets not installed. "
-                "Run 'script/setup --sendspin' to enable Sendspin support."
+                "Sendspin enabled in config but the sendspin extra is not installed. "
+                "Run 'pip install -e .[sendspin]' to enable Sendspin support."
             )
-            sendspin_enabled = False
+            return None, None
 
-        if sendspin_enabled:
-            # Seed Sendspin initial volume from preferences (0-100), overriding config initial volume.
-            # This ensures the first client/state after handshake reflects the last known MA volume.
-            try:
-                init_sec = sendspin_cfg.get("initial")
-                if not isinstance(init_sec, dict):
-                    init_sec = {}
-                    sendspin_cfg["initial"] = init_sec
-                init_sec["volume"] = int(getattr(preferences, "sendspin_volume", 100))
-            except Exception:
-                _LOGGER.debug("Failed to seed sendspin initial volume from preferences", exc_info=True)
+        prefs_dir = state.preferences_path.parent
+        client_id = f"lva-{state.mac_address}"
 
-            # Use stable MAC-derived id to remain persistent across reboots
-            client_id = f"lva-{state.mac_address}"
-            client_name = config.app.name
-
-            sendspin_client = _create_sendspin_client(
-                loop=loop,
-                event_bus=event_bus,
-                sendspin_cfg=sendspin_cfg,
-                client_id=client_id,
-                client_name=client_name,
-            )
-            setattr(state, "sendspin_client", sendspin_client)
-            sendspin_task = loop.create_task(sendspin_client.run())
-            _LOGGER.info("Sendspin subsystem started (enabled=true)")
-        else:
-            _LOGGER.debug("Sendspin subsystem disabled (sendspin.enabled=false or missing)")
-    except Exception:
+        client = LVASendspinClient(
+            loop=loop,
+            event_bus=state.event_bus,
+            config=config.sendspin,
+            identity_path=prefs_dir / "sendspin_identity.json",
+            pairing_path=prefs_dir / "sendspin_pairing.json",
+            client_name=config.app.name,
+            initial_volume=int(getattr(state.preferences, "sendspin_volume", 100)),
+        )
+        state.sendspin_client = client  # type: ignore[attr-defined]
+        SendspinPreferencesHandler(event_bus=state.event_bus, state=state)
+        task = loop.create_task(client.run())
+        _LOGGER.info("Sendspin subsystem started (enabled=true)")
+    except Exception:  # pylint: disable=broad-except
         _LOGGER.exception("Failed to start Sendspin subsystem")
+        client, task = None, None
+    return client, task
 
-    # --- 8. Start Audio Engine ---
-    audio_engine = AudioEngine(
-        state,
-        mic,
-        config.audio.input_block_size,
-        oww_threshold=getattr(config.wake_word, "openwakeword_threshold", 0.5),
-    )
-    audio_engine.start()
-    state.audio_engine = audio_engine
 
-    # --- 9. Run Server ---
+def _xvf3800_startup_preflight(config: Optional[Config]) -> None:
+    """Best-effort XVF3800 USB preflight (reboot + audio routing fixups)."""
     try:
-        await _run_server(state, config)
-    finally:
-        # --- 10. Cleanup ---
-        _LOGGER.debug("Shutting down...")
-        audio_engine.stop()
-
-        # Stop Sendspin
-        try:
-            if sendspin_client is not None:
-                sendspin_client.stop()
-                await sendspin_client.disconnect(reason="shutdown")
-            if sendspin_task is not None:
-                sendspin_task.cancel()
-        except Exception:
-            _LOGGER.debug("Sendspin shutdown cleanup failed", exc_info=True)
-
-        if hasattr(state, "mqtt_controller") and state.mqtt_controller:
-            _LOGGER.debug("Stopping MQTT controller...")
-            state.mqtt_controller.stop()
-
-# -----------------------------------------------------------------------------
-# Helper Functions
-# -----------------------------------------------------------------------------
-
-def _init_basics() -> Tuple[Config, Dict[str, Any], asyncio.AbstractEventLoop, EventBus, argparse.Namespace]:
-    """Loads config, sets up logging, and creates loop/event bus."""
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "-c", "--config", type=Path, required=False,
-        default=_MODULE_DIR / "config.json",
-        help="Path to configuration.json file"
-    )
-    parser.add_argument("--debug", action="store_true", help="Enable debug logging")
-    parser.add_argument("--list-input-devices", action="store_true", help="List audio input devices")
-    parser.add_argument("--list-output-devices", action="store_true", help="List audio output devices")
-
-    # Optional CLI override to match upstream style
-    parser.add_argument(
-        "--wake-word-threshold",
-        type=float,
-        default=None,
-        help="OpenWakeWord activation threshold (0.0-1.0). Overrides wake_word.openwakeword_threshold in config.json",
-    )
-
-    args = parser.parse_args()
-
-    if args.list_input_devices:
-        print("Input devices\n" + "=" * 13)
-        try:
-            for idx, mic in enumerate(sc.all_microphones(include_loopback=False)):
-                print(f"[{idx}]", mic.name)
-        except Exception as e:
-            _LOGGER.error(
-                "Error listing input devices (ensure audio backend is working): %s",
-                e,
-            )
-        sys.exit(0)
-
-    if args.list_output_devices:
-        print("Output devices\n" + "=" * 14)
-        try:
-            player = MpvMediaPlayer(loop=None)
-            for speaker in player.player.audio_device_list:
-                print(speaker["name"] + ":", speaker["description"])
-        except Exception as e:
-            _LOGGER.error("Failed to list output devices: %s", e)
-            sys.exit(1)
-        sys.exit(0)
-
-    config_path = args.config
-    if not config_path.is_absolute():
-        config_path = _REPO_DIR / config_path
-
-    # Load dataclass config
-    config = load_config_from_json(config_path)
-
-    # ALSO load raw JSON dict (so Sendspin gets its section exactly as authored)
-    # Supports JSONC comments for documentation
-    try:
-        raw_config = load_jsonc(config_path)
-    except Exception:
-        _LOGGER.exception("Failed to read raw config JSON (required for sendspin section)")
-        raw_config = {}
-
-    if args.debug:
-        config.app.debug = True
-
-    # CLI override for OWW threshold (validated/clamped later by AudioEngine too)
-    if args.wake_word_threshold is not None:
-        try:
-            config.wake_word.openwakeword_threshold = float(args.wake_word_threshold)
-        except Exception:
-            _LOGGER.warning(
-                "Invalid --wake-word-threshold value %r; keeping config value %.2f",
-                args.wake_word_threshold,
-                getattr(config.wake_word, "openwakeword_threshold", 0.5),
-            )
-
-    logging.basicConfig(
-        level=logging.DEBUG if config.app.debug else logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S"
-    )
-    _LOGGER.info("Loading configuration from: %s", config_path)
-
-    # ---------------------------------------------------------------------
-    # Reduce 3rd-party debug log spam while keeping LVA debug logs useful.
-    #
-    # Example spam:
-    #   DEBUG pymicro_wakeword.microwakeword: Okay Nabu mean prob: 0.0
-    #
-    # Keep LVA at DEBUG (when enabled) but raise pymicro_wakeword to INFO.
-    # ---------------------------------------------------------------------
-    logging.getLogger("pymicro_wakeword").setLevel(logging.INFO)
-    logging.getLogger("pymicro_wakeword.microwakeword").setLevel(logging.INFO)
-
-    loop = asyncio.get_running_loop()
-    event_bus = EventBus()
-
-    return config, raw_config, loop, event_bus, args
-
-def _load_preferences(config: Config) -> Preferences:
-    """Loads preferences.json file."""
-    preferences_path = _REPO_DIR / config.app.preferences_file
-    if preferences_path.exists():
-        with open(preferences_path, "r", encoding="utf-8") as f:
-            preferences_dict = json.load(f)
-            # Filter unknown keys so outdated preferences files don't crash startup
-            # (e.g. keys added by upstream PRs not yet in this fork's Preferences dataclass)
-            known_keys = {field.name for field in fields(Preferences)}
-            preferences_dict = {k: v for k, v in preferences_dict.items() if k in known_keys}
-            preferences = Preferences(**preferences_dict)
-    else:
-        preferences = Preferences()
-
-    # Backwards-compatible defaults / migrations
-    preferences.num_leds = getattr(preferences, "num_leds", config.led.num_leds)
-    # New: default alarm_duration_seconds, 0 = infinite until Stop/wake word
-    preferences.alarm_duration_seconds = getattr(
-        preferences, "alarm_duration_seconds", 0
-    )
-    # New: Sendspin volume defaults to 100 if missing/invalid
-    try:
-        v = int(getattr(preferences, "sendspin_volume", 100))
-    except Exception:
-        v = 100
-    preferences.sendspin_volume = max(0, min(100, v))
-
-    return preferences
-
-def _xvf3800_startup_preflight(config: Config) -> None:
-    """
-    Best-effort XVF3800 USB preflight.
-    """
-    try:
-        led_cfg = getattr(config, "led", None)
-        btn_cfg = getattr(config, "button", None)
-        aud_cfg = getattr(config, "audio", None)
+        led_cfg = getattr(config, "led", None) if config else None
+        btn_cfg = getattr(config, "button", None) if config else None
+        aud_cfg = getattr(config, "audio", None) if config else None
 
         uses_xvf = False
         if led_cfg and getattr(led_cfg, "led_type", "").lower() == "xvf3800":
@@ -747,7 +288,7 @@ def _xvf3800_startup_preflight(config: Config) -> None:
 
         do_reboot = os.environ.get("LVA_XVF3800_STARTUP_REBOOT", "1").strip().lower() not in ("0", "false", "no", "off")
         do_route = os.environ.get("LVA_XVF3800_STARTUP_SET_ASR3", "1").strip().lower() not in ("0", "false", "no", "off")
-        do_save  = os.environ.get("LVA_XVF3800_STARTUP_SAVE_CONFIG", "0").strip().lower() in ("1", "true", "yes", "on")
+        do_save = os.environ.get("LVA_XVF3800_STARTUP_SAVE_CONFIG", "0").strip().lower() in ("1", "true", "yes", "on")
 
         if not (do_reboot or do_route):
             return
@@ -757,16 +298,17 @@ def _xvf3800_startup_preflight(config: Config) -> None:
         _LOGGER.info("XVF3800 startup preflight: begin (reboot=%s, set_asr3=%s, save=%s)", do_reboot, do_route, do_save)
 
         if do_reboot:
+            dev = None
             try:
                 dev = XVF3800USBDevice()
                 _LOGGER.info("XVF3800 startup preflight: issuing REBOOT to USB device")
                 dev.reboot()
             finally:
                 try:
-                    dev.close()
+                    if dev is not None:
+                        dev.close()
                 except Exception:
                     pass
-
             XVF3800USBDevice.wait_for_reenumeration(timeout_s=12.0, settle_s=1.0)
 
         if do_route:
@@ -783,324 +325,1017 @@ def _xvf3800_startup_preflight(config: Config) -> None:
 
         _LOGGER.info("XVF3800 startup preflight: done")
 
-    except Exception as e:
+    except Exception as e:  # pylint: disable=broad-except
         _LOGGER.warning("XVF3800 startup preflight failed (continuing): %s", e)
 
-def _get_microphone(config: Config):
-    """Finds and returns the microphone specified in the config."""
-    mic = None
-    input_spec = getattr(config.audio, "input_device", None)
 
-    if input_spec is not None:
-        try:
-            input_device_idx = int(input_spec)
-            mic = sc.all_microphones(include_loopback=False)[input_device_idx]
-        except (ValueError, IndexError):
-            want_name = str(input_spec)
-            is_xvf = "xvf3800" in want_name.lower()
-            deadline = time.time() + (20.0 if is_xvf else 5.0)
-
-            last_err: Optional[Exception] = None
-            while time.time() < deadline:
-                try:
-                    mic = sc.get_microphone(want_name, include_loopback=False)
-                    break
-                except Exception as e:
-                    last_err = e
-                    time.sleep(0.5)
-
-            if mic is None and last_err is not None:
-                _LOGGER.warning("Failed to open configured mic %r after retries: %s", want_name, last_err)
-    else:
-        mic = sc.default_microphone()
-
-    if mic is None:
-        _LOGGER.critical("No microphone found.")
-        sys.exit(1)
-
-    _LOGGER.info("Using audio input device: %s", mic.name)
-    return mic
-
-def _load_wake_words(config: Config, preferences: Preferences) -> WakeWordData:
-    """Loads all available and active wake word models."""
-    if not config.wake_word.directories:
-        config.wake_word.directories = ["wakewords", "wakewords/openWakeWord"]
-
-    download_dir = _REPO_DIR / config.wake_word.download_dir
-    download_dir.mkdir(parents=True, exist_ok=True)
-
-    wake_word_dirs = [_REPO_DIR / d for d in config.wake_word.directories]
-    wake_word_dirs.append(download_dir / "external_wake_words")
-
-    available: Dict[str, AvailableWakeWord] = {}
-    for wake_word_dir in wake_word_dirs:
-        if not wake_word_dir.exists():
-            continue
-        for config_path in wake_word_dir.glob("*.json"):
-            model_id = config_path.stem
-            if model_id == config.wake_word.stop_model:
-                continue
-            with open(config_path, "r", encoding="utf-8") as f:
-                model_config = json.load(f)
-                model_type = WakeWordType(model_config["type"])
-
-                wake_word_path = (
-                    config_path.parent / model_config["model"]
-                    if model_type == WakeWordType.OPEN_WAKE_WORD
-                    else config_path
-                )
-
-                oww_threshold = None
-                if model_type == WakeWordType.OPEN_WAKE_WORD:
-                    if "threshold" in model_config:
-                        oww_threshold = model_config.get("threshold")
-                    elif "openwakeword_threshold" in model_config:
-                        oww_threshold = model_config.get("openwakeword_threshold")
-
-                available[model_id] = AvailableWakeWord(
-                    id=model_id,
-                    type=model_type,
-                    wake_word=model_config["wake_word"],
-                    trained_languages=model_config.get("trained_languages", []),
-                    wake_word_path=wake_word_path,
-                    oww_threshold=oww_threshold,
-                )
-
-    active: Set[str] = set()
-    models: Dict[str, Union[MicroWakeWord, OpenWakeWord]] = {}
-
-    if preferences.active_wake_words:
-        for ww_id in preferences.active_wake_words:
-            if ww_id in available:
-                models[ww_id] = available[ww_id].load()
-                active.add(ww_id)
-
-    if not models:
-        ww_id = config.wake_word.model
-        if ww_id in available:
-            models[ww_id] = available[ww_id].load()
-            active.add(ww_id)
-
-    stop_model: Optional[MicroWakeWord] = None
-    for ww_dir_str in config.wake_word.directories:
-        stop_config_path = _REPO_DIR / ww_dir_str / f"{config.wake_word.stop_model}.json"
-        if stop_config_path.exists():
-            stop_model = MicroWakeWord.from_config(stop_config_path)
-            break
-    assert stop_model is not None, "Stop model not found"
-
-    return WakeWordData(available, models, active, stop_model)
-
-def _init_media_players(
+def _init_fork_controllers(
     loop: asyncio.AbstractEventLoop,
-    config: Config,
-    preferences: Preferences,
-) -> MediaPlayers:
-    """Initializes the music and TTS media players."""
-    # If volume_sync is enabled, OS sink handles volume restoration at startup,
-    # so mpv should stay at 100% to avoid double-attenuation.
-    # If volume_sync is disabled, mpv must apply the persisted volume itself.
-    initial_vol = 1.0 if getattr(config.audio, "volume_sync", False) else preferences.volume_level
-
-    music_player = MpvMediaPlayer(
-        loop=loop,
-        device=config.audio.output_device,
-        initial_volume=initial_vol,
-    )
-    tts_player = MpvMediaPlayer(
-        loop=loop,
-        device=config.audio.output_device,
-        initial_volume=initial_vol,
-    )
-    return MediaPlayers(music=music_player, tts=tts_player)
-
-def _resolve_mac_address(preferences: Preferences, preferences_path: Path) -> str:
-    """
-    Return a stable MAC address for device identity.
-
-    On first boot, detect the hardware MAC and persist it to preferences.json
-    so that the device identity survives NIC changes, VM re-provisioning, or
-    NetworkManager MAC randomization.
-    """
-    if preferences.mac_address:
-        _LOGGER.info("Using persisted MAC address: %s", format_mac(preferences.mac_address))
-        return preferences.mac_address
-
-    detected = get_mac_address()
-    _LOGGER.info(
-        "First boot — persisting MAC address: %s", format_mac(detected)
-    )
-    preferences.mac_address = detected
-
-    # Save immediately so the identity is locked in even if we crash later.
-    preferences_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(preferences_path, "w", encoding="utf-8") as f:
-        from dataclasses import asdict
-        import json as _json
-        _json.dump(asdict(preferences), f, ensure_ascii=False, indent=4)
-
-    return detected
-
-def _resolve_wake_word_sensitivity(preferences: Preferences) -> str:
-    """
-    Resolve wake word sensitivity from preferences.
-
-    Returns the persisted preference if set, otherwise the default.
-    """
-    pref = getattr(preferences, "wake_word_sensitivity", "")
-    if pref and pref in ("Slightly sensitive", "Moderately sensitive", "Very sensitive"):
-        return pref
-    return "Slightly sensitive"
-
-def _create_server_state(
-    config: Config,
-    loop: asyncio.AbstractEventLoop,
-    event_bus: EventBus,
-    preferences: Preferences,
-    wake_word_data: WakeWordData,
-    media_players: MediaPlayers,
-) -> ServerState:
-    """Creates the global ServerState object."""
-    preferences_path = _REPO_DIR / config.app.preferences_file
-    stable_mac = format_mac(_resolve_mac_address(preferences, preferences_path))
-    return ServerState(
-        name=config.app.name,
-        mac_address=stable_mac,
-        event_bus=event_bus,
-        loop=loop,
-        entities=[],
-        music_player=media_players.music,
-        tts_player=media_players.tts,
-        available_wake_words=wake_word_data.available,
-        wake_words=wake_word_data.models,
-        active_wake_words=wake_word_data.active,
-        stop_word=wake_word_data.stop_model,
-        wake_word_sensitivity=_resolve_wake_word_sensitivity(preferences),
-        wakeup_sound=_resolve_sound_path(
-            _REPO_DIR, "wakeup_sound",
-            preferences.selected_wakeup_sound, config.app.wakeup_sound,
-        ),
-        thinking_sound=_resolve_sound_path(
-            _REPO_DIR, "thinking_sound",
-            preferences.selected_thinking_sound, config.app.thinking_sound,
-        ),
-        timer_finished_sound=_resolve_sound_path(
-            _REPO_DIR, "timer_sound",
-            preferences.selected_timer_sound, config.app.timer_finished_sound,
-        ),
-        preferences=preferences,
-        preferences_path=preferences_path,
-        download_dir=_REPO_DIR / config.wake_word.download_dir,
-        refractory_seconds=config.wake_word.refractory_seconds,
-        event_sounds_enabled=_resolve_event_sounds_enabled(
-            preferences, config.app.event_sounds_enabled,
-        ),
-        thinking_sound_loop=_resolve_thinking_sound_loop(
-            preferences, config.app.thinking_sound_loop,
-        ),
-        listen_during_wake_sound=config.app.listen_during_wake_sound,
-    )
-
-def _init_controllers(
-    loop: asyncio.AbstractEventLoop,
-    event_bus: EventBus,
     state: ServerState,
-    config: Config,
-    preferences: Preferences,
-):
-    """Initializes all decoupled controllers."""
-    led_controller = LedController(
-        loop=loop,
-        event_bus=event_bus,
-        config=config.led,
-        preferences=preferences,
-    )
+    config: Optional[Config],
+) -> None:
+    """Initialize the fork's config-gated hardware controllers."""
+    if config is None:
+        _LOGGER.debug("No config.json — fork controllers disabled")
+        return
 
-    # Scan sound directories for MQTT select entity options
-    sound_options = _scan_sound_files(_REPO_DIR)
+    preferences = state.preferences
 
-    mqtt_controller: Optional[MqttController] = None
-    if config.mqtt.enabled:
-        mqtt_controller = MqttController(
+    # LED controller (DotStar/NeoPixel SPI/GPIO or XVF3800 USB backend)
+    try:
+        led_controller = LedController(
             loop=loop,
-            event_bus=event_bus,
-            config=config.mqtt,
-            app_name=config.app.name,
-            mac_address=state.mac_address,
+            event_bus=state.event_bus,
+            config=config.led,
             preferences=preferences,
         )
-        setattr(state, "mqtt_controller", mqtt_controller)
-        mqtt_controller.start()
+        state.led_controller = led_controller  # type: ignore[attr-defined]
+    except Exception:  # pylint: disable=broad-except
+        _LOGGER.exception("Failed to initialize LED controller")
 
-    mic_mute_handler = MicMuteHandler(
-        event_bus=event_bus,
-        state=state,
-        mqtt_controller=mqtt_controller,
-    )
+    # MQTT (LED controls + tray transport)
+    mqtt_controller: Optional[MqttController] = None
+    if config.mqtt.enabled:
+        try:
+            mqtt_controller = MqttController(
+                loop=loop,
+                event_bus=state.event_bus,
+                config=config.mqtt,
+                app_name=config.app.name,
+                mac_address=state.mac_address,
+                preferences=preferences,
+            )
+            state.mqtt_controller = mqtt_controller  # type: ignore[attr-defined]
+            mqtt_controller.start()
+        except Exception:  # pylint: disable=broad-except
+            _LOGGER.exception("Failed to initialize MQTT controller")
 
-    # Persist Sendspin volume changes to preferences.json
-    sendspin_prefs_handler = SendspinPreferencesHandler(
-        event_bus=event_bus,
-        state=state,
-    )
-    
-    # Handle MQTT sound selection events
-    sound_selection_handler = SoundSelectionHandler(
-        event_bus=event_bus,
-        state=state,
-        mqtt_controller=None,
-        repo_dir=_REPO_DIR,
-    )
-
+    # Hardware mute bridge (button events -> satellite mute pipeline)
     try:
-        button_cfg = getattr(config, "button", None)
-        if button_cfg is not None and button_cfg.enabled:
+        MicMuteBridge(event_bus=state.event_bus, state=state)
+    except Exception:  # pylint: disable=broad-except
+        _LOGGER.exception("Failed to initialize mic mute bridge")
+
+    # Hardware buttons
+    try:
+        button_cfg = config.button
+        if button_cfg.enabled:
             mode = getattr(button_cfg, "mode", "gpio").lower()
             if mode == "xvf3800":
                 _LOGGER.info("Initializing XVF3800ButtonController (mode=xvf3800)")
                 xvf_btn = XVF3800ButtonController(
                     loop=loop,
-                    event_bus=event_bus,
+                    event_bus=state.event_bus,
                     state=state,
                     button_config=button_cfg,
                 )
-                setattr(state, "xvf3800_button_controller", xvf_btn)
+                state.xvf3800_button_controller = xvf_btn  # type: ignore[attr-defined]
             else:
                 _LOGGER.info("Initializing GPIO ButtonController (mode=gpio)")
                 button_controller = ButtonController(
                     loop=loop,
-                    event_bus=event_bus,
+                    event_bus=state.event_bus,
                     state=state,
                     config=button_cfg,
                 )
-                setattr(state, "button_controller", button_controller)
+                state.button_controller = button_controller  # type: ignore[attr-defined]
         else:
             _LOGGER.debug("Button controller not enabled in config; skipping")
-    except Exception:
+    except Exception:  # pylint: disable=broad-except
         _LOGGER.exception("Failed to initialize button controller(s)")
 
-async def _run_server(state: ServerState, config: Config):
-    """Starts the ESPHome server and ZeroConf discovery."""
-    server = await state.loop.create_server(
-        lambda: VoiceSatelliteProtocol(state),
-        host=config.esphome.host,
-        port=config.esphome.port,
+
+def _load_preferences(path: Path) -> Preferences:
+    """Load preferences.json defensively.
+
+    Unknown keys (from newer/older releases) are ignored with a warning
+    instead of crashing startup, and legacy key names are migrated.
+    """
+    with open(path, "r", encoding="utf-8") as preferences_file:
+        preferences_dict = json.load(preferences_file)
+
+    known = {f.name for f in dataclass_fields(Preferences)}
+    filtered: dict = {}
+    for key, value in preferences_dict.items():
+        mapped = _PREFERENCE_ALIASES.get(key, key)
+        if mapped in known:
+            filtered[mapped] = value
+        else:
+            _LOGGER.warning("Ignoring unknown preference key: %s", key)
+    return Preferences(**filtered)
+
+
+# -----------------------------------------------------------------------------
+
+
+async def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--config",
+        default=str(_MODULE_DIR / "config.json"),
+        help="JSON(C) configuration file providing CLI defaults and fork-subsystem settings (absent file = pure CLI mode)",
+    )
+    parser.add_argument(
+        "--name",
+        help="Real name for the device",
+    )
+    parser.add_argument(
+        "--audio-input-device",
+        help="Name for the audio input device (see --list-input-devices)",
+    )
+    parser.add_argument(
+        "--list-input-devices",
+        action="store_true",
+        help="List audio input devices and exit",
+    )
+    parser.add_argument(
+        "--audio-input-block-size",
+        type=int,
+        default=1024,
+    )
+    parser.add_argument(
+        "--audio-output-device",
+        help="Name for the audio output device (see --list-output-devices)",
+    )
+    parser.add_argument(
+        "--music-output-device",
+        help="mpv name for the music/media output device (defaults to --audio-output-device)",
+    )
+    parser.add_argument(
+        "--list-output-devices",
+        action="store_true",
+        help="List audio output devices and exit",
+    )
+    parser.add_argument("--mic-volume", type=int, default=100, choices=list(range(1, 101)), help="Microphone volume level (1 to 100)")
+    parser.add_argument("--mic-auto-gain", type=int, default=0, choices=list(range(32)))
+    parser.add_argument("--mic-noise-suppression", type=int, default=0, choices=(0, 1, 2, 3, 4))
+    parser.add_argument(
+        "--audio-input-channels",
+        type=int,
+        default=1,
+        choices=(1, 2),
+        help="Number of mic channels to capture and stream (1=mono, 2=dual-channel voice)",
+    )
+    parser.add_argument(
+        "--wake-word-dir",
+        default=[_WAKEWORDS_DIR],
+        action="append",
+        help="Directory with wake word models (.tflite) and configuration (.json)",
+    )
+    parser.add_argument(
+        "--wake-model",
+        default="okay_nabu",
+        help="File name of the first active wake model",
+    )
+    parser.add_argument(
+        "--stop-model",
+        default="stop",
+        help="File name of the stop model",
+    )
+    parser.add_argument(
+        "--download-dir",
+        default=_REPO_DIR / "local",
+        help="Directory to download custom wake word models to",
+    )
+    parser.add_argument(
+        "--refractory-seconds",
+        default=2.0,
+        type=float,
+        help="Seconds before wake word can be activated again",
+    )
+    parser.add_argument(
+        "--wake-word-threshold",
+        type=float,
+        default=None,
+        help="Global OpenWakeWord activation threshold override (0.0-1.0); per-model JSON thresholds take precedence",
+    )
+    parser.add_argument(
+        "--continue-conversation-delay",
+        type=float,
+        default=0.5,
+        help="Seconds to wait after TTS finishes before opening the mic for continued conversation (default: 0.5)",
+    )
+    parser.add_argument(
+        "--wakeup-sound",
+        default=str(_SOUNDS_DIR / "wake_word_triggered.flac"),
+        help="Directory and file name for wake sound (when you say the wake word)",
+    )
+    parser.add_argument(
+        "--start-listening-sound",
+        default=str(_SOUNDS_DIR / "start_listening_button.flac"),
+        help="Directory and file name and sound for start listening button (when you press button to talk)",
+    )
+    parser.add_argument(
+        "--timer-finished-sound",
+        default=str(_SOUNDS_DIR / "timer_finished.flac"),
+        help="Directory and file name for timer finished sound",
+    )
+    parser.add_argument(
+        "--processing-sound",
+        default=str(_SOUNDS_DIR / "processing.wav"),
+        help="Short sound to play while assistant is processing (thinking)",
+    )
+    parser.add_argument(
+        "--mute-sound",
+        default=str(_SOUNDS_DIR / "mute_switch_on.flac"),
+        help="Sound to play when muting the assistant",
+    )
+    parser.add_argument(
+        "--unmute-sound",
+        default=str(_SOUNDS_DIR / "mute_switch_off.flac"),
+        help="Sound to play when unmuting the assistant",
+    )
+    parser.add_argument(
+        "--button-double-press-sound",
+        default=str(_SOUNDS_DIR / "button_double_press.flac"),
+        help="Sound to play for button double press",
+    )
+    parser.add_argument(
+        "--button-triple-press-sound",
+        default=str(_SOUNDS_DIR / "button_triple_press.flac"),
+        help="Sound to play for button triple press",
+    )
+    parser.add_argument(
+        "--button-long-press-sound",
+        default=str(_SOUNDS_DIR / "button_long_press.flac"),
+        help="Sound to play for button long press",
+    )
+    parser.add_argument(
+        "--preferences-file",
+        default=_REPO_DIR / "preferences.json",
+        help="Directory and file name for the preferences JSON file",
+    )
+    parser.add_argument(
+        "--host",
+        help="Optional host IP address to bind to (default: auto-detected by network interface)",
+    )
+    parser.add_argument(
+        "--network-interface",
+        help="Network interface the application listens on (default: auto-detected by gateway)",
+    )
+    # Note that default port is also set in docker-entrypoint.sh
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=6053,
+        help="Port the application is listening on (default: 6053)",
+    )
+    parser.add_argument(
+        "--enable-thinking-sound",
+        action="store_true",
+        help="Enable thinking sound on startup",
+    )
+    # ------------------------------------------------------------------
+    # Peripheral API (LEDs, buttons, HAT boards)
+    # ------------------------------------------------------------------
+    parser.add_argument(
+        "--peripheral-host",
+        default="0.0.0.0",
+        help="Bind address for the peripheral WebSocket API (default: 0.0.0.0)",
+    )
+    parser.add_argument(
+        "--peripheral-port",
+        type=int,
+        default=6055,
+        help="Port for the peripheral WebSocket API (default: 6055)",
+    )
+    parser.add_argument(
+        "--peripheral-volume-step",
+        type=float,
+        default=PeripheralAPIServer.DEFAULT_VOLUME_STEP,
+        metavar="STEP",
+        help="Volume change per button press, 0.0–1.0 (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--disable-peripheral-api",
+        action="store_true",
+        help="Disable the peripheral WebSocket API entirely",
+    )
+    parser.add_argument(
+        "--peripheral-startup-wait",
+        type=float,
+        default=2.0,
+        metavar="SECONDS",
+        help="Seconds to wait for peripherals to connect and register their entities before HA enumerates the ESPHome API (default: %(default)s; set 0 to skip).",
+    )
+    # ------------------------------------------------------------------
+    parser.add_argument(
+        "--timer-max-ring-seconds",
+        type=float,
+        default=900.0,  # 15 minutes
+        help="Seconds before a ringing timer auto-stops (default: 900)",
+    )
+    parser.add_argument(
+        "--listen-during-wake-sound",
+        action="store_true",
+        help="Start listening immediately after wake word detection, without waiting for the wake sound to finish",
+    )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Add this to enable debug logging",
+    )
+    parser.add_argument(
+        "--colored-debug",
+        action="store_true",
+        help="Add this to enable colored debug logging",
+    )
+    parser.add_argument(
+        "--output-only",
+        action="store_true",
+        help="Enable output only mode",
     )
 
-    # Strip colons from state.mac_address (format "aa:bb:cc:dd:ee:ff")
-    # because zeroconf expects raw hex ("aabbccddeeff").
-    raw_mac = state.mac_address.replace(":", "")
+    # ------------------------------------------------------------------
+    # Fork: load config.json (if present) and inject its values as CLI
+    # defaults, so explicit flags still win. Absent file = pure CLI mode.
+    # ------------------------------------------------------------------
+    pre_args, _ = parser.parse_known_args()
+    config: Optional[Config] = None
+    config_path = Path(pre_args.config) if pre_args.config else None
+    if config_path is not None and config_path.exists():
+        config = load_config_from_json(config_path)
+        apply_config_defaults(parser, config)
+        _LOGGER.debug("Loaded configuration from %s", config_path)
+
+    args = parser.parse_args()
+
+    if args.colored_debug:
+        args.debug = True
+        _setup_logging(args)
+    elif args.debug:
+        logging.basicConfig(level=logging.DEBUG)
+    else:
+        logging.basicConfig(level=logging.INFO)
+
+    _LOGGER.debug(args)
+
+    # Fork: XVF3800 USB preflight (reboot + audio routing) before opening
+    # the microphone so the re-enumerated device is the one we capture.
+    _xvf3800_startup_preflight(config)
+
+    if args.list_input_devices:
+        print("Audio Input devices:")
+        print("=" * 13)
+        for idx, mic in enumerate(sc.all_microphones()):
+            print(f"[{idx}]", mic.name)
+        return
+
+    if args.list_output_devices:
+        from mpv import MPV
+
+        player = MPV()
+        print("Audio output devices:")
+        print("=" * 14)
+
+        for speaker in player.audio_device_list:  # type: ignore
+            print(speaker["name"] + ":", speaker["description"])
+        return
+
+    # Resolve network interface for mac-address detection
+    if not args.network_interface:
+        print("No network interface specified, try to detect default interface")
+        network_interface = get_default_interface()
+        print(f"Default interface detected: {network_interface}")
+    else:
+        print("Network interface specified")
+        network_interface = args.network_interface
+        print(f"Using network interface: {network_interface}")
+
+    # Resolve ip_address where the application will be listening
+    if not args.host:
+        print("No host (ip-address) specified, try to detect IP-Address")
+        host_ip_address = get_default_ipv4(network_interface)
+        print(f"IP-Address detected: {host_ip_address}")
+    else:
+        print("Host specified")
+        print(f"Using host: {args.host}")
+        host_ip_address = args.host
+
+    # Fork: load preferences before MAC resolution so the persisted MAC can
+    # provide a stable device identity across NIC changes.
+    preferences_path = Path(args.preferences_file)
+    if preferences_path.exists():
+        _LOGGER.debug("Loading preferences: %s", preferences_path)
+        preferences = _load_preferences(preferences_path)
+    else:
+        preferences = Preferences()
+
+    # Resolve mac
+    if not (mac_address := get_mac_address(interface=network_interface)):
+        print("No Mac address was found, app stopped.")
+        sys.exit(1)
+
+    # Fork: stable device identity — persist the MAC on first boot and
+    # prefer it afterwards so the HA device survives NIC changes, VM
+    # re-provisioning, or NetworkManager MAC randomization. Reset by
+    # removing the mac_address field from preferences.json.
+    if not preferences.mac_address:
+        preferences.mac_address = mac_address
+    else:
+        # Compare format-insensitively: older releases persisted the MAC
+        # without colon separators.
+        same_mac = (
+            preferences.mac_address.replace(":", "").lower()
+            == mac_address.replace(":", "").lower()
+        )
+        if not same_mac:
+            _LOGGER.info(
+                "Using persisted MAC %s (interface MAC %s differs)",
+                format_mac(preferences.mac_address),
+                mac_address,
+            )
+        mac_address = preferences.mac_address
+    mac_address_clean = mac_address.replace(":", "").lower()
+
+    # Resolve name
+    if not args.name:
+        print("No friendly name specified, try to autogenerate name")
+        friendly_name = f"LVA - {mac_address_clean}"
+        print(f"Friendly name autogenerated: {friendly_name}")
+    else:
+        print("Friendly name specified")
+        print(f"Using friendly name: {args.name}")
+        friendly_name = args.name
+
+    device_name = f"lva-{mac_address_clean}"
+
+    print(f"Device name: {device_name}")
+
+    # Resolve version
+    version = get_version()
+    print(f"Version: {version}")
+
+    # Resolve esphome version
+    esphome_version = get_esphome_version()
+    print(f"ESPHome api version: {esphome_version}")
+
+    # Resolve download dir
+    args.download_dir = Path(args.download_dir)
+    args.download_dir.mkdir(parents=True, exist_ok=True)
+
+    # Resolve microphone
+    if args.audio_input_device is not None:
+        try:
+            args.audio_input_device = int(args.audio_input_device)
+        except ValueError:
+            pass
+
+        mic = sc.get_microphone(args.audio_input_device)
+    else:
+        mic = sc.default_microphone()
+
+    # Load available wake words
+    wake_word_dirs = [Path(ww_dir) for ww_dir in args.wake_word_dir]
+
+    # If the operator explicitly pointed --wake-word-dir (or the WAKE_WORD_DIR
+    # env var) at the openWakeWord subdirectory, prefer resolving --wake-model
+    # to an openWakeWord model of the same name instead of a same-named
+    # microWakeWord one. Checked before the automatic dirs below are appended,
+    # since those always include the openWakeWord path and would otherwise
+    # make every configuration look like an openWakeWord preference.
+    preferred_wake_word_type = WakeWordType.OPEN_WAKE_WORD if any("openwakeword" in str(ww_dir).lower() for ww_dir in wake_word_dirs) else None
+
+    # openWakeWord models ship in their own subdirectory under the default
+    # wakewords dir. find_available_wake_words() only globs the top level of
+    # each directory it's given, so this must be added explicitly or the OWW
+    # models never get discovered (and never show up in the HA dropdown).
+    # Appended after the user-specified dirs so OWW entries are inserted
+    # (and therefore displayed) after the microWakeWord ones.
+    oww_dir = _WAKEWORDS_DIR / "openWakeWord"
+    if oww_dir not in wake_word_dirs:
+        wake_word_dirs.append(oww_dir)
+
+    wake_word_dirs.append(args.download_dir / "external_wake_words")
+    available_wake_words = find_available_wake_words(wake_word_dirs, args.stop_model)
+
+    # Load volume from preferences on startup, and ensure it's between 0.0 and 1.0
+    initial_volume = preferences.volume if preferences.volume is not None else 1.0
+    initial_volume = max(0.0, min(1.0, float(initial_volume)))
+    preferences.volume = initial_volume
+
+    # Load stop word sensitivity from preferences on startup, and ensure it's between 0.0 and 1.0
+    initial_threshold = initial_stop_word_threshold(preferences.stop_word_sensitivity)
+    preferences.stop_word_sensitivity = initial_threshold
+
+    if args.enable_thinking_sound:
+        preferences.thinking_sound = 1
+
+    if args.mic_auto_gain or args.mic_noise_suppression:
+        try:
+            import webrtc_noise_gain  # type: ignore[import-untyped] # noqa: F401
+        except ImportError:
+            _LOGGER.exception("Extras for webrtc are not installed")
+            sys.exit(1)
+
+    if args.mic_volume > 0.0:
+        preferences.mic_volume = args.mic_volume
+    if args.mic_auto_gain > 0:
+        preferences.mic_auto_gain = args.mic_auto_gain
+
+    if args.mic_noise_suppression > 0:
+        preferences.mic_noise_suppression = args.mic_noise_suppression
+
+    # Fork: global OpenWakeWord threshold tier — applies to models without an
+    # explicit per-model threshold. Precedence: --wake-word-threshold CLI >
+    # config.json wake_word.openwakeword_threshold > upstream default (0.7).
+    oww_global_threshold = config.wake_word.openwakeword_threshold if config is not None else 0.7
+    if args.wake_word_threshold is not None:
+        oww_global_threshold = max(0.0, min(1.0, float(args.wake_word_threshold)))
+
+    # Load wake/stop models
+    wake_models, active_wake_words, fallback_used = load_wake_models(
+        available_wake_words,
+        [word for word in preferences.active_wake_words if word is not None],
+        args.wake_model,
+        preferred_type=preferred_wake_word_type,
+    )
+
+    # TODO: allow openWakeWord for "stop"
+    stop_model = load_stop_model(wake_word_dirs, args.stop_model)
+    assert stop_model is not None
+
+    state = ServerState(
+        name=device_name,
+        friendly_name=friendly_name,
+        network_interface=network_interface,
+        mac_address=mac_address,
+        ip_address=host_ip_address,
+        version=version,
+        esphome_version=esphome_version,
+        audio_queue=Queue(),
+        entities=[],
+        available_wake_words=available_wake_words,
+        wake_words=wake_models,
+        active_wake_words=active_wake_words,
+        stop_word=stop_model,
+        music_player=MpvMediaPlayer(device=args.music_output_device or args.audio_output_device),
+        tts_player=MpvMediaPlayer(device=args.audio_output_device),
+        wakeup_sound=_resolve_sound_path(
+            _REPO_DIR, "wakeup_sound", preferences.selected_wakeup_sound, args.wakeup_sound
+        ),
+        start_listening_sound=args.start_listening_sound,
+        timer_finished_sound=_resolve_sound_path(
+            _REPO_DIR, "timer_sound", preferences.selected_timer_sound, args.timer_finished_sound
+        ),
+        processing_sound=_resolve_sound_path(
+            _REPO_DIR, "thinking_sound", preferences.selected_thinking_sound, args.processing_sound
+        ),
+        mute_sound=args.mute_sound,
+        unmute_sound=args.unmute_sound,
+        button_double_press_sound=args.button_double_press_sound,
+        button_triple_press_sound=args.button_triple_press_sound,
+        button_long_press_sound=args.button_long_press_sound,
+        preferences=preferences,
+        preferences_path=preferences_path,
+        refractory_seconds=args.refractory_seconds,
+        continue_conversation_delay=args.continue_conversation_delay,
+        output_only=args.output_only,
+        download_dir=args.download_dir,
+        volume=initial_volume,
+        stop_word_threshold=initial_threshold,
+        oww_global_threshold=oww_global_threshold,
+        mic_volume=preferences.mic_volume,
+        mic_auto_gain=preferences.mic_auto_gain,
+        mic_noise_suppression=preferences.mic_noise_suppression,
+        audio_input_channels=args.audio_input_channels,
+        timer_max_ring_seconds=args.timer_max_ring_seconds,
+        listen_during_wake_sound=args.listen_during_wake_sound,
+        event_sounds_enabled=_resolve_event_sounds_enabled(
+            preferences, config.app.event_sounds_enabled if config else None
+        ),
+        thinking_sound_loop=_resolve_thinking_sound_loop(
+            preferences, config.app.thinking_sound_loop if config else None
+        ),
+        sound_options=_scan_sound_files(_REPO_DIR),
+    )
+
+    if fallback_used:
+        # Fallback to the default model was used, save as active wake words
+        _LOGGER.debug("Fallback was used, save default wake words in Preferences.")
+        state.preferences.active_wake_words = list(active_wake_words)
+        state.active_wake_words = active_wake_words
+        state.wake_words = wake_models
+        state.save_preferences()
+        state.wake_words_changed = True
+
+    if args.enable_thinking_sound or args.mic_auto_gain or args.mic_noise_suppression:
+        state.save_preferences()
+
+    initial_volume_percent = int(round(initial_volume * 100))
+    state.music_player.set_volume(initial_volume_percent)
+    state.tts_player.set_volume(initial_volume_percent)
+
+    # ------------------------------------------------------------------
+    # Peripheral API (optional – LEDs, buttons, HAT boards)
+    # ------------------------------------------------------------------
+    peripheral_api: Optional[PeripheralAPIServer] = None
+    if not args.disable_peripheral_api:
+        peripheral_api = PeripheralAPIServer(
+            host=args.peripheral_host,
+            port=args.peripheral_port,
+            volume_step=args.peripheral_volume_step,
+        )
+        peripheral_api.set_state(state)
+        state.peripheral_api = peripheral_api
+
+    # ------------------------------------------------------------------
+    # ESPHome TCP server (with retry on EADDRINUSE)
+    # ------------------------------------------------------------------
+    loop = asyncio.get_running_loop()
+    state.loop = loop
+
+    # ------------------------------------------------------------------
+    # Fork: hardware controllers (LED, MQTT, buttons) + volume sync
+    # ------------------------------------------------------------------
+    _init_fork_controllers(loop, state, config)
+
+    # Fork: Sendspin multiroom client (optional)
+    sendspin_client, sendspin_task = _start_sendspin(loop, state, config)
+
+    if config is not None and config.audio.volume_sync:
+        # Fork: align the OS sink volume with the persisted LVA volume.
+        # mpv's per-player volume handles ducking; the user-visible volume
+        # maps to the OS output (PipeWire/Pulse/ALSA).
+        loop.create_task(
+            ensure_output_volume(
+                volume=initial_volume,
+                output_device=config.audio.output_device,
+                max_volume_percent=config.audio.max_volume_percent,
+                attempts=20,
+                delay_seconds=0.5,
+            )
+        )
+    else:
+        _LOGGER.debug("Output volume sync disabled (audio.volume_sync=false)")
+    max_attempts = 15
+    attempt = 1
+    server = None
+
+    # Validate VoiceSatelliteProtocol initialization BEFORE starting server
+    # This catches errors like missing imports or broken initialization immediately
+    # instead of failing silently only when first client connects
+    _LOGGER.debug("Validating VoiceSatelliteProtocol initialization...")
+    try:
+        # Create test instance to run complete __init__ code path
+        test_protocol = VoiceSatelliteProtocol(state)
+        # Cleanup state reference
+        test_protocol.state.satellite = None
+        del test_protocol
+        _LOGGER.debug("✅ VoiceSatelliteProtocol validation successful")
+    except Exception:
+        _LOGGER.critical("❌ FATAL ERROR in VoiceSatelliteProtocol initialization!", exc_info=True)
+        _LOGGER.critical("Program will exit immediately - fix the error above first!")
+        sys.exit(1)
+
+    while attempt <= max_attempts:
+        try:
+            server = await loop.create_server(
+                lambda: VoiceSatelliteProtocol(state),
+                host=host_ip_address,
+                port=args.port,
+            )
+            break  # connection successful, exit the loop
+        except OSError as err:
+            message = err.strerror or str(err)
+            if err.errno == errno.EADDRINUSE:
+                message = "address already in use"
+            if attempt < max_attempts:
+                _LOGGER.warning(
+                    "Attempt %d/%d failed to bind on address (%s, %s): %s. Retrying in 1 second...",
+                    attempt,
+                    max_attempts,
+                    host_ip_address,
+                    args.port,
+                    message,
+                )
+                await asyncio.sleep(1)
+                attempt += 1
+            else:
+                _LOGGER.exception(
+                    "All %d attempts failed to bind on address (%s, %s): %s",
+                    max_attempts,
+                    host_ip_address,
+                    args.port,
+                    message,
+                )
+                sys.exit(1)
+
+    # ------------------------------------------------------------------
+    # Audio processing thread
+    # ------------------------------------------------------------------
+    process_audio_thread = threading.Thread(
+        target=process_audio,
+        args=(state, mic, args.audio_input_block_size),
+        daemon=True,
+    )
+    process_audio_thread.start()
+
+    # Auto discovery (zeroconf, mDNS)
     discovery = HomeAssistantZeroconf(
-        port=config.esphome.port, name=config.app.name, mac_address=raw_mac
+        port=args.port,
+        name=state.name,
+        mac_address=state.mac_address,
+        host_ip_address=host_ip_address,
+        friendly_name=friendly_name,
     )
     await discovery.register_server()
 
-    async with server:
-        _LOGGER.info(
-            "Server started (host=%s, port=%s)", config.esphome.host, config.esphome.port
+    # ------------------------------------------------------------------
+    # Start peripheral API and signal "getting started" to peripherals
+    # ------------------------------------------------------------------
+    if peripheral_api is not None:
+        await peripheral_api.start()
+        await peripheral_api.emit_event(LVAEvent.ZEROCONF, {"status": "getting_started"})
+
+        # Give peripherals a window to connect and register their Light
+        # entities before HA enumerates over the ESPHome native API. The
+        # ESPHome server is bound but not yet serving (serve_forever runs
+        # below), so any HA connection sits queued in the kernel for the
+        # duration of this wait. Peripherals that register later still
+        # work, but the new entities only show up in HA after the
+        # integration reconnects.
+        if args.peripheral_startup_wait > 0:
+            _LOGGER.info(
+                "Waiting %.1fs for peripherals to register entities…",
+                args.peripheral_startup_wait,
+            )
+            await asyncio.sleep(args.peripheral_startup_wait)
+
+    try:
+        async with server:  # type: ignore[union-attr]
+            _LOGGER.info("Server started (host=%s, port=%s)", host_ip_address, args.port)
+            await server.serve_forever()  # type: ignore[union-attr]
+    except KeyboardInterrupt:
+        pass
+    finally:
+        state.audio_queue.put_nowait(None)
+        process_audio_thread.join()
+        if peripheral_api is not None:
+            await peripheral_api.stop()
+        # Fork: shut down the Sendspin subsystem cleanly
+        try:
+            if sendspin_client is not None:
+                sendspin_client.stop()
+                await sendspin_client.disconnect(reason="shutdown")
+            if sendspin_task is not None:
+                sendspin_task.cancel()
+        except Exception:  # pylint: disable=broad-except
+            _LOGGER.debug("Sendspin shutdown cleanup failed", exc_info=True)
+        state.shutdown = True
+
+    _LOGGER.debug("Server stopped")
+
+
+# -----------------------------------------------------------------------------
+def _setup_logging(args: argparse.Namespace) -> None:
+    COLORS = {
+        logging.DEBUG: "\033[36m",
+        logging.INFO: "\033[32m",
+        logging.WARNING: "\033[33m",
+        logging.ERROR: "\033[31m",
+        logging.CRITICAL: "\033[35m",
+    }
+    RESET = "\033[0m"
+
+    original_format = logging.Formatter.format
+
+    def colored_format(self, record: logging.LogRecord) -> str:
+        color = COLORS.get(record.levelno, RESET)
+        return f"{color}{original_format(self, record)}{RESET}"
+
+    logging.Formatter.format = colored_format  # type: ignore
+
+    handler = logging.StreamHandler()
+    handler.setFormatter(
+        logging.Formatter(
+            fmt="%(asctime)s %(levelname)s %(name)s: %(message)s",
+            datefmt="%H:%M:%S",
         )
-        await server.serve_forever()
+    )
+    logging.basicConfig(
+        level=logging.DEBUG if args.debug else logging.INFO,
+        handlers=[handler],
+    )
+
+
+# -----------------------------------------------------------------------------
+
+
+def process_audio(state: ServerState, mic, block_size: int):
+    """Process audio chunks from the microphone."""
+    n_channels = state.audio_input_channels
+
+    wake_words: List[Union[MicroWakeWord, OpenWakeWord]] = []
+    micro_features: Optional[MicroWakeWordFeatures] = None
+    micro_inputs: List[np.ndarray] = []
+
+    oww_features: Optional[OpenWakeWordFeatures] = None
+    oww_inputs: List[np.ndarray] = []
+    has_oww = False
+
+    last_active: Optional[float] = None
+    webrtc: Optional[WebRTCProcessor] = None
+
+    try:
+        _LOGGER.debug("Opening audio input device: %s", mic.name)
+        with mic.recorder(samplerate=16000, channels=n_channels, blocksize=block_size) as mic_in:
+            while True:
+                # Shape: (block_size, n_channels) for stereo, (block_size, 1) for mono.
+                raw = mic_in.record(block_size)  # float32, range [-1, 1]
+                mic_vol_scalar = max(0.1, min(1.0, state.mic_volume / 100.0))
+
+                # Build per-channel byte arrays.  Channel 0 is the primary
+                # microphone; channel 1 (when present) is the reference/speaker
+                # feed used for server-side AEC.
+                channel_chunks: list[bytes] = []
+                for ch in range(n_channels):
+                    col = raw[:, ch] if n_channels > 1 else raw.reshape(-1)
+                    chunk = (np.clip(col * mic_vol_scalar, -1.0, 1.0) * 32767.0).astype("<i2").tobytes()
+                    channel_chunks.append(chunk)
+
+                # Primary channel drives WebRTC and wake-word detection.
+                audio_chunk = channel_chunks[0]
+                agc = state.preferences.mic_auto_gain or 0
+                ns = state.preferences.mic_noise_suppression or 0
+
+                if agc > 0 or ns > 0:
+                    if webrtc is None:
+                        webrtc = WebRTCProcessor(agc_level=agc, ns_level=ns)
+                    else:
+                        webrtc.update_settings(agc, ns)
+                    audio_chunk = webrtc.process(audio_chunk)
+                    if not audio_chunk:
+                        continue
+
+                if state.satellite is None or not hasattr(state.satellite, "_is_streaming_audio"):
+                    continue
+
+                # WAKE WORD
+                if (not wake_words) or (state.wake_words_changed and state.wake_words):
+                    # Update list of wake word models to process
+                    state.wake_words_changed = False
+                    wake_words = [ww for ww in state.wake_words.values() if ww.id in state.active_wake_words]
+
+                    # TODO: Load default stop word value from json into state and preferences missing.
+
+                    has_oww = False
+                    for idx, wake_word in enumerate(wake_words):
+
+                        # Load default threshold from model json
+                        wake_word_id = wake_word.id if hasattr(wake_word, "id") else next(iter(state.wake_words.keys()))
+                        available_word = state.available_wake_words.get(wake_word_id)
+                        default_threshold = available_word.probability_cutoff if available_word else state.oww_global_threshold
+                        _LOGGER.debug("Using default threshold %.3f for wake word '%s' from model config", default_threshold, wake_word_id)
+                        # Check preferences override
+                        if idx == 0:
+                            old_val = state.wake_word_1_threshold
+                            if state.preferences.wake_word_1_sensitivity is not None:
+                                state.wake_word_1_threshold = state.preferences.wake_word_1_sensitivity
+                            else:
+                                state.wake_word_1_threshold = default_threshold
+                            _LOGGER.debug("Wake Word 1 threshold set to %.3f (was %.3f, preferences: %s)", state.wake_word_1_threshold, old_val, state.preferences.wake_word_1_sensitivity)
+                        elif idx == 1:
+                            old_val = state.wake_word_2_threshold
+                            if state.preferences.wake_word_2_sensitivity is not None:
+                                state.wake_word_2_threshold = state.preferences.wake_word_2_sensitivity
+                            else:
+                                state.wake_word_2_threshold = default_threshold
+                            _LOGGER.debug("Wake Word 2 threshold set to %.3f (was %.3f, preferences: %s)", state.wake_word_2_threshold, old_val, state.preferences.wake_word_2_sensitivity)
+
+                        if isinstance(wake_word, OpenWakeWord):
+                            has_oww = True
+
+                    # Sync entity states after threshold values were updated
+                    if state.satellite is not None:
+                        _LOGGER.debug("Updating WebUI entities with new threshold values")
+
+                        # Wake Word 1
+                        if state.satellite.state.sensitivity_1_number_entity is not None:
+                            _LOGGER.debug("  → Syncing Wake Word 1 entity to value %.3f", state.wake_word_1_threshold)
+                            state.satellite.state.sensitivity_1_number_entity.sync_with_state()
+                            _LOGGER.debug("  ✅ Wake Word 1 entity now has value %.3f", state.satellite.state.sensitivity_1_number_entity.value)
+
+                        # Wake Word 2
+                        if state.satellite.state.sensitivity_2_number_entity is not None:
+                            _LOGGER.debug("  → Syncing Wake Word 2 entity to value %.3f", state.wake_word_2_threshold)
+                            state.satellite.state.sensitivity_2_number_entity.sync_with_state()
+                            _LOGGER.debug("  ✅ Wake Word 2 entity now has value %.3f", state.satellite.state.sensitivity_2_number_entity.value)
+
+                        # Stop Word
+                        if state.satellite.state.stop_sensitivity_number_entity is not None:
+                            _LOGGER.debug("  → Syncing Stop Word entity to value %.3f", state.stop_word_threshold)
+                            state.satellite.state.stop_sensitivity_number_entity.sync_with_state()
+                            _LOGGER.debug("  ✅ Stop Word entity now has value %.3f", state.satellite.state.stop_sensitivity_number_entity.value)
+
+                        _LOGGER.debug("All sensitivity entities synced successfully")
+
+                        # Force push new state to connected Home Assistant instance
+                        if state.satellite is not None:
+                            try:
+                                _LOGGER.debug("Pushing updated state values to Home Assistant")
+                                for entity in [
+                                    state.satellite.state.sensitivity_1_number_entity,
+                                    state.satellite.state.sensitivity_2_number_entity,
+                                    state.satellite.state.stop_sensitivity_number_entity,
+                                ]:
+                                    if entity is not None:
+                                        state.satellite.send_messages([NumberStateResponse(key=entity.key, state=entity.value)])  # type: ignore[attr-defined]
+                                        _LOGGER.debug("  → Pushed value %.3f for entity %d", entity.value, entity.key)
+                            except Exception as e:
+                                _LOGGER.debug("Could not push state (no client connected yet): %s", e)
+
+                    # TODO: Save settings: At this moment settings are only saved when changed in the UI. Means that the default value can change while updating since its not saved in preferences.
+
+                    if micro_features is None:
+                        micro_features = MicroWakeWordFeatures()
+
+                    if has_oww and (oww_features is None):
+                        oww_features = OpenWakeWordFeatures.from_builtin()
+
+                try:
+                    # Both channels travel in one message: data=ch0 (enhanced), data2=ch1 (raw reference)
+                    audio_chunk_2 = channel_chunks[1] if n_channels >= 2 else None
+                    state.satellite.handle_audio(audio_chunk, audio_chunk_2)
+
+                    assert micro_features is not None
+                    micro_inputs.clear()
+                    micro_inputs.extend(micro_features.process_streaming(audio_chunk))
+
+                    if has_oww:
+                        assert oww_features is not None
+                        oww_inputs.clear()
+                        oww_inputs.extend(oww_features.process_streaming(audio_chunk))
+
+                    for wake_word_index, wake_word in enumerate(wake_words):
+                        activated = False
+
+                        # Set dynamic threshold depending on wake word index
+                        if wake_word_index == 0:
+                            threshold = state.wake_word_1_threshold
+                            # _LOGGER.debug("Set wake word %d probability cutoff to %.3f", wake_word_index+1, state.wake_word_1_threshold)
+                        elif wake_word_index == 1:
+                            threshold = state.wake_word_2_threshold
+                            # _LOGGER.debug("Set wake word %d probability cutoff to %.3f", wake_word_index+1, state.wake_word_2_threshold)
+                        else:
+                            threshold = 0.7
+                            # _LOGGER.debug("Set wake word %d probability cutoff to fallback value 0.7", wake_word_index+1)
+
+                        if isinstance(wake_word, MicroWakeWord):
+                            # No debugging when no detection
+                            wake_word.debug_probabilities = False
+
+                            # set microWakeWord cutoff
+                            wake_word.probability_cutoff = threshold
+
+                            for micro_input in micro_inputs:
+                                if wake_word.process_streaming(micro_input):
+                                    wake_word.debug_probabilities = True
+                                    activated = True
+                        elif isinstance(wake_word, OpenWakeWord):
+                            for oww_input in oww_inputs:
+                                for prob in wake_word.process_streaming(oww_input):
+                                    if prob > threshold:
+                                        _LOGGER.debug("Wake word '%s' activated (probability %.3f exceeded threshold %.3f)", wake_word.wake_word, prob, threshold)  # type: ignore[attr-defined]
+                                        activated = True
+
+                        if activated and not state.muted:
+                            # Check refractory
+                            now = time.monotonic()
+                            if (last_active is None) or ((now - last_active) > state.refractory_seconds):
+                                state.satellite.wakeup(wake_word)
+                                last_active = now
+
+                    # Always process to keep state correct
+                    stopped = False
+
+                    # No debugging when no detection
+                    state.stop_word.debug_probabilities = False
+
+                    # Apply stop word sensitivity threshold
+                    state.stop_word.probability_cutoff = state.stop_word_threshold
+                    # _LOGGER.debug("Set stop word probability cutoff to %.3f", state.stop_word_threshold)
+                    for micro_input in micro_inputs:
+                        if state.stop_word.process_streaming(micro_input):
+                            state.stop_word.debug_probabilities = True
+                            stopped = True
+
+                    if stopped and (state.stop_word.id in state.active_wake_words) and not state.muted:
+                        _LOGGER.debug("Stop word detected")
+                        state.satellite.stop()
+                except Exception:  # pylint: disable=broad-except
+                    _LOGGER.exception("Unexpected error handling audio")
+    except Exception:  # pylint: disable=broad-except
+        _LOGGER.exception("Unexpected error processing audio")
+        sys.exit(1)
+
+
+# -----------------------------------------------------------------------------
+
+
+def run():
+    asyncio.run(main())
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    run()

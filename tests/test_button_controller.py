@@ -2,6 +2,7 @@
 
 import pytest
 import threading
+from queue import Queue
 import time
 from unittest.mock import Mock, MagicMock, patch
 from linux_voice_assistant.button_controller import (
@@ -54,29 +55,39 @@ class TestButtonControllerInitialization:
         prefs = Preferences()
         state = ServerState(
             name="test_device",
+            friendly_name="Test Device",
             mac_address="aa:bb:cc:dd:ee:ff",
+            ip_address="127.0.0.1",
+            network_interface="eth0",
+            version="test",
+            esphome_version="test",
             event_bus=event_bus,
             loop=None,
+            audio_queue=Queue(),
             entities=[],
             music_player=MagicMock(),
             tts_player=MagicMock(),
             available_wake_words={},
             wake_words={},
             active_wake_words=set(),
-            stop_word=None,
-            wake_word_sensitivity="Slightly sensitive",
+            stop_word=MagicMock(),
             wakeup_sound="",
-            thinking_sound="",
+            processing_sound="",
             timer_finished_sound="",
+            start_listening_sound="",
+            mute_sound="",
+            unmute_sound="",
+            button_double_press_sound="",
+            button_triple_press_sound="",
+            button_long_press_sound="",
             preferences=prefs,
             preferences_path=None,
             download_dir=None,
             refractory_seconds=0.5,
             event_sounds_enabled=True,
             thinking_sound_loop=False,
-            listen_during_wake_sound=False
+            listen_during_wake_sound=False,
         )
-        state.mic_muted_event.set()
         state.shutdown = False
         return state
 
@@ -136,9 +147,15 @@ class TestButtonControllerGPIOUnavailable:
         prefs = Preferences()
         state = ServerState(
             name="test_device",
+            friendly_name="Test Device",
             mac_address="aa:bb:cc:dd:ee:ff",
+            ip_address="127.0.0.1",
+            network_interface="eth0",
+            version="test",
+            esphome_version="test",
             event_bus=event_bus,
             loop=None,
+            audio_queue=Queue(),
             entities=[],
             music_player=None,
             tts_player=None,
@@ -146,10 +163,15 @@ class TestButtonControllerGPIOUnavailable:
             wake_words={},
             active_wake_words=set(),
             stop_word=None,
-            wake_word_sensitivity="Slightly sensitive",
             wakeup_sound="",
-            thinking_sound="",
+            processing_sound="",
             timer_finished_sound="",
+            start_listening_sound="",
+            mute_sound="",
+            unmute_sound="",
+            button_double_press_sound="",
+            button_triple_press_sound="",
+            button_long_press_sound="",
             preferences=prefs,
             preferences_path=None,
             download_dir=None,
@@ -158,7 +180,6 @@ class TestButtonControllerGPIOUnavailable:
             thinking_sound_loop=False,
             listen_during_wake_sound=False
         )
-        state.mic_muted_event.set()
         state.shutdown = False
         return state
 
@@ -205,9 +226,15 @@ class TestButtonControllerPressTiming:
         prefs = Preferences()
         state = ServerState(
             name="test_device",
+            friendly_name="Test Device",
             mac_address="aa:bb:cc:dd:ee:ff",
+            ip_address="127.0.0.1",
+            network_interface="eth0",
+            version="test",
+            esphome_version="test",
             event_bus=event_bus,
             loop=None,
+            audio_queue=Queue(),
             entities=[],
             music_player=None,
             tts_player=None,
@@ -215,10 +242,15 @@ class TestButtonControllerPressTiming:
             wake_words={},
             active_wake_words=set(),
             stop_word=None,
-            wake_word_sensitivity="Slightly sensitive",
             wakeup_sound="",
-            thinking_sound="",
+            processing_sound="",
             timer_finished_sound="",
+            start_listening_sound="",
+            mute_sound="",
+            unmute_sound="",
+            button_double_press_sound="",
+            button_triple_press_sound="",
+            button_long_press_sound="",
             preferences=prefs,
             preferences_path=None,
             download_dir=None,
@@ -227,7 +259,6 @@ class TestButtonControllerPressTiming:
             thinking_sound_loop=False,
             listen_during_wake_sound=False
         )
-        state.mic_muted_event.set()
         state.shutdown = False
         return state
 
@@ -309,29 +340,39 @@ class TestButtonControllerEventBusIntegration:
         prefs = Preferences()
         state = ServerState(
             name="test_device",
+            friendly_name="Test Device",
             mac_address="aa:bb:cc:dd:ee:ff",
+            ip_address="127.0.0.1",
+            network_interface="eth0",
+            version="test",
+            esphome_version="test",
             event_bus=event_bus,
             loop=None,
+            audio_queue=Queue(),
             entities=[],
             music_player=MagicMock(),
             tts_player=MagicMock(),
             available_wake_words={},
             wake_words={},
             active_wake_words=set(),
-            stop_word=None,
-            wake_word_sensitivity="Slightly sensitive",
+            stop_word=MagicMock(),
             wakeup_sound="",
-            thinking_sound="",
+            processing_sound="",
             timer_finished_sound="",
+            start_listening_sound="",
+            mute_sound="",
+            unmute_sound="",
+            button_double_press_sound="",
+            button_triple_press_sound="",
+            button_long_press_sound="",
             preferences=prefs,
             preferences_path=None,
             download_dir=None,
             refractory_seconds=0.5,
             event_sounds_enabled=True,
             thinking_sound_loop=False,
-            listen_during_wake_sound=False
+            listen_during_wake_sound=False,
         )
-        state.mic_muted_event.set()
         state.shutdown = False
         return state
 
@@ -391,9 +432,15 @@ class TestButtonControllerButtonLogic:
         prefs = Preferences()
         state = ServerState(
             name="test_device",
+            friendly_name="Test Device",
             mac_address="aa:bb:cc:dd:ee:ff",
+            ip_address="127.0.0.1",
+            network_interface="eth0",
+            version="test",
+            esphome_version="test",
             event_bus=event_bus,
             loop=None,
+            audio_queue=Queue(),
             entities=[],
             music_player=MagicMock(),  # Has audio playing
             tts_player=MagicMock(),
@@ -401,10 +448,15 @@ class TestButtonControllerButtonLogic:
             wake_words={},
             active_wake_words=set(),
             stop_word=None,
-            wake_word_sensitivity="Slightly sensitive",
             wakeup_sound="",
-            thinking_sound="",
+            processing_sound="",
             timer_finished_sound="",
+            start_listening_sound="",
+            mute_sound="",
+            unmute_sound="",
+            button_double_press_sound="",
+            button_triple_press_sound="",
+            button_long_press_sound="",
             preferences=prefs,
             preferences_path=None,
             download_dir=None,
@@ -413,7 +465,6 @@ class TestButtonControllerButtonLogic:
             thinking_sound_loop=False,
             listen_during_wake_sound=False
         )
-        state.mic_muted_event.set()
         state.shutdown = False
         return state
 
@@ -439,7 +490,7 @@ class TestButtonControllerButtonLogic:
     def test_long_press_toggles_mute(self, mock_state):
         """Test that long press toggles microphone mute."""
         # Initial state: unmuted
-        assert mock_state.mic_muted == False
+        assert mock_state.muted == False
 
         # Long press should toggle mute
         mock_state.event_bus.publish("set_mic_mute", {"state": True})
@@ -462,9 +513,15 @@ class TestButtonControllerErrorHandling:
         prefs = Preferences()
         state = ServerState(
             name="test_device",
+            friendly_name="Test Device",
             mac_address="aa:bb:cc:dd:ee:ff",
+            ip_address="127.0.0.1",
+            network_interface="eth0",
+            version="test",
+            esphome_version="test",
             event_bus=event_bus,
             loop=None,
+            audio_queue=Queue(),
             entities=[],
             music_player=None,
             tts_player=None,
@@ -472,10 +529,15 @@ class TestButtonControllerErrorHandling:
             wake_words={},
             active_wake_words=set(),
             stop_word=None,
-            wake_word_sensitivity="Slightly sensitive",
             wakeup_sound="",
-            thinking_sound="",
+            processing_sound="",
             timer_finished_sound="",
+            start_listening_sound="",
+            mute_sound="",
+            unmute_sound="",
+            button_double_press_sound="",
+            button_triple_press_sound="",
+            button_long_press_sound="",
             preferences=prefs,
             preferences_path=None,
             download_dir=None,
@@ -484,7 +546,6 @@ class TestButtonControllerErrorHandling:
             thinking_sound_loop=False,
             listen_during_wake_sound=False
         )
-        state.mic_muted_event.set()
         state.shutdown = False
         return state
 

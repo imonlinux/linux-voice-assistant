@@ -540,8 +540,9 @@ class TestMqttControllerStatePublishing:
 
         controller.publish_state_to_mqtt(data)
 
-        # Verify state was published - should publish exactly 2 messages (effect + light)
-        assert mock_client_instance.publish.call_count == 2
+        # Verify state was published - should publish exactly 3 messages
+        # (effect + light + consolidated voice state)
+        assert mock_client_instance.publish.call_count == 3
 
         # Check that publish was called with proper topics and payloads
         publish_calls = mock_client_instance.publish.call_args_list
@@ -558,6 +559,56 @@ class TestMqttControllerStatePublishing:
         assert light_data["state"] == "ON"
         assert light_data["color"] == {"r": 0, "g": 0, "b": 255}
         assert light_data["brightness"] == int(0.7 * 255)
+
+        # Get third publish call (consolidated voice state)
+        third_call_args, third_call_kwargs = publish_calls[2]
+        assert third_call_args[0] == controller.topics["voice_state"]["state"]
+        assert third_call_args[1] == "idle"
+        assert third_call_kwargs.get("retain") is True
+
+    @patch('linux_voice_assistant.mqtt_controller.mqtt.Client')
+    def test_mqtt_publishes_consolidated_voice_state_each_transition(
+        self, mock_mqtt_client, event_loop, event_bus, mqtt_config, preferences
+    ):
+        """Test the consolidated voice-state topic tracks every transition.
+
+        Regression guard for the tray-client desync: consumers must be able
+        to trust a single retained topic that always names the ACTIVE state,
+        instead of reconstructing it from per-state light topics (which are
+        retained-ON for every state that has ever been active and replay in
+        broker order on reconnect).
+        """
+        mock_client_instance = MagicMock()
+        mock_mqtt_client.return_value = mock_client_instance
+
+        controller = MqttController(
+            loop=event_loop,
+            event_bus=event_bus,
+            config=mqtt_config,
+            app_name="test_device",
+            mac_address="aa:bb:cc:dd:ee:ff",
+            preferences=preferences
+        )
+
+        state_topic = controller.topics["voice_state"]["state"]
+        transitions = ["listening", "thinking", "responding", "idle"]
+
+        for state_name in transitions:
+            mock_client_instance.publish.reset_mock()
+            controller.publish_state_to_mqtt({
+                "state_name": state_name,
+                "effect": "solid",
+                "color": [0, 0, 255],
+                "brightness": 0.5,
+            })
+
+            consolidated_calls = [
+                call for call in mock_client_instance.publish.call_args_list
+                if call[0][0] == state_topic
+            ]
+            assert len(consolidated_calls) == 1
+            assert consolidated_calls[0][0][1] == state_name
+            assert consolidated_calls[0][1].get("retain") is True
 
 
 class TestMqttControllerBootstrapLogic:
@@ -611,20 +662,30 @@ class TestMqttControllerBootstrapLogic:
         assert controller._bootstrap_ends_at == None
 
     def test_bootstrap_activated_on_connect(self, controller):
-        """Test bootstrap is activated on connection."""
+        """Test bootstrap is activated on connection (via loop-marshaled impl)."""
+        import asyncio
+
         mock_client = MagicMock()
         controller._on_connect(mock_client, None, {}, 0)
+        # _on_connect marshals setup onto the event loop; flush pending
+        # callbacks so the marshaled _on_connect_impl actually runs.
+        controller.loop.run_until_complete(asyncio.sleep(0))
 
         assert controller._bootstrap_state_sync == True
         assert controller._bootstrap_ends_at is not None
         assert controller._bootstrap_end_handle is not None
+        # Subscriptions moved into the marshaled impl as well.
+        assert mock_client.subscribe.call_count == 2
 
     def test_bootstrap_ends_after_timeout(self, controller):
         """Test bootstrap ends after timeout."""
+        import asyncio
+
         mock_client = MagicMock()
 
-        # Simulate connection
+        # Simulate connection (setup runs on the loop; flush it)
         controller._on_connect(mock_client, None, {}, 0)
+        controller.loop.run_until_complete(asyncio.sleep(0))
         assert controller._bootstrap_state_sync == True
 
         # Simulate bootstrap end

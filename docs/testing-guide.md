@@ -38,23 +38,37 @@ The linux-voice-assistant fork follows a **testing pyramid** approach:
 
 ### Directory Organization
 
+The suite combines upstream core unit tests with fork subsystem tests
+(606 passing / 1 skipped as of the aiosendspin migration).
+
 ```
 tests/
-├── README.md                           # Test documentation
-├── conftest.py                         # Shared fixtures and configuration
-├── test_event_bus.py                   # EventBus system tests ✅
-├── test_state_management.py            # State and Preferences tests ✅
-├── test_configuration.py               # Configuration loading tests ✅
-├── test_audio_engine.py                # Audio processing tests ✅
-├── test_led_controller.py              # LED control tests ✅
-├── test_button_controller.py           # Button controller tests ✅
-├── test_volume_management.py           # Volume control tests ✅
-├── test_mqtt_controller.py             # MQTT integration tests ✅
-├── test_sendspin_client.py             # Sendspin client tests ✅
-├── test_sendspin_discovery.py          # Sendspin discovery tests ✅
-├── test_xvf3800_button_controller.py   # XVF3800 button hardware tests ✅
-├── test_xvf3800_led_backend.py         # XVF3800 LED hardware tests ✅
-└── test_end_to_end_workflows.py        # End-to-end integration tests ✅
+├── conftest.py                        # Shared fixtures and configuration
+├── unit/                              # Upstream core tests (satellite, entity,
+│                                      #   wake_word, player, peripheral_api,
+│                                      #   zeroconf, models, webrtc, main…)
+├── test_event_bus.py                  # EventBus system tests
+├── test_configuration.py              # Configuration loading tests
+├── test_led_controller.py             # LED control tests
+├── test_button_controller.py          # Button controller tests
+├── test_volume_management.py          # Volume control tests
+├── test_mqtt_controller.py            # MQTT LED/tray integration tests
+├── test_sendspin_client.py            # Sendspin client + library contract tests
+│                                      #   (skips without the sendspin extra)
+├── test_sendspin_identity.py          # Sendspin identity persistence tests
+├── test_xvf3800_button_controller.py  # XVF3800 button hardware tests
+├── test_xvf3800_led_backend.py        # XVF3800 LED hardware tests
+├── test_format_mac.py                 # MAC address formatting tests
+├── lva_mic_capture.py                 # Audio capture utility
+├── xvf3800_probe.py                   # XVF3800 device probe
+└── xvf3800_hid_mute_probe.py          # XVF3800 HID probe (requires hidapi)
+```
+
+Notes:
+- Sendspin tests `pytest.importorskip` when aiosendspin isn't installed.
+- The full suite needs Python 3.12+ (aiosendspin requirement); base tests
+  run on 3.11+.
+- Hardware tests are marked and skipped without physical devices.
 ```
 
 ### Test Categories

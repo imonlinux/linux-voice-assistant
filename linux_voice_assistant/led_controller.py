@@ -216,20 +216,23 @@ class LedController(EventHandler):
         self.current_task = asyncio.run_coroutine_threadsafe(coro, self.loop)
 
     def _apply_state_effect(self, state_name: str, publish_state: bool = True):
-        # Mute has highest precedence over any voice/idle effects.
+        config = self.configs.get(state_name, self.configs["idle"])
+
+        # Mute has highest precedence over any voice/idle effects for the
+        # LOCAL LEDs, but the MQTT state publish still happens: consumers
+        # (tray client, HA light entities) must track actual voice state
+        # truth even while the mute overlay is showing.
         if self._mic_is_muted:
             _LOGGER.debug(
                 "Mic is muted; overriding requested state '%s' with mute LED",
                 state_name,
             )
             self.run_action("solid", _DIM_RED, 1.0)
-            return
-
-        config = self.configs.get(state_name, self.configs["idle"])
-        _LOGGER.debug(
-            "Applying effect for state '%s': %s", state_name, config["effect"]
-        )
-        self.run_action(config["effect"], config["color"], config["brightness"])
+        else:
+            _LOGGER.debug(
+                "Applying effect for state '%s': %s", state_name, config["effect"]
+            )
+            self.run_action(config["effect"], config["color"], config["brightness"])
 
         if publish_state:
             config["state_name"] = state_name

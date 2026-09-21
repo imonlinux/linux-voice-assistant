@@ -217,22 +217,18 @@ class ButtonController:
                 "Button short press with no audio playing -> manual wakeup"
             )
             if self.state.satellite is not None:
-                # Use a dedicated manual wakeup to avoid faking a wake-word object.
-                self.loop.call_soon_threadsafe(
-                    self.state.satellite.manual_wakeup, "button"
-                )
+                # start_listening is the button-press pipeline entry point
+                self.loop.call_soon_threadsafe(self.state.satellite.start_listening)
 
     def _handle_long_press(self) -> None:
         """Long press: toggle mic mute."""
-        new_state = not self.state.mic_muted
+        new_state = not self.state.muted
         _LOGGER.debug(
             "Button long press: toggling mic mute -> %s", new_state
         )
 
-        # Use the standard set_mic_mute event so MicMuteHandler can:
-        # - update ServerState.mic_muted
-        # - control the mic_muted_event
-        # - publish MQTT mute state
+        # Use the standard set_mic_mute event; the MicMuteBridge routes it
+        # into the satellite's mute pipeline (state.muted + HA entity sync).
         self.loop.call_soon_threadsafe(
             self.event_bus.publish,
             "set_mic_mute",

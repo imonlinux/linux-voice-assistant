@@ -6,8 +6,8 @@ PartOf=graphical-session.target
 
 [Service]
 Type=simple
-WorkingDirectory=/home/pi/linux-voice-assistant
-ExecStart=/home/pi/linux-voice-assistant/script/tray
+WorkingDirectory=/home/james/Projects/HA/Linux Voice Assistant/linux-voice-assistant
+ExecStart=/home/james/Projects/HA/Linux Voice Assistant/linux-voice-assistant/script/tray
 Restart=on-failure
 RestartSec=2
 

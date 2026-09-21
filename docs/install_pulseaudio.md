@@ -48,7 +48,7 @@ pactl set-sink-port 1 "analog-output-headphones"
 **Please note that if you are setting this up on a Raspberry Pi 3B or 4B, you need an additional step at this point to make it route the audio through the 2mic hat (and likely the 4mic one as well). Run the following command to do this.**
 
 ```sh
-pactl set-default-sink alsa_output.platform-soc_sound.stereo-fallback
+pactl set-default-sink alsa_output.platform-seeed-2mic-sound.stereo-fallback
 ```
 
 
@@ -67,13 +67,13 @@ If volume is low, set it to 100% for the ReSpeaker 2-Mic HAT v1 and at least 200
 ReSpeaker 2-Mic HAT v1:
 
 ```sh
-pactl set-sink-volume alsa_output.platform-soc_sound.stereo-fallback 100%
+pactl set-sink-volume alsa_output.platform-seeed-2mic-sound.stereo-fallback 100%
 ```
 
 ReSpeaker 2-Mic HAT v2 (apparently low audio output is a known issue):
 
 ```bash
-pactl set-sink-volume alsa_output.platform-soc_sound.stereo-fallback 200%
+pactl set-sink-volume alsa_output.platform-seeed-2mic-sound.stereo-fallback 200%
 ```
 
 ### 8. Done! Return to the tutorial to continue the Linux Voice Assistant install.

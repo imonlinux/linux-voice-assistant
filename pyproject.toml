@@ -1,10 +1,9 @@
 [build-system]
-requires = ["setuptools>=62.3"]
+requires = ["setuptools>=62.3", "setuptools-scm>=8"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name        = "linux-voice-assistant"
-version     = "1.0.0"
 license     = {text = "Apache-2.0"}
 description = "Linux voice assistant for Home Assistant using the ESPHome protocol"
 readme      = "README.md"
@@ -17,22 +16,25 @@ classifiers = [
     "Intended Audience :: Developers",
     "Topic :: Text Processing :: Linguistic",
     "License :: OSI Approved :: Apache Software License",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
-    "Programming Language :: Python :: 3.14",
 ]
-requires-python = ">=3.9.0"
+requires-python = ">=3.11.0"
 dependencies = [
-    "aioesphomeapi==43.9.1",
+    "aioesphomeapi==45.3.1",
+    "netifaces2==0.0.22",
     "soundcard<1",
     "numpy>=2,<3",
     "pymicro-wakeword>=2,<3",
     "pyopen-wakeword>=1,<2",
     "python-mpv>=1,<2",
     "zeroconf<1",
+    "getmac<1",
+    "types-protobuf",
+    "websockets==12",
+    "webrtc-noise-gain>=1,<2",
+    # Fork: hardware controllers + MQTT + tray transport
     "paho-mqtt",
     "adafruit-circuitpython-dotstar",
     "adafruit-circuitpython-neopixel",
@@ -42,6 +44,7 @@ dependencies = [
     "spidev",
     "pyusb",
 ]
+dynamic = ["version"]
 
 [project.optional-dependencies]
 dev = [
@@ -50,31 +53,34 @@ dev = [
     "mypy",
     "pylint",
     "pytest",
+    "isort",
+    "autopep8",
     "pytest-asyncio",
     "pytest-cov",
     "pytest-mock",
     "pytest-benchmark",
 ]
 
-# Optional GUI/tray dependencies. Only needed on desktop installs that use lva_tray_client.
+# Optional GUI/tray dependencies (fork)
 tray = [
     "PyQt5>=5.15",
 ]
 
-# Optional Sendspin client support (extras: sendspin)
-# - websockets: required for WS client connections
-# - aiosendspin: reference protocol implementation + time sync utilities (future phases)
+# Optional Sendspin client support (fork) — aiosendspin 9.x protocol stack.
+# aiosendspin requires Python >=3.12; on 3.11 the marker skips it and the
+# sendspin subsystem disables itself gracefully at runtime.
 sendspin = [
-    "websockets>=12,<15",
-    "aiosendspin>=3,<4",
-    "opuslib",
+    "aiosendspin>=9,<10; python_version>='3.12'",
+    "sounddevice>=0.4.6; python_version>='3.12'",
+    "piper-tts>=1.8; python_version>='3.12'",
 ]
 
 [project.scripts]
+linux-voice-assistant = "linux_voice_assistant.__main__:run"
 lva-tray = "linux_voice_assistant.tray_client.client:main"
 
 [project.urls]
-"Source Code" = "https://github.com/imonlinux/linux-voice-assistant"
+"Source Code" = "http://github.com/OHF-Voice/linux-voice-assistant"
 
 [tool.setuptools]
 platforms = ["any"]
@@ -82,30 +88,86 @@ zip-safe  = true
 include-package-data = true
 
 [tool.setuptools.packages.find]
-include = ["linux_voice_assistant"]
+include = ["linux_voice_assistant", "linux_voice_assistant.*"]
 exclude = ["tests", "tests.*"]
 
-[tool.ruff]
-target-version = "py39"
+[tool.black]
+line-length = 200
+target-version = ['py312', 'py313']
+include = '\.pyi?$'
+exclude = '''
+/(
+  \.eggs
+| \.git
+| \.hg
+| \.mypy_cache
+| \.tox
+| \.venv
+| _build
+| buck-out
+| build
+| dist
+)/
+'''
 
-[tool.ruff.lint]
-select = ["E9", "F4", "F8"]
-ignore = [
-    # EventBus handlers intentionally assigned to unnamed locals for side-effect
-    # registration (LedController, MicMuteHandler, etc.) — not dead code
-    "F841",
+[tool.isort]
+profile = "black"
+line_length = 200
+multi_line_output = 3
+include_trailing_comma = true
+force_grid_wrap = 0
+use_parentheses = true
+
+[tool.pylint."MESSAGES CONTROL"]
+disable = [
+  "abstract-method",
+  "cyclic-import",
+  "duplicate-code",
+  "global-statement",
+  "import-outside-toplevel",
+  "inconsistent-return-statements",
+  "locally-disabled",
+  "not-context-manager",
+  "too-few-public-methods",
+  "too-many-arguments",
+  "too-many-branches",
+  "too-many-instance-attributes",
+  "too-many-lines",
+  "too-many-locals",
+  "too-many-public-methods",
+  "too-many-return-statements",
+  "too-many-statements",
+  "too-many-boolean-expressions",
+  "unnecessary-pass",
+  "unused-argument",
+  "broad-except",
+  "too-many-nested-blocks",
+  "invalid-name",
+  "unused-import",
+  "fixme",
+  "useless-super-delegation",
+  "missing-module-docstring",
+  "missing-class-docstring",
+  "missing-function-docstring",
+  "import-error",
+  "consider-using-with",
+  "R0917",
+  "C0301",
 ]
+
+[tool.pylint."DESIGN"]
+max-args = 50
+
+[tool.pylint.format]
+expected-line-ending-format = "LF"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-python_files = ["test_*.py"]
-python_classes = ["Test*"]
-python_functions = ["test_*"]
-addopts = "-v --tb=short --strict-markers"
+asyncio_mode = "auto"
+addopts = "--tb=short --strict-markers"
 markers = [
     "hardware: marks tests as requiring hardware",
     "slow: marks tests as slow running",
     "integration: marks tests as integration tests",
     "benchmark: marks tests as performance benchmarks",
 ]
-asyncio_mode = "auto"

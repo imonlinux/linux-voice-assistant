@@ -1,75 +1,46 @@
-# Byte-compiled / optimized / DLL files
-__pycache__/
+.DS_Store
+.idea
+*.log
+tmp/
+
 *.py[cod]
-*$py.class
-
-# C extensions
-*.so
-
-# Distribution / packaging
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-share/python-wheels/
-*.egg-info/
-.installed.cfg
 *.egg
-MANIFEST
+build
+htmlcov
 
-# PyInstaller
-#  Usually these files are written by a script, but we don't want them in .git
-*.spec
-
-
-# Installer logs
-pip-log.txt
-pip-delete-this-directory.txt
-
-# Unit test / coverage reports
-htmlcov/
-.tox/
-.nox/
-.coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-*.py,cover
-.hypothesis/
-.pytest_cache/
-
-# Foreign VSCode settings
-.vscode/*
-!.vscode/settings.json
-!.vscode/tasks.json
-!.vscode/launch.json
-!.vscode/extensions.json
-
-# Ruff cache
-.ruff_cache/
-
-# Pyright cache
-.pyright_cache/
-
-# mypy
-.mypy_cache/
-
-# venv
-venv/
+.projectile
 .venv/
+venv/
+.tox/
+.mypy_cache/
+*.egg-info/
 
-# App-specific
 /dist/
 /preferences.json
 /local/
+
+# Per-device configuration (template: linux_voice_assistant/config.json.example)
+linux_voice_assistant/config.json
+
+# Revision recorded by script/update_lva for --rollback
+.lva-update-previous-rev
+
+# Docker
+.env
+dev.env
+version.txt
+version_githash.txt
+# Sendspin player credentials (private key + pairing PSKs)
+sendspin_identity.json
+sendspin_pairing.json
+
+# editor backups
+*~
+
+# piper voice models (large binaries, downloaded on demand)
+en_US-*.onnx
+en_US-*.onnx.json
+*.onnx.json
+
+# piper voice models (downloaded on demand)
+piper_voices/

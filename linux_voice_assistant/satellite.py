@@ -1,26 +1,31 @@
 """Voice satellite protocol."""
 
 import asyncio
-import functools
 import hashlib
 import logging
 import posixpath
 import shutil
+import threading
 import time
 from collections.abc import Iterable
-from typing import Dict, Optional, Set, Union, List
+from functools import partial
+from typing import Any, Dict, List, Optional, Set, Union
 from urllib.parse import urlparse, urlunparse
 from urllib.request import urlopen
 
-from aioesphomeapi.api_pb2 import (
+# pylint: disable=no-name-in-module
+from aioesphomeapi.api_pb2 import (  # type: ignore[attr-defined]
+    AuthenticationRequest,
     DeviceInfoRequest,
     DeviceInfoResponse,
+    LightCommandRequest,
     ListEntitiesDoneResponse,
     ListEntitiesRequest,
     MediaPlayerCommandRequest,
     NumberCommandRequest,
     SelectCommandRequest,
     SubscribeHomeAssistantStatesRequest,
+    SubscribeStatesRequest,
     SwitchCommandRequest,
     VoiceAssistantAnnounceFinished,
     VoiceAssistantAnnounceRequest,
@@ -34,6 +39,7 @@ from aioesphomeapi.api_pb2 import (
     VoiceAssistantTimerEventResponse,
     VoiceAssistantWakeWord,
 )
+from aioesphomeapi.core import MESSAGE_TYPE_TO_PROTO
 from aioesphomeapi.model import (
     VoiceAssistantEventType,
     VoiceAssistantFeature,
@@ -46,439 +52,760 @@ from pyopen_wakeword import OpenWakeWord
 from .api_server import APIServer
 from .entity import (
     AlarmDurationNumberEntity,
+    ButtonEventSensorEntity,
     EventSoundsSwitchEntity,
+    LEDLightEntity,
     MediaPlayerEntity,
+    MicSettingEntity,
     MuteSwitchEntity,
     SoundSelectEntity,
-    ThinkingSoundSwitchEntity,
-    WakeWordSensitivityEntity,
+    StopWordSensitivityNumberEntity,
+    ThinkingSoundEntity,
+    ThinkingSoundLoopSwitchEntity,
+    WakeWord1SensitivityNumberEntity,
+    WakeWord2SensitivityNumberEntity,
 )
-from .models import AvailableWakeWord, ServerState, SatelliteState, WakeWordType
+from .models import AvailableWakeWord, ServerState, WakeWordType
+from .peripheral_api import LVAEvent
 from .util import call_all
 
 _LOGGER = logging.getLogger(__name__)
 
-SENSITIVITY_PRESETS = {
-    "Slightly sensitive": {"mww": 0.85, "oww": 0.70},
-    "Moderately sensitive": {"mww": 0.70, "oww": 0.50},
-    "Very sensitive": {"mww": 0.55, "oww": 0.35},
-}
+PROTO_TO_MESSAGE_TYPE = {v: k for k, v in MESSAGE_TYPE_TO_PROTO.items()}
+
+_HAS_AUDIO_DATA2 = "data2" in {f.name for f in VoiceAssistantAudio.DESCRIPTOR.fields}
+
 
 class VoiceSatelliteProtocol(APIServer):
+
     def __init__(self, state: ServerState) -> None:
         super().__init__(state.name)
-        self.state = state
-        # NOTE: self.state.satellite is set at the END of __init__ to
-        # prevent the audio thread from seeing a half-initialized protocol.
 
-        # --- Media Player entity (key=0, always present) ---
-        self.media_player_entity = self._setup_entity(
-            entity_type=MediaPlayerEntity,
-            factory=lambda: MediaPlayerEntity(
+        self.state = state
+        self.state.satellite = self
+        self.state.connected = False
+
+        # Report capabilities appropriately
+        if state.output_only:
+            _LOGGER.debug("Output only features")
+            self.supported_features = VoiceAssistantFeature.API_AUDIO | VoiceAssistantFeature.ANNOUNCE
+        else:
+            _LOGGER.debug("Voice assistant features")
+            self.supported_features = (
+                VoiceAssistantFeature.VOICE_ASSISTANT | VoiceAssistantFeature.API_AUDIO | VoiceAssistantFeature.ANNOUNCE | VoiceAssistantFeature.START_CONVERSATION | VoiceAssistantFeature.TIMERS
+            )
+            # Channel 1 carries echo-reference audio; advertise SPEAKER so HA knows to use it for server-side AEC.
+            if state.audio_input_channels >= 2:
+                self.supported_features |= VoiceAssistantFeature.MULTI_CHANNEL_AUDIO  # pylint: disable=no-member
+
+        existing_mute_switches = [entity for entity in self.state.entities if isinstance(entity, MuteSwitchEntity)]
+        existing_media_players = [entity for entity in self.state.entities if isinstance(entity, MediaPlayerEntity)]
+
+        if existing_media_players:
+            # Keep the first instance and remove any extras.
+            self.state.media_player_entity = existing_media_players[0]
+            for extra_player in existing_media_players[1:]:
+                self.state.entities.remove(extra_player)
+
+        if existing_mute_switches:
+            self.state.mute_switch_entity = existing_mute_switches[0]
+            for extra_mute in existing_mute_switches[1:]:
+                self.state.entities.remove(extra_mute)
+
+        if self.state.media_player_entity is None:
+            self.state.media_player_entity = MediaPlayerEntity(
                 server=self,
-                state=state,
-                key=0,
+                key=len(state.entities),
                 name="Media Player",
                 object_id="linux_voice_assistant_media_player",
                 music_player=state.music_player,
                 announce_player=state.tts_player,
-            ),
-        )
+                initial_volume=state.volume,
+            )
+            self.state.entities.append(self.state.media_player_entity)
+        elif self.state.media_player_entity not in self.state.entities:
+            self.state.entities.append(self.state.media_player_entity)
 
-        # --- Mute Switch entity (key=1) ---
-        self.mute_switch_entity = self._setup_entity(
-            entity_type=MuteSwitchEntity,
-            factory=lambda: MuteSwitchEntity(
-                server=self,
-                state=state,
-                key=1,
-                name="Mute Microphone",
-                object_id="mute_microphone",
-                get_muted=lambda: self.state.mic_muted,
-                set_muted=lambda muted: self.state.event_bus.publish(
-                    "set_mic_mute", {"state": muted}
-                ),
-            ),
-        )
+        self.state.media_player_entity.server = self
+        self.state.media_player_entity.volume = state.volume
+        self.state.media_player_entity.previous_volume = state.volume
 
-        # --- Thinking Sound Loop switch entity (key=2) ---
-        self.thinking_sound_entity = self._setup_entity(
-            entity_type=ThinkingSoundSwitchEntity,
-            factory=lambda: ThinkingSoundSwitchEntity(
+        # Add/update mute switch entity (like ESPHome Voice PE)
+        mute_switch = self.state.mute_switch_entity
+        if mute_switch is None:
+            mute_switch = MuteSwitchEntity(
                 server=self,
-                state=state,
-                key=2,
-                name="Sound Thinking Loop",
+                key=len(state.entities),
+                name="Mute",
+                object_id="mute",
+                get_muted=lambda: self.state.muted,
+                set_muted=self._set_muted,
+            )
+            self.state.entities.append(mute_switch)
+            self.state.mute_switch_entity = mute_switch
+        elif mute_switch not in self.state.entities:
+            self.state.entities.append(mute_switch)
+
+        mute_switch.server = self
+        mute_switch.update_get_muted(lambda: self.state.muted)
+        mute_switch.update_set_muted(self._set_muted)
+        mute_switch.sync_with_state()
+
+        existing_thinking_sound_switches = [entity for entity in self.state.entities if isinstance(entity, ThinkingSoundEntity)]
+        if existing_thinking_sound_switches:
+            self.state.thinking_sound_entity = existing_thinking_sound_switches[0]
+            for extra_thinking in existing_thinking_sound_switches[1:]:
+                self.state.entities.remove(extra_thinking)
+
+        # Add/update thinking sound entity
+        thinking_sound_switch = self.state.thinking_sound_entity
+        if thinking_sound_switch is None:
+            thinking_sound_switch = ThinkingSoundEntity(
+                server=self,
+                key=len(state.entities),
+                name="Thinking Sound",
+                object_id="thinking_sound",
+                get_thinking_sound_enabled=lambda: self.state.thinking_sound_enabled,
+                set_thinking_sound_enabled=self._set_thinking_sound_enabled,
+            )
+            self.state.entities.append(thinking_sound_switch)
+            self.state.thinking_sound_entity = thinking_sound_switch
+        elif thinking_sound_switch not in self.state.entities:
+            self.state.entities.append(thinking_sound_switch)
+
+        # Load thinking sound enabled state from preferences
+        if hasattr(self.state.preferences, "thinking_sound") and self.state.preferences.thinking_sound in (0, 1):
+            self.state.thinking_sound_enabled = bool(self.state.preferences.thinking_sound)
+        else:
+            self.state.thinking_sound_enabled = False
+
+        thinking_sound_switch.server = self
+        thinking_sound_switch.update_get_thinking_sound_enabled(lambda: self.state.thinking_sound_enabled)
+        thinking_sound_switch.update_set_thinking_sound_enabled(self._set_thinking_sound_enabled)
+        thinking_sound_switch.sync_with_state()
+
+        # Add/update Wake Word 1 sensitivity number entity
+        sensitivity_1_entity = self.state.sensitivity_1_number_entity
+        if sensitivity_1_entity is None:
+            sensitivity_1_entity = WakeWord1SensitivityNumberEntity(
+                server=self,
+                key=len(state.entities),
+                name="Wake Word 1 Sensitivity",
+                object_id="wake_word_1_sensitivity",
+                get_sensitivity=lambda: self.state.wake_word_1_threshold,
+                set_sensitivity=self._set_sensitivity_1,
+                initial_value=self.state.wake_word_1_threshold,
+            )
+            self.state.entities.append(sensitivity_1_entity)
+            self.state.sensitivity_1_number_entity = sensitivity_1_entity
+        elif sensitivity_1_entity not in self.state.entities:
+            self.state.entities.append(sensitivity_1_entity)
+
+        sensitivity_1_entity.server = self
+        sensitivity_1_entity.update_get_sensitivity(lambda: self.state.wake_word_1_threshold)
+        sensitivity_1_entity.update_set_sensitivity(self._set_sensitivity_1)
+
+        sensitivity_1_entity.sync_with_state()
+        _LOGGER.debug("INIT: Wake Word 1 entity initialized with value %.3f", sensitivity_1_entity.value)
+
+        # Add/update Wake Word 2 sensitivity number entity
+        sensitivity_2_entity = self.state.sensitivity_2_number_entity
+        if sensitivity_2_entity is None:
+            sensitivity_2_entity = WakeWord2SensitivityNumberEntity(
+                server=self,
+                key=len(state.entities),
+                name="Wake Word 2 Sensitivity",
+                object_id="wake_word_2_sensitivity",
+                get_sensitivity=lambda: self.state.wake_word_2_threshold,
+                set_sensitivity=self._set_sensitivity_2,
+                initial_value=self.state.wake_word_2_threshold,
+            )
+            self.state.entities.append(sensitivity_2_entity)
+            self.state.sensitivity_2_number_entity = sensitivity_2_entity
+        elif sensitivity_2_entity not in self.state.entities:
+            self.state.entities.append(sensitivity_2_entity)
+
+        sensitivity_2_entity.server = self
+        sensitivity_2_entity.update_get_sensitivity(lambda: self.state.wake_word_2_threshold)
+        sensitivity_2_entity.update_set_sensitivity(self._set_sensitivity_2)
+
+        sensitivity_2_entity.sync_with_state()
+
+        # Add/update Stop Word sensitivity number entity
+        stop_sensitivity_entity = self.state.stop_sensitivity_number_entity
+        if stop_sensitivity_entity is None:
+            stop_sensitivity_entity = StopWordSensitivityNumberEntity(
+                server=self,
+                key=len(state.entities),
+                name="Stop Word Sensitivity",
+                object_id="stop_word_sensitivity",
+                get_sensitivity=lambda: self.state.stop_word_threshold,
+                set_sensitivity=self._set_stop_sensitivity,
+                initial_value=self.state.stop_word_threshold,
+            )
+            self.state.entities.append(stop_sensitivity_entity)
+            self.state.stop_sensitivity_number_entity = stop_sensitivity_entity
+        elif stop_sensitivity_entity not in self.state.entities:
+            self.state.entities.append(stop_sensitivity_entity)
+
+        stop_sensitivity_entity.server = self
+        stop_sensitivity_entity.update_get_sensitivity(lambda: self.state.stop_word_threshold)
+        stop_sensitivity_entity.update_set_sensitivity(self._set_stop_sensitivity)
+
+        stop_sensitivity_entity.sync_with_state()
+
+        # Mic Gain
+        if self.state.mic_gain_entity is None:
+            self.state.mic_gain_entity = MicSettingEntity(
+                server=self,
+                key=len(self.state.entities),
+                name="Mic Auto Gain",
+                object_id="mic_gain",
+                min_value=0.0,
+                max_value=31.0,
+                get_value=lambda: float(self.state.mic_auto_gain),
+                set_value=lambda val: self.state.persist_mic_gain(float(val)),
+                icon="mdi:microphone-plus",
+            )
+            self.state.entities.append(self.state.mic_gain_entity)
+        elif self.state.mic_gain_entity not in self.state.entities:
+            self.state.entities.append(self.state.mic_gain_entity)
+
+        self.state.mic_gain_entity.server = self
+        self.state.mic_gain_entity.update_get_value(lambda: float(self.state.mic_auto_gain))
+        self.state.mic_gain_entity.update_set_value(lambda val: self.state.persist_mic_gain(float(val)))  # type: ignore[arg-type]
+        self.state.mic_gain_entity.sync_with_state()
+
+        # Mic Noise Suppression
+        _NOISE_OPTIONS = ["Off", "Low", "Medium", "High", "Max"]
+        _NOISE_TO_INT = {label: i for i, label in enumerate(_NOISE_OPTIONS)}
+
+        def _get_noise_label() -> str:
+            return _NOISE_OPTIONS[max(0, min(4, self.state.mic_noise_suppression))]
+
+        def _set_noise_label(label: Union[float, str]) -> None:
+            self.state.persist_mic_noise(float(_NOISE_TO_INT.get(str(label), 0)))
+
+        if self.state.mic_noise_suppression_entity is None:
+            self.state.mic_noise_suppression_entity = MicSettingEntity(
+                server=self,
+                key=len(self.state.entities),
+                name="Mic Noise Suppression",
+                object_id="mic_noise",
+                options=_NOISE_OPTIONS,
+                get_value=_get_noise_label,
+                set_value=_set_noise_label,
+                icon="mdi:waveform",
+            )
+            self.state.entities.append(self.state.mic_noise_suppression_entity)
+        elif self.state.mic_noise_suppression_entity not in self.state.entities:
+            self.state.entities.append(self.state.mic_noise_suppression_entity)
+
+        self.state.mic_noise_suppression_entity.server = self
+        self.state.mic_noise_suppression_entity.update_get_value(_get_noise_label)
+        self.state.mic_noise_suppression_entity.update_set_value(_set_noise_label)
+        self.state.mic_noise_suppression_entity.sync_with_state()
+
+        # Mic Volume
+        if self.state.mic_volume_entity is None:
+            self.state.mic_volume_entity = MicSettingEntity(
+                server=self,
+                key=len(self.state.entities),
+                name="Mic Volume",
+                object_id="mic_volume",
+                min_value=1.0,
+                max_value=100.0,
+                get_value=lambda: float(self.state.mic_volume),
+                set_value=lambda val: self.state.persist_mic_volume(float(val)),
+                icon="mdi:microphone-settings",
+            )
+            self.state.entities.append(self.state.mic_volume_entity)
+        elif self.state.mic_volume_entity not in self.state.entities:
+            self.state.entities.append(self.state.mic_volume_entity)
+
+        self.state.mic_volume_entity.server = self
+        self.state.mic_volume_entity.update_get_value(lambda: float(self.state.mic_volume))
+        self.state.mic_volume_entity.update_set_value(lambda val: self.state.persist_mic_volume(float(val)))
+
+        # ------------------------------------------------------------------
+        # Fork entities (appended after upstream's so upstream key numbering
+        # stays stable; these get keys len(entities)+)
+        # ------------------------------------------------------------------
+
+        # Event Sounds master toggle — gates wakeup/thinking sounds; the
+        # timer alarm always plays (functional alert).
+        event_sounds_entity = self.state.event_sounds_entity
+        if event_sounds_entity is None:
+            event_sounds_entity = EventSoundsSwitchEntity(
+                server=self,
+                key=len(self.state.entities),
+                name="Event Sounds",
+                object_id="event_sounds",
+                get_enabled=lambda: self.state.event_sounds_enabled,
+                set_enabled=self._set_event_sounds_enabled,
+            )
+            self.state.entities.append(event_sounds_entity)
+            self.state.event_sounds_entity = event_sounds_entity
+        elif event_sounds_entity not in self.state.entities:
+            self.state.entities.append(event_sounds_entity)
+
+        event_sounds_entity.server = self
+        event_sounds_entity.update_get_enabled(lambda: self.state.event_sounds_enabled)
+        event_sounds_entity.update_set_enabled(self._set_event_sounds_enabled)
+        event_sounds_entity.sync_with_state()
+
+        # Thinking sound loop toggle — repeat the thinking sound until the
+        # pipeline leaves the thinking phase.
+        thinking_loop_entity = self.state.thinking_sound_loop_entity
+        if thinking_loop_entity is None:
+            thinking_loop_entity = ThinkingSoundLoopSwitchEntity(
+                server=self,
+                key=len(self.state.entities),
+                name="Thinking Sound Loop",
                 object_id="thinking_sound_loop",
                 get_enabled=lambda: self.state.thinking_sound_loop,
                 set_enabled=self._set_thinking_sound_loop,
-            ),
-        )
+            )
+            self.state.entities.append(thinking_loop_entity)
+            self.state.thinking_sound_loop_entity = thinking_loop_entity
+        elif thinking_loop_entity not in self.state.entities:
+            self.state.entities.append(thinking_loop_entity)
 
-        # --- Event Sounds switch entity (key=3) ---
-        self.event_sounds_entity = self._setup_entity(
-            entity_type=EventSoundsSwitchEntity,
-            factory=lambda: EventSoundsSwitchEntity(
+        thinking_loop_entity.server = self
+        thinking_loop_entity.update_get_enabled(lambda: self.state.thinking_sound_loop)
+        thinking_loop_entity.update_set_enabled(self._set_thinking_sound_loop)
+        thinking_loop_entity.sync_with_state()
+
+        # Sound selection selects — options are the filenames scanned from
+        # sounds/<category>/ (see __main__._scan_sound_files). A category
+        # with no files scanned gets no entity.
+        _SOUND_SELECT_META = {
+            "wakeup_sound": {"name": "Sound Wakeup", "object_id": "sound_wakeup", "icon": "mdi:bell-ring"},
+            "thinking_sound": {"name": "Sound Thinking", "object_id": "sound_thinking", "icon": "mdi:head-cog"},
+            "timer_sound": {"name": "Sound Timer", "object_id": "sound_timer", "icon": "mdi:timer-alert"},
+        }
+        for instance_id, meta in _SOUND_SELECT_META.items():
+            options = list(self.state.sound_options.get(instance_id, []))
+            if not options:
+                continue
+            if meta is _SOUND_SELECT_META["timer_sound"]:
+                pass  # timer alarm must always be audible: no "None" option
+            else:
+                options.insert(0, "None")
+
+            entity = self.state.sound_select_entities.get(instance_id)
+            if entity is None:
+                entity = SoundSelectEntity(
+                    server=self,
+                    key=len(self.state.entities),
+                    name=meta["name"],
+                    object_id=meta["object_id"],
+                    icon=meta["icon"],
+                    instance_id=instance_id,
+                    options=options,
+                    get_selection=lambda iid=instance_id: self._get_sound_selection(iid),
+                    set_selection=lambda value, iid=instance_id: self._set_sound_selection(iid, value),
+                )
+                self.state.entities.append(entity)
+                self.state.sound_select_entities[instance_id] = entity
+            elif entity not in self.state.entities:
+                self.state.entities.append(entity)
+
+            entity.server = self
+            entity.update_get_selection(lambda iid=instance_id: self._get_sound_selection(iid))
+            entity.update_set_selection(lambda value, iid=instance_id: self._set_sound_selection(iid, value))
+            entity.options = options
+            entity.sync_with_state()
+
+        # Alarm Duration — timer alarm auto-stop (0 = ring until stopped).
+        alarm_duration_entity = self.state.alarm_duration_entity
+        if alarm_duration_entity is None:
+            alarm_duration_entity = AlarmDurationNumberEntity(
                 server=self,
-                state=state,
-                key=3,
-                name="Event Sounds",
-                object_id="event_sounds_enabled",
-                get_enabled=lambda: self.state.event_sounds_enabled,
-                set_enabled=self._set_event_sounds_enabled,
-            ),
-        )
-
-        # --- Sound Select entities (keys 5-7) ---
-        sound_opts = getattr(self.state, "sound_options", {})
-
-        wakeup_options = list(sound_opts.get("wakeup_sound", []))
-        if wakeup_options:
-            wakeup_options.insert(0, "None")
-        self.sound_wakeup_entity = self._setup_entity_by_id(
-            entity_type=SoundSelectEntity,
-            instance_id="wakeup_sound",
-            factory=lambda: SoundSelectEntity(
-                server=self,
-                state=state,
-                key=5,
-                name="Sound Wakeup",
-                object_id="sound_wakeup",
-                icon="mdi:bell-ring",
-                instance_id="wakeup_sound",
-                options=wakeup_options,
-                get_selection=lambda: self._get_sound_selection("wakeup_sound"),
-                set_selection=lambda v: self._set_sound_selection("wakeup_sound", v),
-            ),
-        ) if wakeup_options else None
-
-        thinking_options = list(sound_opts.get("thinking_sound", []))
-        if thinking_options:
-            thinking_options.insert(0, "None")
-        self.sound_thinking_entity = self._setup_entity_by_id(
-            entity_type=SoundSelectEntity,
-            instance_id="thinking_sound",
-            factory=lambda: SoundSelectEntity(
-                server=self,
-                state=state,
-                key=6,
-                name="Sound Thinking",
-                object_id="sound_thinking",
-                icon="mdi:head-cog",
-                instance_id="thinking_sound",
-                options=thinking_options,
-                get_selection=lambda: self._get_sound_selection("thinking_sound"),
-                set_selection=lambda v: self._set_sound_selection("thinking_sound", v),
-            ),
-        ) if thinking_options else None
-
-        timer_options = list(sound_opts.get("timer_sound", []))
-        self.sound_timer_entity = self._setup_entity_by_id(
-            entity_type=SoundSelectEntity,
-            instance_id="timer_sound",
-            factory=lambda: SoundSelectEntity(
-                server=self,
-                state=state,
-                key=7,
-                name="Sound Timer",
-                object_id="sound_timer",
-                icon="mdi:timer-alert",
-                instance_id="timer_sound",
-                options=timer_options,
-                get_selection=lambda: self._get_sound_selection("timer_sound"),
-                set_selection=lambda v: self._set_sound_selection("timer_sound", v),
-            ),
-        ) if timer_options else None
-
-        # --- Alarm Duration number entity (key=8) ---
-        self.alarm_duration_entity = self._setup_entity(
-            entity_type=AlarmDurationNumberEntity,
-            factory=lambda: AlarmDurationNumberEntity(
-                server=self,
-                state=state,
-                key=8,
+                key=len(self.state.entities),
                 name="Alarm Duration",
                 object_id="alarm_duration",
-                get_value=lambda: float(
-                    getattr(self.state.preferences, "alarm_duration_seconds", 0)
-                ),
+                get_value=lambda: float(getattr(self.state.preferences, "alarm_duration_seconds", 0) or 0),
                 set_value=self._set_alarm_duration,
-            ),
+            )
+            self.state.entities.append(alarm_duration_entity)
+            self.state.alarm_duration_entity = alarm_duration_entity
+        elif alarm_duration_entity not in self.state.entities:
+            self.state.entities.append(alarm_duration_entity)
+
+        alarm_duration_entity.server = self
+        alarm_duration_entity.update_get_value(
+            lambda: float(getattr(self.state.preferences, "alarm_duration_seconds", 0) or 0)
         )
-        
-        # --- Wake Word Sensitivity select entity (key=4) ---
-        self.sensitivity_entity = self._setup_entity(
-            entity_type=WakeWordSensitivityEntity,
-            factory=lambda: WakeWordSensitivityEntity(
-                server=self,
-                state=state,
-                key=4,
-                name="Wake word sensitivity",
-                object_id="wake_word_sensitivity",
-                options=list(SENSITIVITY_PRESETS.keys()),
-                get_sensitivity=lambda: self.state.wake_word_sensitivity,
-                set_sensitivity=self._set_sensitivity,
-            ),
-        )
+        alarm_duration_entity.update_set_value(self._set_alarm_duration)
+        alarm_duration_entity.sync_with_state()
 
-        # Apply initial sensitivity at startup
-        self._apply_sensitivity(self.state.wake_word_sensitivity)
 
-        # State machine
-        self._state: SatelliteState = SatelliteState.STARTING
-        self._is_streaming_audio: bool = False
+        # NOTE: ButtonEventSensorEntity is NOT created here unconditionally.
+        # It is only materialised when a peripheral sends the register_button
+        # command (see register_pending_button below), mirroring the same
+        # opt-in pattern used by register_light for LEDLightEntity.
 
+        # Materialise the Light entities peripherals registered before
+        # this satellite was constructed (or reattach existing ones).
+        self.register_pending_lights()
+        # Materialise ButtonEventSensorEntity if a peripheral already registered
+        # button support before this satellite was constructed (e.g. on an HA
+        # reconnect while the peripheral container stayed connected to LVA).
+        self.register_pending_button()
+
+        # ---- Instance variables ----
+
+        self._is_streaming_audio = False
         self._tts_url: Optional[str] = None
-        self._continue_conversation: bool = False
-        self._timer_finished: bool = False
+        self._tts_played = False
+        self._continue_conversation = False
+        self._timer_finished = False
+        self._timer_ring_start: Optional[float] = None
+        # Fork: alarm repeat + auto-stop scheduling handles (end-relative
+        # repeat cadence; alarm_duration_seconds auto-stop)
+        self._timer_repeat_handle: Optional[asyncio.TimerHandle] = None
         self._timer_auto_stop_handle: Optional[asyncio.TimerHandle] = None
-        self._run_end_received: bool = False
-        self._tts_end_received: bool = False
-        # Track if current audio is an announcement
-        self._is_announcement: bool = False
-
-        # External wake words announced by Home Assistant
+        # Fork: True while the thinking sound should be (re)playing
+        self._thinking_sound_active = False
+        self._processing = False
+        self._pipeline_active = False
         self._external_wake_words: Dict[str, VoiceAssistantExternalWakeWord] = {}
+        self._disconnect_event = asyncio.Event()
 
-        # Thinking sound loop flag
-        self._thinking_sound_active: bool = False
+    # ------------------------------------------------------------------
+    # Peripheral API helper
+    # ------------------------------------------------------------------
 
-        # Must be last — prevents race with audio thread
-        self.state.satellite = self
-
-    # -------------------------------------------------------------------------
-    # Entity lifecycle helpers
-    # -------------------------------------------------------------------------
-
-    def _setup_entity(self, entity_type, factory):
-        """Find or create an entity of *entity_type* in the state entity list.
-
-        If an entity of the requested type already exists (from a previous
-        connection), it is reused and its ``server`` attribute is rebound to
-        the current protocol instance.  Otherwise *factory* is called to
-        create a new entity and it is appended to ``state.entities``.
-
-        Returns the entity instance.
+    def _emit(
+        self,
+        event: LVAEvent,
+        data: Optional[Dict[str, Any]] = None,
+    ) -> None:
         """
-        for entity in self.state.entities:
-            if isinstance(entity, entity_type):
-                entity.server = self
-                _LOGGER.debug("Reusing existing entity: %s", entity_type.__name__)
-                return entity
+        Emit a peripheral LED/button event.
 
-        # Not found — create via factory and register
-        _LOGGER.debug("Creating new entity: %s", entity_type.__name__)
-        entity = factory()
+        Thread-safe: delegates to ``emit_event_sync`` which uses
+        ``run_coroutine_threadsafe`` when called from outside the event loop.
+        """
+        api = self.state.peripheral_api
+        if api is not None:
+            api.emit_event_sync(event, data)
+        self._publish_to_event_bus(event, data)
+
+    # ------------------------------------------------------------------
+    # Fork: internal event bus bridge
+    #
+    # The fork's hardware controllers (LED, buttons, XVF3800, MQTT) and the
+    # Sendspin client consume voice-state changes through the EventBus rather
+    # than the peripheral WebSocket API. Every peripheral-API emission is
+    # mirrored onto the bus with the fork's topic vocabulary, so in-daemon
+    # hardware stays wired to the same upstream seams.
+    # ------------------------------------------------------------------
+
+    _EVENT_BUS_MAP = {
+        LVAEvent.IDLE: "voice_idle",
+        LVAEvent.LISTENING: "voice_listen",
+        LVAEvent.THINKING: "voice_thinking",
+        LVAEvent.TTS_SPEAKING: "voice_responding",
+        LVAEvent.PIPELINE_ERROR: "voice_error",
+        LVAEvent.WAKE_WORD_DETECTED: "wake_word_detected",
+        LVAEvent.MEDIA_PLAYER_PLAYING: "media_player_playing",
+        LVAEvent.TIMER_TICKING: "timer_ticking",
+        LVAEvent.TIMER_UPDATED: "timer_updated",
+        LVAEvent.TIMER_RINGING: "timer_ringing",
+        LVAEvent.TTS_FINISHED: "tts_finished",
+        LVAEvent.DISCONNECTED: "ha_disconnected",
+    }
+
+    def _publish_to_event_bus(
+        self,
+        event: LVAEvent,
+        data: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Mirror a peripheral-API event onto the fork's EventBus."""
+        try:
+            topic = self._EVENT_BUS_MAP.get(event)
+            if topic is not None:
+                self.state.event_bus.publish(topic, dict(data or {}))
+            elif event == LVAEvent.MUTED:
+                muted = bool((data or {}).get("muted"))
+                self.state.event_bus.publish("mic_muted" if muted else "mic_unmuted")
+        except Exception:  # pylint: disable=broad-except
+            _LOGGER.exception("Failed to publish %s to event bus", event)
+
+    def register_pending_lights(self) -> None:
+        """Materialise LightEntities for peripheral registered lights.
+
+        Called from __init__ so entities exist by the time HA enumerates,
+        and again from the peripheral_api dispatcher when a light arrives
+        after the satellite is already running. HA only sees a late
+        registration after its next reconnect, but LVA stays consistent.
+        """
+        for spec in self.state.pending_lights:
+            if spec.object_id in self.state.led_light_entities:
+                # Already materialised. Reattach the server in case the
+                # satellite has been reconstructed (HA reconnect).
+                self.state.led_light_entities[spec.object_id].server = self
+                if self.state.led_light_entities[spec.object_id] not in self.state.entities:
+                    self.state.entities.append(self.state.led_light_entities[spec.object_id])
+                continue
+
+            object_id = spec.object_id
+            entity = LEDLightEntity(
+                server=self,
+                key=len(self.state.entities),
+                name=spec.name,
+                object_id=object_id,
+                icon=spec.icon,
+                effects=spec.effects,
+                supports_rgb=spec.supports_rgb,
+                supports_brightness=spec.supports_brightness,
+                on_changed=partial(self._on_led_light_changed, object_id),
+            )
+            self.state.entities.append(entity)
+            self.state.led_light_entities[object_id] = entity
+
+    def register_pending_button(self) -> None:
+        """Materialise ButtonEventSensorEntity once a peripheral has registered button support.
+
+        Called from __init__ (handles HA reconnects where the peripheral container
+        stayed connected to LVA and pending_button is already True) and from
+        PeripheralAPIServer._register_button() when the command arrives at runtime.
+
+        Safe to call multiple times: idempotent — if the entity already exists
+        it is only reattached to the current satellite server instance.
+        """
+        if not self.state.pending_button:
+            return
+
+        if self.state.button_event_sensor_entity is not None:
+            # Already materialised — reattach the server in case the satellite
+            # has been reconstructed for an HA reconnect.
+            self.state.button_event_sensor_entity.server = self
+            if self.state.button_event_sensor_entity not in self.state.entities:
+                self.state.entities.append(self.state.button_event_sensor_entity)
+            return
+
+        entity = ButtonEventSensorEntity(
+            server=self,
+            key=len(self.state.entities),
+            name="Button Press",
+            object_id="button_press_event",
+        )
         self.state.entities.append(entity)
-        return entity
+        self.state.button_event_sensor_entity = entity
+        _LOGGER.info("Button event sensor entity materialised")
+
+    def _on_led_light_changed(self, object_id: str) -> None:
+        """Forward an HA Light entity change to peripherals as light_command.
+
+        The event carries object_id so a peripheral that registered more
+        than one light can route it to the correct hardware.
+        """
+        entity = self.state.led_light_entities.get(object_id)
+        if entity is None:
+            return
+        self._emit(LVAEvent.LIGHT_COMMAND, entity.state_dict())
+
+    # ------------------------------------------------------------------
+    # Mute / thinking sound
+    # ------------------------------------------------------------------
+
+    def _set_thinking_sound_enabled(self, new_state: bool) -> None:
+        self.state.thinking_sound_enabled = bool(new_state)
+        self.state.preferences.thinking_sound = 1 if self.state.thinking_sound_enabled else 0
+
+        if self.state.thinking_sound_enabled:
+            _LOGGER.debug("Thinking sound enabled")
+        else:
+            _LOGGER.debug("Thinking sound disabled")
+            pass
+        self.state.save_preferences()
+
+    def _set_sensitivity_1(self, new_value: float) -> None:
+        self.state.wake_word_1_threshold = float(new_value)
+        self.state.preferences.wake_word_1_sensitivity = float(new_value)
+        self.state.save_preferences()
+        _LOGGER.debug("Wake Word 1 Sensitivity value set to: %s", new_value)
+        # Sync entity state
+        if self.state.sensitivity_1_number_entity is not None:
+            self.state.sensitivity_1_number_entity.sync_with_state()
+
+    def _set_sensitivity_2(self, new_value: float) -> None:
+        self.state.wake_word_2_threshold = float(new_value)
+        self.state.preferences.wake_word_2_sensitivity = float(new_value)
+        self.state.save_preferences()
+        _LOGGER.debug("Wake Word 2 Sensitivity value set to: %s", new_value)
+        # Sync entity state
+        if self.state.sensitivity_2_number_entity is not None:
+            self.state.sensitivity_2_number_entity.sync_with_state()
+
+    def _set_stop_sensitivity(self, new_value: float) -> None:
+        self.state.stop_word_threshold = float(new_value)
+        self.state.preferences.stop_word_sensitivity = float(new_value)
+        self.state.save_preferences()
+        _LOGGER.debug("Stop Word Sensitivity value set to: %s", new_value)
+        # Sync entity state
+        if self.state.stop_sensitivity_number_entity is not None:
+            self.state.stop_sensitivity_number_entity.sync_with_state()
+
+    def _set_muted(self, new_state: bool) -> None:
+        self.state.muted = bool(new_state)
+        self._emit(LVAEvent.MUTED, {"muted": self.state.muted})
+
+        # Reflect the change on the ESPHome mute switch so Home Assistant
+        # stays in sync no matter where the request came from (HA itself,
+        # hardware buttons, tray client via MQTT, peripheral API clients).
+        if self.state.mute_switch_entity is not None:
+            self.state.mute_switch_entity.publish_state()
+
+        if self.state.muted:
+            # voice_assistant.stop behavior
+            _LOGGER.debug("Muting voice assistant (voice_assistant.stop)")
+            self._is_streaming_audio = False
+            self.state.tts_player.stop()
+            # Stop any ongoing voice processing
+            self.state.stop_word.is_active = False  # type: ignore[attr-defined]
+            self.state.tts_player.play(self.state.mute_sound)
+        else:
+            # voice_assistant.start_continuous behavior
+            _LOGGER.debug("Unmuting voice assistant (voice_assistant.start_continuous)")
+            self.state.tts_player.play(self.state.unmute_sound)
+            self._emit(LVAEvent.IDLE)
+
+    # ------------------------------------------------------------------
+    # Fork entity callbacks
+    # ------------------------------------------------------------------
+
+    def _set_event_sounds_enabled(self, enabled: bool) -> None:
+        """EventSoundsSwitchEntity callback — update state and persist."""
+        self.state.event_sounds_enabled = bool(enabled)
+        self.state.preferences.event_sounds_enabled = bool(enabled)
+        self.state.save_preferences()
+        _LOGGER.info("Event sounds set to: %s", enabled)
 
     def _set_thinking_sound_loop(self, enabled: bool) -> None:
-        """Callback for ThinkingSoundSwitchEntity — update state and persist."""
-        self.state.thinking_sound_loop = enabled
+        """ThinkingSoundLoopSwitchEntity callback — update state and persist."""
+        self.state.thinking_sound_loop = bool(enabled)
         self.state.preferences.selected_thinking_sound_loop = "ON" if enabled else "OFF"
         self.state.save_preferences()
         _LOGGER.info("Thinking sound loop set to: %s", enabled)
 
-    def _set_event_sounds_enabled(self, enabled: bool) -> None:
-        """Callback for EventSoundsSwitchEntity — update state and persist."""
-        self.state.event_sounds_enabled = enabled
-        self.state.preferences.event_sounds_enabled = enabled
-        self.state.save_preferences()
-        _LOGGER.info("Event sounds set to: %s", enabled)
+    # category key -> Preferences field holding the selected filename
+    _SOUND_SELECTION_PREF_FIELDS = {
+        "wakeup_sound": "selected_wakeup_sound",
+        "thinking_sound": "selected_thinking_sound",
+        "timer_sound": "selected_timer_sound",
+    }
 
     def _get_sound_selection(self, cat_key: str) -> str:
-        """Get the current sound selection filename for a category."""
-        from . import __main__ as main_mod
-        cat_info = main_mod.SOUND_CATEGORIES.get(cat_key, {})
-        pref_field = cat_info.get("pref_field", "")
+        """Current sound selection filename for a category ("" = default)."""
+        pref_field = self._SOUND_SELECTION_PREF_FIELDS.get(cat_key)
         if pref_field:
-            value = getattr(self.state.preferences, pref_field, "")
-            if value:
-                return value
-        # No preference set — return the first option or empty
+            return getattr(self.state.preferences, pref_field, "") or ""
         return ""
 
     def _set_sound_selection(self, cat_key: str, filename: str) -> None:
-        """Set a sound selection, updating state and persisting."""
+        """SoundSelectEntity callback — persist selection and announce it.
+
+        "None" disables the category (wakeup/thinking only). The event bus
+        publish lets subsystems (MQTT mirror, LEDs) react immediately.
+        """
+        pref_field = self._SOUND_SELECTION_PREF_FIELDS.get(cat_key)
+        if pref_field is None:
+            _LOGGER.warning("Unknown sound category: %s", cat_key)
+            return
+        setattr(self.state.preferences, pref_field, filename)
+        self.state.save_preferences()
         self.state.event_bus.publish(f"set_{cat_key}", {"filename": filename})
+        _LOGGER.info("Sound '%s' set to: %s", cat_key, filename)
 
     def _set_alarm_duration(self, value: float) -> None:
-        """Callback for AlarmDurationNumberEntity — update and persist."""
-        duration = int(value)
-        if duration < 0:
-            duration = 0
+        """AlarmDurationNumberEntity callback — update and persist.
+
+        0 = alarm rings until interrupted by the Stop wake word.
+        """
+        duration = max(0, int(value))
         self.state.preferences.alarm_duration_seconds = duration
         self.state.save_preferences()
         _LOGGER.info("Alarm duration set to: %d seconds", duration)
 
-    def _setup_entity_by_id(self, entity_type, instance_id: str, factory):
-        """Find or create an entity matching both type and instance_id.
+    # ------------------------------------------------------------------
+    # Voice pipeline event handler
+    # ------------------------------------------------------------------
 
-        Like ``_setup_entity`` but for entity types that have multiple
-        instances (e.g. three SoundSelectEntity instances).  Matches on
-        ``entity.instance_id`` when the type matches.
-        """
-        for entity in self.state.entities:
-            if isinstance(entity, entity_type):
-                if hasattr(entity, "instance_id") and entity.instance_id == instance_id:
-                    entity.server = self
-                    return entity
-
-        # Not found — create via factory and register
-        entity = factory()
-        self.state.entities.append(entity)
-        return entity
-        
-    def _set_sensitivity(self, level: str) -> None:
-        """Callback for WakeWordSensitivityEntity — update, apply, and persist."""
-        if level not in SENSITIVITY_PRESETS:
-            _LOGGER.warning("Unknown sensitivity level: %s", level)
-            return
-        self.state.wake_word_sensitivity = level
-        self.state.preferences.wake_word_sensitivity = level
-        self.state.save_preferences()
-        self._apply_sensitivity(level)
-        _LOGGER.info("Wake word sensitivity set to: %s", level)
-
-    def _apply_sensitivity(self, level: str) -> None:
-        """Apply sensitivity preset to loaded wake word models.
-
-        - MWW: sets probability_cutoff on each loaded MicroWakeWord model
-        - OWW: updates AudioEngine.oww_threshold (the global fallback)
-
-        Per-model OWW thresholds from JSON files are unaffected because
-        AudioEngine uses getattr(ww, "threshold", self.oww_threshold),
-        so models with explicit thresholds keep them.
-        """
-        preset = SENSITIVITY_PRESETS.get(level, SENSITIVITY_PRESETS["Slightly sensitive"])
-        mww_cutoff = preset["mww"]
-        oww_cutoff = preset["oww"]
-
-        # Apply to MWW models
-        for ww in self.state.wake_words.values():
-            if isinstance(ww, MicroWakeWord):
-                try:
-                    ww.probability_cutoff = mww_cutoff
-                    _LOGGER.debug("MWW cutoff set to %.2f for %s", mww_cutoff, ww.id)
-                except Exception:
-                    _LOGGER.exception("Failed to set MWW cutoff for %s", ww.id)
-
-        # Apply to OWW global threshold via AudioEngine
-        audio_engine = getattr(self.state, "audio_engine", None)
-        if audio_engine is not None:
-            audio_engine.oww_threshold = oww_cutoff
-            _LOGGER.debug("OWW global threshold set to %.2f", oww_cutoff)
-        else:
-            _LOGGER.debug(
-                "AudioEngine not yet available; OWW threshold will be applied at startup"
-            )
-
-    # -------------------------------------------------------------------------
-    # State machine helpers
-    # -------------------------------------------------------------------------
-
-    def _set_state(self, new_state: SatelliteState):
-        if self._state == new_state:
-            return
-
-        _LOGGER.debug("State transition: %s -> %s", self._state, new_state)
-
-        # Stop thinking sound loop when leaving THINKING.
-        # We only clear the flag here — we do NOT call tts_player.stop()
-        # because the next state (typically RESPONDING) will play TTS through
-        # the same player, which naturally interrupts the thinking sound.
-        if self._thinking_sound_active:
-            self._thinking_sound_active = False
-
-        self._state = new_state
-
-        if new_state == SatelliteState.IDLE:
-            self.unduck()
-            self.state.active_wake_words.discard(self.state.stop_word.id)
-            self.state.event_bus.publish("voice_idle")
-        elif new_state == SatelliteState.LISTENING:
-            self.duck()
-            self.state.event_bus.publish("voice_listen")
-        elif new_state == SatelliteState.THINKING:
-            self.state.event_bus.publish("voice_thinking")
-            if self.state.event_sounds_enabled and self.state.thinking_sound:
-                self._thinking_sound_active = True
-                self._play_thinking_sound()
-        elif new_state == SatelliteState.RESPONDING:
-            self.state.active_wake_words.add(self.state.stop_word.id)
-            self.state.event_bus.publish("voice_responding")
-        elif new_state == SatelliteState.ERROR:
-            self.state.event_bus.publish("voice_error")
-
-    # -------------------------------------------------------------------------
-    # Voice assistant events
-    # -------------------------------------------------------------------------
-
-    def handle_voice_event(
-        self, event_type: VoiceAssistantEventType, data: Dict[str, str]
-    ) -> None:
+    def handle_voice_event(self, event_type: VoiceAssistantEventType, data: Dict[str, str]) -> None:
         _LOGGER.info("Voice event: type=%s, data=%s", event_type.name, data)
 
         if event_type == VoiceAssistantEventType.VOICE_ASSISTANT_RUN_START:
-            self._run_end_received = False
-            self._tts_end_received = False
-            self._is_announcement = False
             self._tts_url = data.get("url")
+            self._tts_played = False
             self._continue_conversation = False
+            self._pipeline_active = True
 
-        elif event_type == VoiceAssistantEventType.VOICE_ASSISTANT_STT_START:
-            self._set_state(SatelliteState.LISTENING)
+        elif event_type == VoiceAssistantEventType.VOICE_ASSISTANT_INTENT_START:
+            self._emit(LVAEvent.THINKING)
+            # Play optional audible thinking sound. Fork: additionally gated
+            # by the Event Sounds master toggle, and loops while thinking
+            # when the Thinking Sound Loop toggle is on.
+            if self.state.thinking_sound_enabled and self.state.event_sounds_enabled:
+                processing = getattr(self.state, "processing_sound", None)
+                if processing:
+                    _LOGGER.debug("Playing processing sound: %s", processing)
+                    self.state.stop_word.is_active = True  # type: ignore[attr-defined]
+                    self._processing = True
+                    self._thinking_sound_active = True
+                    self.duck()
+                    self._play_thinking_sound()
 
-        elif event_type == VoiceAssistantEventType.VOICE_ASSISTANT_STT_VAD_START:
-            self.state.event_bus.publish("voice_vad_start", data)
-
-        elif event_type == VoiceAssistantEventType.VOICE_ASSISTANT_STT_END:
+        elif event_type in (
+            VoiceAssistantEventType.VOICE_ASSISTANT_STT_VAD_END,
+            VoiceAssistantEventType.VOICE_ASSISTANT_STT_END,
+        ):
             self._is_streaming_audio = False
-            self._set_state(SatelliteState.THINKING)
+            if event_type == VoiceAssistantEventType.VOICE_ASSISTANT_STT_END:
+                stt_text = data.get("text", "").strip()
+                if stt_text:
+                    self._emit(LVAEvent.STT_TEXT, {"text": stt_text})
+                    _LOGGER.debug("STT transcript: %s", stt_text)
 
-        elif event_type == VoiceAssistantEventType.VOICE_ASSISTANT_STT_VAD_END:
-            # No-op for now; could be used for LED cues
-            pass
+        elif event_type == VoiceAssistantEventType.VOICE_ASSISTANT_INTENT_PROGRESS:
+            if data.get("tts_start_streaming") == "1":
+                # Start streaming early
+                self.play_tts()
 
         elif event_type == VoiceAssistantEventType.VOICE_ASSISTANT_INTENT_END:
             if data.get("continue_conversation") == "1":
                 self._continue_conversation = True
 
         elif event_type == VoiceAssistantEventType.VOICE_ASSISTANT_TTS_START:
-            self._set_state(SatelliteState.RESPONDING)
+            tts_text = data.get("text", "").strip()
+            if tts_text:
+                self._emit(LVAEvent.TTS_TEXT, {"text": tts_text})
+                _LOGGER.debug("TTS response text: %s", tts_text)
 
         elif event_type == VoiceAssistantEventType.VOICE_ASSISTANT_TTS_END:
             self._tts_url = data.get("url")
-            self._tts_end_received = True
             self.play_tts()
 
         elif event_type == VoiceAssistantEventType.VOICE_ASSISTANT_RUN_END:
-            self._run_end_received = True
-            if self._state != SatelliteState.RESPONDING:
-                self._determine_final_state()
+            self._is_streaming_audio = False
+            if not self._tts_played:
+                self._pipeline_active = False
+                self._tts_finished()
+            # When TTS is playing, keep _pipeline_active = True to block
+            # false wake word detections from speaker audio feedback.
+            # _tts_finished() callback will clear it when playback ends.
+
+            self._tts_played = False
 
         elif event_type == VoiceAssistantEventType.VOICE_ASSISTANT_ERROR:
-            code = data.get("code")
-            message = data.get("message")
-            _LOGGER.debug(
-                "VoiceAssistant error received: code=%s, message=%s", code, message
-            )
+            self._emit(LVAEvent.PIPELINE_ERROR)
 
-            # Treat "no text recognized" as a benign outcome, not a hard error.
-            if code == "stt-no-text-recognized":
-                _LOGGER.debug(
-                    "No text recognized from STT; treating as benign and returning to IDLE."
-                )
-                # Ensure we stop streaming audio for this run
-                self._is_streaming_audio = False
-                # Go directly back to IDLE (unduck, idle LEDs, etc.)
-                self._set_state(SatelliteState.IDLE)
-                return
-
-            # All other errors follow the normal error path.
-            self._set_state(SatelliteState.ERROR)
-            # After a brief period, return to IDLE automatically.
-            self.state.loop.call_later(5.0, self._set_state, SatelliteState.IDLE)
+    # ------------------------------------------------------------------
+    # Timer event handler
+    # ------------------------------------------------------------------
 
     def handle_timer_event(
         self,
@@ -486,115 +813,122 @@ class VoiceSatelliteProtocol(APIServer):
         msg: VoiceAssistantTimerEventResponse,
     ) -> None:
         _LOGGER.debug("Timer event: type=%s", event_type.name)
-        if event_type == VoiceAssistantTimerEventType.VOICE_ASSISTANT_TIMER_FINISHED:
+
+        # Build countdown data from the protobuf message fields.
+        # total_seconds: the original timer duration.
+        # seconds_left:  remaining seconds at the time of this event.
+        timer_data = {
+            "id": msg.timer_id,
+            "name": msg.name,
+            "total_seconds": msg.total_seconds,
+            "seconds_left": msg.seconds_left,
+        }
+
+        if event_type == VoiceAssistantTimerEventType.VOICE_ASSISTANT_TIMER_STARTED:
+            self._emit(LVAEvent.TIMER_TICKING, timer_data)
+
+        elif event_type == VoiceAssistantTimerEventType.VOICE_ASSISTANT_TIMER_UPDATED:
+            self._emit(LVAEvent.TIMER_UPDATED, timer_data)
+
+        elif event_type == VoiceAssistantTimerEventType.VOICE_ASSISTANT_TIMER_CANCELLED:
+            self._emit(LVAEvent.IDLE)
+
+        elif event_type == VoiceAssistantTimerEventType.VOICE_ASSISTANT_TIMER_FINISHED:
             if not self._timer_finished:
                 self.state.active_wake_words.add(self.state.stop_word.id)
                 self._timer_finished = True
+                self._timer_ring_start = time.monotonic()
                 self.duck()
+                self._emit(LVAEvent.TIMER_RINGING, timer_data)
                 self._play_timer_finished()
 
-                # Schedule auto-stop if configured
-                duration = getattr(
-                    self.state.preferences, "alarm_duration_seconds", 0
-                )
+                # Fork: auto-stop after alarm_duration_seconds (0 = ring
+                # until interrupted by the Stop wake word).
+                duration = getattr(self.state.preferences, "alarm_duration_seconds", 0) or 0
                 if duration > 0:
-                    if self._timer_auto_stop_handle is not None:
-                        self._timer_auto_stop_handle.cancel()
-                    _LOGGER.debug(
-                        "Scheduling auto-stop for timer alarm after %s seconds",
-                        duration,
-                    )
+                    self._clear_timer_auto_stop()
+                    _LOGGER.debug("Scheduling alarm auto-stop after %s seconds", duration)
                     self._timer_auto_stop_handle = self.state.loop.call_later(
                         duration, self._auto_stop_timer_alarm
                     )
 
-    def _play_thinking_sound(self) -> None:
-        """
-        Play the thinking sound while in the THINKING state.
+    # ------------------------------------------------------------------
+    # Message routing
+    # ------------------------------------------------------------------
 
-        When thinking_sound_loop is True, the sound repeats via done_callback
-        until _thinking_sound_active is cleared by a state transition.
-        When False, the sound plays once. Default is False.
-        """
-        if not self._thinking_sound_active:
-            return
-        self.state.tts_player.play(
-            self.state.thinking_sound,
-            done_callback=self._play_thinking_sound if self.state.thinking_sound_loop else None,
-        )
-
-    # -------------------------------------------------------------------------
-    # Main message handler (called by APIServer)
-    # -------------------------------------------------------------------------
-
-    def handle_message(self, msg: message.Message) -> Iterable[message.Message]:
-        """
-        Handles incoming messages from Home Assistant.
-        Note: This method is synchronous. Long-running operations must be offloaded to Tasks.
-        """
+    def handle_message(self, msg: message.Message) -> Iterable[message.Message]:  # noqa: C901  (acceptable complexity for a message router)
         if isinstance(msg, VoiceAssistantEventResponse):
+            # Pipeline event
             data: Dict[str, str] = {}
             for arg in msg.data:
                 data[arg.name] = arg.value
+
             self.handle_voice_event(VoiceAssistantEventType(msg.event_type), data)
 
         elif isinstance(msg, VoiceAssistantAnnounceRequest):
             _LOGGER.debug("Announcing: %s", msg.text)
-            urls: List[str] = []
+
+            assert self.state.media_player_entity is not None
+
+            urls = []
             if msg.preannounce_media_id:
                 urls.append(msg.preannounce_media_id)
             urls.append(msg.media_id)
 
-            self._is_announcement = True
             self.state.active_wake_words.add(self.state.stop_word.id)
             self._continue_conversation = msg.start_conversation
+
             self.duck()
-            self._set_state(SatelliteState.RESPONDING)
-            yield from self.media_player_entity.play(
-                urls, announcement=True, done_callback=self._tts_finished
-            )
+            self._emit(LVAEvent.TTS_SPEAKING)
+            self.state.tts_player.play(urls, done_callback=self._tts_finished)
 
         elif isinstance(msg, VoiceAssistantTimerEventResponse):
             self.handle_timer_event(VoiceAssistantTimerEventType(msg.event_type), msg)
 
         elif isinstance(msg, DeviceInfoRequest):
+            _LOGGER.debug("Device info request")
+
             yield DeviceInfoResponse(
                 uses_password=False,
                 name=self.state.name,
+                friendly_name=self.state.friendly_name,
+                project_name="Open Home Foundation.Linux Voice Assistant",
+                project_version=self.state.version,
+                esphome_version=self.state.esphome_version,
                 mac_address=self.state.mac_address,
-                voice_assistant_feature_flags=(
-                    VoiceAssistantFeature.VOICE_ASSISTANT
-                    | VoiceAssistantFeature.API_AUDIO
-                    | VoiceAssistantFeature.ANNOUNCE
-                    | VoiceAssistantFeature.START_CONVERSATION
-                    | VoiceAssistantFeature.TIMERS
-                ),
+                manufacturer="Open Home Foundation",
+                model="Linux Voice Assistant",
+                voice_assistant_feature_flags=self.supported_features,
             )
-
+        elif isinstance(msg, SubscribeStatesRequest):
+            # Standard ESPHome state subscription. Replay current entity state to
+            # the subscribing client. (Entities answer SubscribeHomeAssistantStatesRequest;
+            # initial state was previously only sent as a side effect of auth.)
+            for entity in self.state.entities:
+                yield from entity.handle_message(SubscribeHomeAssistantStatesRequest())
         elif isinstance(
             msg,
-            (
-                ListEntitiesRequest,
-                SubscribeHomeAssistantStatesRequest,
-                MediaPlayerCommandRequest,
-                SwitchCommandRequest,
-                SelectCommandRequest,
-                NumberCommandRequest,
-            ),
+            (ListEntitiesRequest, SubscribeHomeAssistantStatesRequest, MediaPlayerCommandRequest, SwitchCommandRequest, NumberCommandRequest, SelectCommandRequest, LightCommandRequest),
         ):
-            if isinstance(msg, ListEntitiesRequest):
-                _LOGGER.info("Received ListEntitiesRequest - serving %d entities", len(self.state.entities))
-
             for entity in self.state.entities:
                 yield from entity.handle_message(msg)
 
+            # Emit peripheral event when background music starts playing.
+            # Announcements (TTS) are explicitly excluded — those are covered
+            # by TTS_SPEAKING.
+            if isinstance(msg, MediaPlayerCommandRequest) and msg.has_media_url:
+                is_announcement = msg.has_announcement and msg.announcement
+                if not is_announcement:
+                    self._emit(LVAEvent.MEDIA_PLAYER_PLAYING)
+
             if isinstance(msg, ListEntitiesRequest):
-                _LOGGER.debug("ListEntitiesRequest completed")
                 yield ListEntitiesDoneResponse()
 
         elif isinstance(msg, VoiceAssistantConfigurationRequest):
-            # Build list of available wake words (built-in + external)
-            available_wake_words: List[VoiceAssistantWakeWord] = [
+            _LOGGER.debug("✅ Received VoiceAssistantConfigurationRequest from Home Assistant")
+            _LOGGER.debug("   -> Request contains %d external wake words", len(msg.external_wake_words))
+
+            available_wake_words = [
                 VoiceAssistantWakeWord(
                     id=ww.id,
                     wake_word=ww.wake_word,
@@ -603,17 +937,20 @@ class VoiceSatelliteProtocol(APIServer):
                 for ww in self.state.available_wake_words.values()
             ]
 
-            # Reset external wake words cache and add new ones
-            self._external_wake_words.clear()
+            # Log available internal wake words first
+            internal_ww_count = len(self.state.available_wake_words)
+            _LOGGER.debug("   -> Found %d internal available wake words", internal_ww_count)
+            for ww in available_wake_words:
+                _LOGGER.debug("      - %s: '%s' (langs: %s)", ww.id, ww.wake_word, ww.trained_languages)
+
             for eww in msg.external_wake_words:
+                _LOGGER.debug("   -> Processing external wake word: id=%s, word='%s', type=%s", eww.id, eww.wake_word, eww.model_type)
+
                 if eww.model_type != "micro":
-                    _LOGGER.warning(
-                        "Skipping external wake word %s (type=%s)",
-                        eww.id,
-                        eww.model_type,
-                    )
+                    _LOGGER.debug("      → Skipping: not micro model type")
                     continue
 
+                _LOGGER.debug("      → Adding to available wake words")
                 available_wake_words.append(
                     VoiceAssistantWakeWord(
                         id=eww.id,
@@ -621,170 +958,134 @@ class VoiceSatelliteProtocol(APIServer):
                         trained_languages=eww.trained_languages,
                     )
                 )
+
                 self._external_wake_words[eww.id] = eww
+                _LOGGER.debug("      → Stored in external wake words cache")
 
-            _LOGGER.debug(
-                "VoiceAssistantConfigurationRequest: external_wake_words=%s",
-                [eww.id for eww in msg.external_wake_words],
-            )
+            active_ww_ids = [ww.id for ww in self.state.wake_words.values() if ww.id in self.state.active_wake_words]
+            _LOGGER.debug("   -> Active wake word IDs: %s", active_ww_ids)
 
-            # IMPORTANT: Use self.state.active_wake_words directly here, instead of
-            # filtering through self.state.wake_words (which may not yet contain
-            # newly requested models while they're still loading).
             yield VoiceAssistantConfigurationResponse(
                 available_wake_words=available_wake_words,
-                active_wake_words=sorted(self.state.active_wake_words),
+                active_wake_words=active_ww_ids,
                 max_active_wake_words=2,
             )
 
-            _LOGGER.info("Connected to Home Assistant")
-            self._set_state(SatelliteState.IDLE)
-            self.state.event_bus.publish("ha_connected")
-
+            _LOGGER.info("✅ Connected to Home Assistant - Configuration handshake completed")
+            _LOGGER.debug("✅ VoiceAssistantConfigurationResponse sent successfully")
         elif isinstance(msg, VoiceAssistantSetConfiguration):
-            requested_ids = list(msg.active_wake_words)
-            _LOGGER.debug(
-                "VoiceAssistantSetConfiguration received: active_wake_words=%s",
-                requested_ids,
-            )
+            # Change active wake words
+            active_wake_words: Set[str] = set()
+            new_wake_words: List[Optional[str]] = [None, None]
 
-            # Update the active_wake_words set immediately so that the *next*
-            # VoiceAssistantConfigurationRequest sees the new state, even while
-            # we are still downloading/loading models in the background.
-            self.state.active_wake_words = set(requested_ids)
+            # Get old positions before modification
+            old_positions: Dict[str, int] = {}
+            for idx, ww_id in enumerate(self.state.preferences.active_wake_words):
+                if ww_id is not None and idx < 2:
+                    old_positions[ww_id] = idx
 
-            # Offload heavy work (downloads + model loading) to a background task
-            self.state.loop.create_task(self._handle_set_configuration_task(msg))
-            # Yield nothing immediately; response to ConfigurationRequest is handled
-            # separately in the VoiceAssistantConfigurationRequest branch.
+            # Process new active wake words
+            for wake_word_id in msg.active_wake_words:
+                if wake_word_id in self.state.wake_words:
+                    # Already active
+                    active_wake_words.add(wake_word_id)
+                else:
+                    model_info = self.state.available_wake_words.get(wake_word_id)
+                    if not model_info:
+                        # Check external wake words (may require download)
+                        external_wake_word = self._external_wake_words.get(wake_word_id)
+                        if not external_wake_word:
+                            continue
 
-    # -------------------------------------------------------------------------
-    # SetConfiguration handler (async, runs in background)
-    # -------------------------------------------------------------------------
+                        model_info = self._download_external_wake_word(external_wake_word)
+                        if not model_info:
+                            continue
 
-    async def _handle_set_configuration_task(
-        self, msg: VoiceAssistantSetConfiguration
-    ) -> None:
-        """Asynchronous handler for SetConfiguration to avoid blocking I/O."""
-        requested_ids = list(msg.active_wake_words)
-        _LOGGER.debug(
-            "Applying SetConfiguration: requested active_wake_words=%s",
-            requested_ids,
-        )
+                        self.state.available_wake_words[wake_word_id] = model_info
 
-        active_wake_words: Set[str] = set()
+                    _LOGGER.debug("Loading wake word: %s", model_info.wake_word_path)
+                    self.state.wake_words[wake_word_id] = model_info.load()
 
-        for wake_word_id in requested_ids:
-            if wake_word_id in self.state.wake_words:
-                # Already loaded in this process; just mark it active.
-                active_wake_words.add(wake_word_id)
-                continue
+                    _LOGGER.info("Wake word set: %s", wake_word_id)
+                    active_wake_words.add(wake_word_id)
 
-            model_info = self.state.available_wake_words.get(wake_word_id)
+            # Keep old positions
+            remaining_ww = list(active_wake_words)
+            placed = set()
 
-            if not model_info:
-                external_wake_word = self._external_wake_words.get(wake_word_id)
-                if not external_wake_word:
-                    _LOGGER.warning("Unknown wake word: %s", wake_word_id)
-                    continue
+            # First, place Wake Words in their old positions.
+            for ww_id in remaining_ww:
+                if ww_id in old_positions:
+                    pos = old_positions[ww_id]
+                    if pos < 2:
+                        new_wake_words[pos] = ww_id
+                        placed.add(ww_id)
 
-                # Await the non-blocking download
-                model_info = await self._download_external_wake_word(
-                    external_wake_word
-                )
-                if not model_info:
-                    continue
+            # Add remaining wake words to free slots
+            free_slots = [i for i in range(2) if new_wake_words[i] is None]
+            for ww_id in remaining_ww:
+                if ww_id not in placed and free_slots:
+                    pos = free_slots.pop(0)
+                    new_wake_words[pos] = ww_id
+                    placed.add(ww_id)
 
-                self.state.available_wake_words[wake_word_id] = model_info
+            # If only one wake word is left and it was at position 1, position 0 remains None
+            # Position 2 automatically stays None if not occupied
 
-            _LOGGER.debug("Loading wake word: %s", model_info.wake_word_path)
-            self.state.wake_words[wake_word_id] = model_info.load()
+            self.state.active_wake_words = active_wake_words
+            _LOGGER.debug("Active wake words: %s", active_wake_words)
+            _LOGGER.debug("Wake word positions: [0]=%s, [1]=%s", new_wake_words[0], new_wake_words[1])
 
-            _LOGGER.info("Wake word set: %s", wake_word_id)
-            active_wake_words.add(wake_word_id)
-            # Apply current sensitivity preset to newly loaded external wake word
-            self._apply_sensitivity(self.state.wake_word_sensitivity)
-            # Do NOT break; we want to process all requested wake words.
+            self.state.preferences.active_wake_words = new_wake_words
+            self.state.save_preferences()
+            self.state.wake_words_changed = True
 
-        # Finalize active wake words with the subset that actually succeeded
-        self.state.active_wake_words = active_wake_words
-        _LOGGER.debug(
-            "Active wake words after SetConfiguration: %s", active_wake_words
-        )
+    # ------------------------------------------------------------------
+    # Audio streaming
+    # ------------------------------------------------------------------
 
-        self.state.preferences.active_wake_words = list(active_wake_words)
-        self.state.save_preferences()
-        self.state.wake_words_changed = True
-
-    # -------------------------------------------------------------------------
-    # Audio handling and wake word triggers
-    # -------------------------------------------------------------------------
-
-    def handle_audio(self, audio_chunk: bytes) -> None:
-        if self._is_streaming_audio:
+    # handle_audio — both channels in ONE message
+    def handle_audio(self, audio_chunk: bytes, audio_chunk_2: Optional[bytes] = None) -> None:
+        if not self._is_streaming_audio or self.state.muted:
+            return
+        if _HAS_AUDIO_DATA2 and audio_chunk_2 is not None:
+            self.send_messages([VoiceAssistantAudio(data=audio_chunk, data2=audio_chunk_2)])
+        else:
             self.send_messages([VoiceAssistantAudio(data=audio_chunk)])
 
-    def _clear_timer_auto_stop(self) -> None:
-        """Cancel any pending auto-stop for the timer alarm."""
-        if self._timer_auto_stop_handle is not None:
-            try:
-                self._timer_auto_stop_handle.cancel()
-            except Exception:
-                _LOGGER.exception("Failed to cancel timer auto-stop handle")
-            finally:
-                self._timer_auto_stop_handle = None
+    # ------------------------------------------------------------------
+    # Wake word / stop
+    # ------------------------------------------------------------------
 
-    def _stop_timer_alarm(self, reason: str) -> None:
-        """
-        Stop the repeating timer-finished alarm sound and clean up flags.
+    def wakeup(self, wake_word: Union[MicroWakeWord, OpenWakeWord]) -> None:
 
-        This is used for:
-        - Stop wake word / explicit stop()
-        - Any wake word while timer is ringing (existing behavior)
-        - Auto-stop after alarm_duration_seconds
-        """
-        if not self._timer_finished:
+        if self.state.muted:
+            # Don't respond to wake words when muted (voice_assistant.stop behavior)
             return
 
-        _LOGGER.debug("Stopping timer finished sound (%s)", reason)
-        self._timer_finished = False
-        self._clear_timer_auto_stop()
-        try:
-            self.state.tts_player.stop()
-        except Exception:
-            _LOGGER.exception("Error stopping timer finished TTS player")
-        # Ensure we unduck and remove the stop word from active set
-        self.unduck()
-        self.state.active_wake_words.discard(self.state.stop_word.id)
-
-    def _auto_stop_timer_alarm(self) -> None:
-        """Auto-stop callback fired after alarm_duration_seconds."""
-        if not self._timer_finished:
+        if self._pipeline_active:
+            _LOGGER.debug("Ignoring wake word - pipeline already active")
             return
-        duration = getattr(self.state.preferences, "alarm_duration_seconds", 0)
-        _LOGGER.debug(
-            "Auto-stopping timer finished alarm after %s seconds", duration
-        )
-        self._stop_timer_alarm("auto_timeout")
 
-    def _start_conversation(self, wake_word_phrase: str) -> None:
-        """Shared helper to start a new conversation run."""
-        _LOGGER.debug("Starting conversation: %s", wake_word_phrase)
+        wake_word_phrase = wake_word.wake_word  # type: ignore[union-attr]
+        _LOGGER.debug("Detected wake word: %s", wake_word_phrase)
 
+        # Fork: a wake word while the alarm rings stops it and continues
+        # into a new conversation.
+        if self._timer_finished:
+            self._stop_timer_alarm("wakeup")
+
+        self._pipeline_active = True
+        self._emit(LVAEvent.WAKE_WORD_DETECTED)
+        self.duck()
         if self.state.listen_during_wake_sound:
-            # Start streaming immediately — wakeup sound plays concurrently.
-            # Requires AEC to avoid the sound bleeding into STT.
-            self.send_messages(
-                [VoiceAssistantRequest(start=True, wake_word_phrase=wake_word_phrase)]
-            )
-            self._set_state(SatelliteState.LISTENING)
-            self._is_streaming_audio = True
+            _LOGGER.debug("Starting audio streaming immediately (listen_during_wake_sound enabled)")
+            # Fork: wakeup sound is gated by the Event Sounds master toggle
+            # and always plays at full volume (fork volume_override behavior)
             if self.state.event_sounds_enabled and self.state.wakeup_sound:
                 self.state.tts_player.play(self.state.wakeup_sound, volume_override=100)
+            self._start_audio_streaming(wake_word_phrase)
         else:
-            # Wait for wakeup sound to finish before streaming audio.
-            # Avoids STT interference but introduces a pause after the wake word.
-            self.duck()
             if self.state.event_sounds_enabled and self.state.wakeup_sound:
                 self.state.tts_player.play(
                     self.state.wakeup_sound,
@@ -794,77 +1095,158 @@ class VoiceSatelliteProtocol(APIServer):
             else:
                 self._on_wakeup_sound_finished(wake_word_phrase)
 
-    def _on_wakeup_sound_finished(self, wake_word_phrase: str) -> None:
-        """Callback when wakeup sound finishes (listen_during_wake_sound=false)."""
+    def _start_audio_streaming(self, wake_word_phrase: str) -> None:
+        """Start streaming audio during wake sound detection."""
         _LOGGER.debug(
-            "Wakeup sound finished, starting audio streaming: %s", wake_word_phrase,
+            "Starting audio streaming for: %s",
+            wake_word_phrase,
         )
-        self.send_messages(
-            [VoiceAssistantRequest(start=True, wake_word_phrase=wake_word_phrase)]
-        )
-        self._set_state(SatelliteState.LISTENING)
+        self.send_messages([VoiceAssistantRequest(start=True, wake_word_phrase=wake_word_phrase)])
         self._is_streaming_audio = True
+        self._emit(LVAEvent.LISTENING)
 
-    def wakeup(self, wake_word: Union[MicroWakeWord, OpenWakeWord]) -> None:
-        if self._state not in (SatelliteState.IDLE, SatelliteState.STARTING):
-            # Existing behavior: ignore wakeup in other states.
-            return
+    def _on_wakeup_sound_finished(self, wake_word_phrase: str) -> None:
+        """Callback invoked when the wakeup chime finishes; begin STT streaming."""
+        _LOGGER.debug(
+            "Wakeup sound finished, starting audio streaming for: %s",
+            wake_word_phrase,
+        )
+        self.send_messages([VoiceAssistantRequest(start=True, wake_word_phrase=wake_word_phrase)])
+        self._is_streaming_audio = True
+        self._emit(LVAEvent.LISTENING)
 
-        # If a timer alarm is currently ringing, stop it instead of starting
-        # a new conversation run.
-        if self._timer_finished:
-            self._stop_timer_alarm("wakeup")
-            return
-
-        wake_word_phrase = getattr(wake_word, "wake_word", "wake word")
-        _LOGGER.debug("Detected wake word: %s", wake_word_phrase)
-        self._start_conversation(wake_word_phrase)
-
-    def manual_wakeup(self, phrase: str = "button") -> None:
+    def start_listening(self) -> None:
         """
-        Manual wakeup entrypoint (e.g. hardware button) that behaves like a
-        wake word, but without requiring a wake-word model instance.
+        Manually start the voice pipeline from a button press.
+
+        Plays ``start_listening_sound`` first, then sends
+        ``VoiceAssistantRequest`` and begins streaming audio — identical flow
+        to ``wakeup()`` but without a wake-word phrase and using the dedicated
+        button-press sound instead of the wake-word chime. Also stops ringing timer.
         """
-        if self._state not in (SatelliteState.IDLE, SatelliteState.STARTING):
+        if self.state.muted:
             return
 
+        if self._pipeline_active:
+            _LOGGER.debug("Ignoring start_listening - pipeline already active")
+            return
+
+        _LOGGER.debug("Button start_listening triggered")
+
+        # Fork: a button press while the alarm rings stops it and starts
+        # listening.
         if self._timer_finished:
             self._stop_timer_alarm("button")
-            return
 
-        _LOGGER.debug("Manual wakeup triggered: %s", phrase)
-        self._start_conversation(phrase)
+        self._pipeline_active = True
+        self.duck()
+        if self.state.event_sounds_enabled and self.state.start_listening_sound:
+            self.state.tts_player.play(
+                self.state.start_listening_sound,
+                done_callback=self._on_start_listening_sound_finished,
+            )
+        else:
+            self._on_start_listening_sound_finished()
+
+    def _on_start_listening_sound_finished(self) -> None:
+        """Callback invoked when the start-listening chime finishes; begin STT streaming."""
+        _LOGGER.debug("Start-listening sound finished, starting audio streaming")
+        self.send_messages([VoiceAssistantRequest(start=True, wake_word_phrase="")])
+        self._is_streaming_audio = True
+        self._emit(LVAEvent.LISTENING)
 
     def stop(self) -> None:
-        """
-        Called when the Stop wake word is detected (or equivalent).
-
-        For timer alarms:
-            - Stop the repeating alarm.
-        For TTS:
-            - Stop playback and treat as user-aborted response.
-        """
         self.state.active_wake_words.discard(self.state.stop_word.id)
+        self._pipeline_active = False
+        self._stop_thinking_sound()
 
-        # If the timer alarm is ringing, stop that instead of a TTS run.
         if self._timer_finished:
+            # Fork: stop the repeating alarm (cancels repeat/auto-stop handles)
             self._stop_timer_alarm("stop_wake_word")
-            return
+            self._emit(LVAEvent.IDLE)
+            _LOGGER.debug("Stopping timer finished sound")
+        else:
+            # tts_player.stop() invokes the done_callback (_tts_finished),
+            # so we don't call _tts_finished() again explicitly.
+            self.state.tts_player.stop()
+            _LOGGER.debug("TTS response stopped manually")
 
-        # Otherwise this is stopping a TTS response.
-        # tts_player.stop() fires the done_callback (_tts_finished) internally,
-        # so we don't call it explicitly here to avoid duplicate execution.
-        self.state.tts_player.stop()
-        _LOGGER.debug("TTS response stopped manually")
+    # ------------------------------------------------------------------
+    # Thinking sound (fork)
+    # ------------------------------------------------------------------
+
+    def _play_thinking_sound(self) -> None:
+        """Play the thinking sound; repeats via done_callback while active.
+
+        ``_thinking_sound_active`` is cleared when the pipeline leaves the
+        thinking phase (TTS starting, run ending, or stop). We deliberately
+        do NOT call tts_player.stop() here — the next sound plays through
+        the same player and naturally interrupts the loop.
+        """
+        if not self._thinking_sound_active:
+            return
+        self.state.tts_player.play(
+            self.state.processing_sound,
+            done_callback=self._play_thinking_sound if self.state.thinking_sound_loop else None,
+        )
+
+    def _stop_thinking_sound(self) -> None:
+        """Clear the loop flag so a pending repeat callback stops re-playing."""
+        self._thinking_sound_active = False
+        self._processing = False
+
+    # ------------------------------------------------------------------
+    # TTS
+    # ------------------------------------------------------------------
 
     def play_tts(self) -> None:
-        if not self._tts_url:
+        if (not self._tts_url) or self._tts_played:
             return
 
+        self._tts_played = True
         _LOGGER.debug("Playing TTS response: %s", self._tts_url)
+
+        self._stop_thinking_sound()
         self.state.active_wake_words.add(self.state.stop_word.id)
+        self._emit(LVAEvent.TTS_SPEAKING)
         self.state.tts_player.play(self._tts_url, done_callback=self._tts_finished)
-        self._tts_url = None
+
+    def _tts_finished(self) -> None:
+        self._stop_thinking_sound()
+        self._pipeline_active = False
+        self.state.active_wake_words.discard(self.state.stop_word.id)
+        self.send_messages([VoiceAssistantAnnounceFinished()])
+        self._emit(LVAEvent.TTS_FINISHED)
+
+        if self._continue_conversation:
+            self._continue_conversation = False
+            # Keep pipeline active during the settle delay so the mic stays closed
+            # and does not capture the tail end of the TTS audio from the speaker.
+            self._pipeline_active = True
+            self._emit(LVAEvent.LISTENING)
+            _LOGGER.debug("Continuing conversation after %.2fs settle delay", self.state.continue_conversation_delay)
+
+            def _start_continued_conversation() -> None:
+                if self.state.muted:
+                    _LOGGER.debug("Skipping continued conversation: muted")
+                    self._pipeline_active = False
+                    self.unduck()
+                    return
+                self.send_messages([VoiceAssistantRequest(start=True)])
+                self._is_streaming_audio = True
+                _LOGGER.debug("Continued conversation started")
+
+            threading.Timer(self.state.continue_conversation_delay, _start_continued_conversation).start()
+        else:
+            self._continue_conversation = False
+            self.unduck()
+            self._emit(LVAEvent.IDLE)
+
+        _LOGGER.debug("TTS response finished")
+
+    # ------------------------------------------------------------------
+    # Ducking
+    # ------------------------------------------------------------------
 
     def duck(self) -> None:
         _LOGGER.debug("Ducking music")
@@ -874,81 +1256,210 @@ class VoiceSatelliteProtocol(APIServer):
         _LOGGER.debug("Unducking music")
         self.state.music_player.unduck()
 
-    def _determine_final_state(self) -> None:
-        if self._continue_conversation:
-            self.send_messages([VoiceAssistantRequest(start=True)])
-            self._is_streaming_audio = True
-            _LOGGER.debug("Continuing conversation")
-            self._set_state(SatelliteState.LISTENING)
-        else:
-            self._set_state(SatelliteState.IDLE)
+    # ------------------------------------------------------------------
+    # Timer finished loop (fork implementation)
+    # ------------------------------------------------------------------
 
-        _LOGGER.debug("Final state determined")
+    def _clear_timer_auto_stop(self) -> None:
+        """Cancel any pending alarm auto-stop."""
+        if self._timer_auto_stop_handle is not None:
+            try:
+                self._timer_auto_stop_handle.cancel()
+            except Exception:
+                _LOGGER.exception("Failed to cancel timer auto-stop handle")
+            finally:
+                self._timer_auto_stop_handle = None
 
-    def _tts_finished(self) -> None:
+    def _cancel_timer_repeat(self) -> None:
+        """Cancel any pending alarm repeat callback."""
+        if self._timer_repeat_handle is not None:
+            try:
+                self._timer_repeat_handle.cancel()
+            except Exception:
+                _LOGGER.exception("Failed to cancel timer repeat handle")
+            finally:
+                self._timer_repeat_handle = None
+
+    def _stop_timer_alarm(self, reason: str) -> None:
+        """Stop the repeating alarm sound and clean up flags.
+
+        Used for: Stop wake word / explicit stop(), any wake word or button
+        press while the alarm rings, and the alarm-duration auto-stop.
+        """
+        if not self._timer_finished:
+            return
+
+        _LOGGER.debug("Stopping timer finished sound (%s)", reason)
+        self._timer_finished = False
+        self._timer_ring_start = None
+        self._clear_timer_auto_stop()
+        self._cancel_timer_repeat()
+        try:
+            self.state.tts_player.stop()
+        except Exception:
+            _LOGGER.exception("Error stopping timer finished TTS player")
+        self.unduck()
         self.state.active_wake_words.discard(self.state.stop_word.id)
-        self.send_messages([VoiceAssistantAnnounceFinished()])
-        _LOGGER.debug("TTS audio playback finished")
 
-        # If this was just an announcement, we are done,
-        # or if we received the official Run End.
-        if self._is_announcement or self._run_end_received:
-            self._determine_final_state()
-            self._is_announcement = False
-        else:
-            if self._state == SatelliteState.RESPONDING:
-                self._set_state(SatelliteState.THINKING)
+    def _auto_stop_timer_alarm(self) -> None:
+        """Auto-stop callback fired after alarm_duration_seconds."""
+        if not self._timer_finished:
+            return
+        duration = getattr(self.state.preferences, "alarm_duration_seconds", 0)
+        _LOGGER.info("Auto-stopping timer alarm after %s seconds", duration)
+        self._stop_timer_alarm("auto_timeout")
+        self._emit(LVAEvent.IDLE)
 
     def _play_timer_finished(self) -> None:
-        """
-        Play the timer-finished sound in a loop until either:
-        - _timer_finished is cleared (Stop/wakeup/auto-timeout), or
-        - alarm_duration_seconds == 0 and user explicitly stops it.
-        Uses loop.call_later to avoid blocking the event loop (upstream #159).
-        """
         if not self._timer_finished:
-            # Alarm has been cleared; restore audio state.
+            _LOGGER.debug("Timer finished sound stopped")
+            self._timer_ring_start = None
+            self._cancel_timer_repeat()
             self.unduck()
             return
+
+        # Auto-stop after timer_max_ring_seconds (hard ceiling)
+        if self._timer_ring_start is not None:
+            elapsed = time.monotonic() - self._timer_ring_start
+            if elapsed >= self.state.timer_max_ring_seconds:
+                _LOGGER.info(
+                    "Timer auto-stopped after %.0f seconds (max=%.0f)",
+                    elapsed,
+                    self.state.timer_max_ring_seconds,
+                )
+                self._stop_timer_alarm("max_ring")
+                self._emit(LVAEvent.IDLE)
+                return
+
         self.state.tts_player.play(
             self.state.timer_finished_sound,
-            done_callback=self._timer_sound_finished,
+            done_callback=self._schedule_timer_repeat,
         )
 
-    def _timer_sound_finished(self) -> None:
-        """Callback when timer alarm sound finishes playing. Schedules next repeat."""
+    def _schedule_timer_repeat(self) -> None:
+        """Schedule the next alarm repetition 1s AFTER the sound finishes.
+
+        End-relative cadence (loop.call_later instead of blocking sleep in
+        the done-callback) prevents stuttering on alarm sounds >= 1s long
+        and keeps the event loop responsive.
+        """
         if not self._timer_finished:
-            # Alarm has been cleared; restore audio state.
-            self.unduck()
+            self._timer_ring_start = None
+            self._cancel_timer_repeat()
+            if not self._pipeline_active:
+                self.unduck()
             return
-        # Schedule next play after 1 second delay (non-blocking)
-        self.state.loop.call_later(1.0, self._play_timer_finished)
-
-    # -------------------------------------------------------------------------
-    # External wake word download helpers
-    # -------------------------------------------------------------------------
-
-    async def _download_external_wake_word(
-        self, external_wake_word: VoiceAssistantExternalWakeWord
-    ) -> Optional[AvailableWakeWord]:
-        """Wrapper to run the blocking download in a thread executor."""
-        return await self.state.loop.run_in_executor(
-            None,
-            functools.partial(
-                self._download_external_wake_word_sync, external_wake_word
-            ),
+        self._timer_repeat_handle = self.state.loop.call_later(
+            1.0, self._play_timer_finished
         )
 
-    def _download_external_wake_word_sync(
-        self, external_wake_word: VoiceAssistantExternalWakeWord
-    ) -> Optional[AvailableWakeWord]:
-        """Blocking download logic, intended to run in an executor."""
+    def connection_made(self, transport) -> None:
+        super().connection_made(transport)
+        # Track every live connection so asynchronous entity-state changes can be
+        # broadcast to all of them (see ServerState.broadcast).
+        if self not in self.state.connections:
+            self.state.connections.append(self)
+
+    # ------------------------------------------------------------------
+    # Connection lifecycle
+    # ------------------------------------------------------------------
+
+    def connection_lost(self, exc: Optional[Exception]) -> None:
+        super().connection_lost(exc)
+
+        self._disconnect_event.set()
+        self._is_streaming_audio = False
+        self._tts_url = None
+        self._tts_played = False
+        self._continue_conversation = False
+        self._timer_finished = False
+        self._pipeline_active = False
+        # Fork: cancel any pending alarm repeat / auto-stop callbacks so a
+        # disconnect can't leave stray alarms scheduled.
+        self._cancel_timer_repeat()
+        self._clear_timer_auto_stop()
+        self._stop_thinking_sound()
+
+        # Deregister this connection.
+        if self in self.state.connections:
+            self.state.connections.remove(self)
+
+        # Only tear down shared playback/state when the LAST client disconnects.
+        # Otherwise a secondary client (a diagnostic tool, a second dashboard, or
+        # Home Assistant's own overlapping reconnect) dropping would stop audio
+        # that belongs to a client still connected.
+        if not self.state.connections:
+            # Stop any ongoing audio playback and wake/stop word processing.
+            try:
+                self.state.music_player.stop()
+            except Exception:  # pylint: disable=broad-except
+                _LOGGER.exception("Failed to stop music player during disconnect")
+
+            try:
+                self.state.tts_player.stop()
+            except Exception:  # pylint: disable=broad-except
+                _LOGGER.exception("Failed to stop TTS player during disconnect")
+
+            self.state.stop_word.is_active = False  # type: ignore[attr-defined]
+            self.state.connected = False
+
+        if self.state.satellite is self:
+            self.state.satellite = None
+
+        if self.state.mute_switch_entity is not None:
+            self.state.mute_switch_entity.sync_with_state()
+
+        if self.state.mic_gain_entity is not None:
+            self.state.mic_gain_entity.sync_with_state()
+
+        if self.state.mic_noise_suppression_entity is not None:
+            self.state.mic_noise_suppression_entity.sync_with_state()
+
+        if self.state.mic_volume_entity is not None:
+            self.state.mic_volume_entity.sync_with_state()
+
+        # Notify peripheral container that HA is no longer reachable
+        self._emit(LVAEvent.DISCONNECTED)
+
+        _LOGGER.info("Disconnected from Home Assistant; waiting for reconnection")
+
+    def process_packet(self, msg_type: int, packet_data: bytes) -> None:
+        super().process_packet(msg_type, packet_data)
+
+        if msg_type == PROTO_TO_MESSAGE_TYPE[AuthenticationRequest]:
+            self.state.connected = True
+            _LOGGER.debug("Authentication successful, connected to Home Assistant")
+            self.state.event_bus.publish("ha_connected")
+
+            # Send states after connect
+            states: List[message.Message] = []
+            _LOGGER.debug("Found %d entities in state", len(self.state.entities))
+            for i, entity in enumerate(self.state.entities):
+                entity_states = list(entity.handle_message(SubscribeHomeAssistantStatesRequest()))
+                states.extend(entity_states)
+                _LOGGER.debug("Entity %d (%s) returned %d state messages", i, type(entity).__name__, len(entity_states))
+
+            _LOGGER.debug("Total state messages to send: %d", len(states))
+            self.send_messages(states)
+            for i, msg in enumerate(states):
+                _LOGGER.debug("Sent state message %d: %s", i, type(msg).__name__)
+            _LOGGER.debug("All entity states sent after connect")
+
+            # Notify peripherals that Home Assistant is now connected
+            self._emit(LVAEvent.ZEROCONF, {"status": "connected"})
+
+    # ------------------------------------------------------------------
+    # External wake word download
+    # ------------------------------------------------------------------
+
+    def _download_external_wake_word(self, external_wake_word: VoiceAssistantExternalWakeWord) -> Optional[AvailableWakeWord]:
         eww_dir = self.state.download_dir / "external_wake_words"
         eww_dir.mkdir(parents=True, exist_ok=True)
 
         config_path = eww_dir / f"{external_wake_word.id}.json"
         should_download_config = not config_path.exists()
 
+        # Check if we need to download the model file
         model_path = eww_dir / f"{external_wake_word.id}.tflite"
         should_download_model = True
         if model_path.exists():
@@ -965,50 +1476,36 @@ class VoiceSatelliteProtocol(APIServer):
                     )
 
         if should_download_config or should_download_model:
-            _LOGGER.debug(
-                "Downloading %s to %s", external_wake_word.url, config_path
-            )
-            try:
-                with urlopen(external_wake_word.url, timeout=10) as request:
-                    if request.status != 200:
-                        _LOGGER.warning(
-                            "Failed to download: %s, status=%s",
-                            external_wake_word.url,
-                            request.status,
-                        )
-                        return None
+            # Download config
+            _LOGGER.debug("Downloading %s to %s", external_wake_word.url, config_path)
+            with urlopen(external_wake_word.url) as request:
+                if request.status != 200:
+                    _LOGGER.warning(
+                        "Failed to download: %s, status=%s",
+                        external_wake_word.url,
+                        request.status,
+                    )
+                    return None
 
-                    with open(config_path, "wb") as model_file:
-                        shutil.copyfileobj(request, model_file)
-            except Exception as exc:  # noqa: BLE001
-                _LOGGER.error("Exception downloading config: %s", exc)
-                return None
+                with open(config_path, "wb") as model_file:
+                    shutil.copyfileobj(request, model_file)
 
         if should_download_model:
+            # Download model file
             parsed_url = urlparse(external_wake_word.url)
             parsed_url = parsed_url._replace(
-                path=posixpath.join(
-                    posixpath.dirname(parsed_url.path), model_path.name
-                )
+                path=posixpath.join(posixpath.dirname(parsed_url.path), model_path.name),
             )
             model_url = urlunparse(parsed_url)
 
             _LOGGER.debug("Downloading %s to %s", model_url, model_path)
-            try:
-                with urlopen(model_url, timeout=10) as request:
-                    if request.status != 200:
-                        _LOGGER.warning(
-                            "Failed to download: %s, status=%s",
-                            model_url,
-                            request.status,
-                        )
-                        return None
+            with urlopen(model_url) as request:
+                if request.status != 200:
+                    _LOGGER.warning("Failed to download: %s, status=%s", model_url, request.status)
+                    return None
 
-                    with open(model_path, "wb") as model_file:
-                        shutil.copyfileobj(request, model_file)
-            except Exception as exc:  # noqa: BLE001
-                _LOGGER.error("Exception downloading model: %s", exc)
-                return None
+                with open(model_path, "wb") as model_file:
+                    shutil.copyfileobj(request, model_file)
 
         return AvailableWakeWord(
             id=external_wake_word.id,
@@ -1017,17 +1514,3 @@ class VoiceSatelliteProtocol(APIServer):
             trained_languages=external_wake_word.trained_languages,
             wake_word_path=config_path,
         )
-
-    # -------------------------------------------------------------------------
-    # Connection lifecycle
-    # -------------------------------------------------------------------------
-
-    def connection_made(self, transport) -> None:
-        """Called when a new connection is established."""
-        super().connection_made(transport)
-        _LOGGER.info("New connection established from %s", transport.get_extra_info('peername'))
-
-    def connection_lost(self, exc):
-        super().connection_lost(exc)
-        self._set_state(SatelliteState.ERROR)
-        _LOGGER.info("Disconnected from Home Assistant")
