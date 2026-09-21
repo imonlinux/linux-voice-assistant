@@ -21,7 +21,7 @@
 # files, external wake word downloads) are untouched by the update.
 #
 # Options:
-#   --branch NAME   Branch or tag ref to update to (default: upstream-core)
+#   --branch NAME   Branch or tag ref to update to (default: main)
 #   --force         Proceed even if tracked files have local modifications
 #   --rollback      Return to the revision that was checked out before the
 #                   last update, then rebuild and restart
@@ -39,7 +39,7 @@ PARENT_DIR="$(cd "$PROJECT_DIR/.." && pwd)"
 PROJECT_NAME="$(basename "$PROJECT_DIR")"
 
 REPO_HINT="imonlinux/linux-voice-assistant"
-DEFAULT_BRANCH="upstream-core"
+DEFAULT_BRANCH="main"
 PREV_REV_FILE="$PROJECT_DIR/.lva-update-previous-rev"
 
 DAEMON_UNIT="linux-voice-assistant.service"

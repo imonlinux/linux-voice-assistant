@@ -46,13 +46,7 @@ Instructions for the install (or re-install) of the ReSpeaker 2-Mic Hat (**versi
 ```bash
 git clone https://github.com/imonlinux/linux-voice-assistant.git
 cd linux-voice-assistant
-git checkout upstream-core
 ```
-
-> **Important:** the default `main` branch currently holds the previous
-> (legacy) code stack. The re-founded stack — required for the current
-> Music Assistant Sendspin protocol and current upstream features — lives
-> on the `upstream-core` branch, which is what this guide documents.
 
 ## 4. Setup Linux Voice Assistant (LVA)
 
@@ -947,8 +941,9 @@ bash ~/linux-voice-assistant/script/update_lva --sendspin
 Useful options:
 
 ```bash
-# Update to a specific branch or tag instead of upstream-core
-bash ~/linux-voice-assistant/script/update_lva --branch main
+# Update to a specific branch or tag instead of main
+# (e.g. pin a fleet to a release tag)
+bash ~/linux-voice-assistant/script/update_lva --branch v2.0.0
 
 # The update refuses to run when tracked files have local modifications
 # (untracked per-device files are always fine). To discard them anyway:

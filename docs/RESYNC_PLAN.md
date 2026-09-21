@@ -404,3 +404,36 @@ as reference only.
 | XVF3800 regressions invisible to CI | High | Hardware-in-the-loop pass on real kit at end of R2 (`tests/xvf3800_probe.py` exists) |
 | F3 MQTT test debt | Low | Scheduled in R0/R4 |
 | Upstream breaks seams (entity registration, `_emit` points) | Medium | After re-foundation these arrive as ordinary merges; keep seam adapters thin |
+
+## 11. Cutover: upstream-core merged to main (2026-09-21)
+
+Testing on the full hardware fleet passed (Pi Zero 2W v1 + v2 2-Mic HATs,
+Orange Pi Zero 2W + XVF3800, desktop tray clients on Fedora/Nobara and
+Kali/Debian). `upstream-core` was merged into `main`.
+
+Mechanics:
+
+- `main` had 574 divergent legacy commits, so a content merge would have
+  been 244 files of hand-resolution for nothing. The cutover is a merge
+  commit whose tree is `upstream-core`'s tree, made with
+  `git merge -s ours --no-commit upstream-core && git checkout upstream-core -- .`
+  History on `main` stays continuous (the 574 legacy commits remain
+  ancestors); content becomes byte-identical to `upstream-core`.
+- `origin/upstream-core` is kept and fast-forwarded to the merge commit so
+  fleet devices whose local clones still sit on `upstream-core` (with the
+  pre-cutover updater) continue to update: the freshly fetched script
+  defaults to `main`, so the first post-cutover update self-migrates them.
+- `update_lva` default branch flipped from `upstream-core` to `main` as part
+  of the release prep (lands on `main` with the merge).
+- CI (`tests.yml`) triggers on `main` pushes and `v*` tags; it resumes
+  automatically at the cutover.
+- Release: annotated tag `v2.0.0` on the merge commit.
+
+### Post-cutover drift watch
+
+- Upstream `f20952f` (#423, "Disable button controls" peripheral switch)
+  landed 2026-09-18, unapplied at cutover. First ordinary
+  `git merge upstream/main` after the cutover. Fork in-daemon button
+  controllers are not peripheral-API clients and need explicit opt-in wiring
+  (`register_button_lock` + `button_lock_changed`) before the switch does
+  anything for them.
