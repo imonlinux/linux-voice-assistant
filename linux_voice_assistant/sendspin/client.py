@@ -36,6 +36,7 @@ from ..config import SendspinConfig
 from ..event_bus import EventBus
 from .audio_devices import AudioDevice, query_devices
 from .controller import SendspinDuckingHandler
+from .discovery import SENDSPIN_SERVER_SERVICE, discover_sendspin_servers
 from .identity import load_or_create_identity
 from .output import AudioPlayer
 
@@ -46,6 +47,8 @@ _UNPAIRED_PAIRING_WINDOW_S = 600.0
 # Reconnect backoff bounds (seconds).
 _RECONNECT_MIN_S = 1.0
 _RECONNECT_MAX_S = 60.0
+# mDNS browse window per connection attempt (pre-2.0 default).
+_MDNS_TIMEOUT_S = 2.5
 
 
 def _cfg_get(section: Any, key: str, default: Any) -> Any:
@@ -90,6 +93,8 @@ class LVASendspinClient:
         coord_cfg = _cfg_get(config, "coordination", {})
 
         self._server_url = self._resolve_server_url(connection_cfg)
+        # Endpoint actually in use this attempt (static URL or discovered).
+        self._active_url: Optional[str] = None
         self._min_buffer_ms = float(_cfg_get(player_cfg, "sync_target_latency_ms", 250))
         self._static_delay_ms = float(_cfg_get(player_cfg, "output_latency_ms", 0))
         self._buffer_capacity = int(_cfg_get(player_cfg, "buffer_capacity_bytes", 2_000_000))
@@ -136,16 +141,52 @@ class LVASendspinClient:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _resolve_server_url(connection_cfg: Any) -> str:
+    def _resolve_server_url(connection_cfg: Any) -> Optional[str]:
+        """Static endpoint from config, or None when mDNS discovery applies.
+
+        Pre-2.0 semantics: if ``server_host`` is set, discovery is bypassed;
+        otherwise ``mdns`` (default true) discovers the server at connect
+        time. Both disabled is a hard configuration error.
+        """
         host = _cfg_get(connection_cfg, "server_host", None)
         port = int(_cfg_get(connection_cfg, "server_port", 8927) or 8927)
         path = str(_cfg_get(connection_cfg, "server_path", "/sendspin") or "/sendspin")
-        if not host:
+        if host:
+            return f"ws://{host}:{port}{path}"
+        if not bool(_cfg_get(connection_cfg, "mdns", True)):
             raise ValueError(
-                "sendspin.connection.server_host is not configured; set it to the "
-                "Music Assistant server address in config.json"
+                "sendspin.connection.server_host is not configured and mdns is "
+                "disabled; set server_host to the Music Assistant server "
+                "address or enable mdns in config.json"
             )
-        return f"ws://{host}:{port}{path}"
+        return None
+
+    async def _resolve_endpoint(self) -> str:
+        """Endpoint for this connection attempt: static URL or mDNS result."""
+        if self._server_url is not None:
+            return self._server_url
+        servers = await discover_sendspin_servers(timeout_s=_MDNS_TIMEOUT_S)
+        if not servers:
+            raise ConnectionError(
+                "Sendspin: no server advertised via mDNS "
+                f"({SENDSPIN_SERVER_SERVICE}); set "
+                "sendspin.connection.server_host in config.json to skip discovery"
+            )
+        server = servers[0]
+        if len(servers) > 1:
+            _LOGGER.info(
+                "Sendspin: %s servers visible via mDNS; using the first (%s)",
+                len(servers),
+                server.instance_name,
+            )
+        _LOGGER.info(
+            "Sendspin: discovered server %s at %s:%s%s",
+            server.instance_name,
+            server.host,
+            server.port,
+            server.path,
+        )
+        return f"ws://{server.host}:{server.port}{server.path}"
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -165,7 +206,7 @@ class LVASendspinClient:
                     return
                 _LOGGER.warning(
                     "Sendspin: connection to %s failed; retrying in %.0fs",
-                    self._server_url,
+                    self._active_url or self._server_url or "mDNS discovery",
                     backoff,
                     exc_info=True,
                 )
@@ -230,8 +271,11 @@ class LVASendspinClient:
         )
         self._apply_output_volume()
 
-        _LOGGER.info("Sendspin: connecting to %s", self._server_url)
-        await client.connect(self._server_url)
+        self._active_url = None
+        url = await self._resolve_endpoint()
+        self._active_url = url
+        _LOGGER.info("Sendspin: connecting to %s", url)
+        await client.connect(url)
         self._connected = True
         self._publish_connection_state(True)
         _LOGGER.info("Sendspin: connected (client_id=%s…)", identity.peer_id[:12])
@@ -648,5 +692,5 @@ class LVASendspinClient:
     def _publish_connection_state(self, connected: bool) -> None:
         self.event_bus.publish(
             "sendspin_connection_state",
-            {"connected": connected, "endpoint": self._server_url},
+            {"connected": connected, "endpoint": self._active_url or self._server_url},
         )

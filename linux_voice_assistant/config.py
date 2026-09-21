@@ -287,11 +287,12 @@ class TrayConfig:
 class SendspinConnectionConfig:
     """Sendspin connection settings.
 
-    mode:
-      - "client_initiated": LVA discovers Sendspin servers via mDNS and connects.
-      - "server_initiated": LVA advertises itself and accepts server connections.
+    Pre-2.0 discovery semantics, restored:
+      - ``mdns`` (default true): when ``server_host`` is unset, discover the
+        Music Assistant server via mDNS (``_sendspin-server._tcp.local.``).
+      - ``server_host``: static MA server address. If you set server_host,
+        discovery is bypassed.
     """
-    mode: str = "client_initiated"
     mdns: bool = True
     server_host: Optional[str] = None
     server_port: int = 8927

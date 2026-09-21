@@ -53,15 +53,20 @@ if isinstance(sendspin, dict):
     # connection sub-section
     conn = sendspin.get("connection", {})
     if isinstance(conn, dict):
-        # server_host is required — can't set a meaningful default,
-        # but flag it if missing so the user knows to add it
+        # mdns (default true) restores discovery: server_host is optional.
+        # Warn only when BOTH are missing/disabled — the client can't connect.
         if not conn.get("server_host"):
-            print("WARNING: sendspin.connection.server_host is not set.")
-            print("  The Sendspin client cannot connect without it.")
-            print("  Add it to config.json: \"connection\": { \"server_host\": \"<MA-IP>\" }")
+            if not conn.get("mdns", True):
+                print("WARNING: sendspin.connection.server_host is not set and mdns is disabled.")
+                print("  The Sendspin client cannot connect without one of them.")
+                print("  Add it to config.json: \"connection\": { \"server_host\": \"<MA-IP>\" }")
+            else:
+                print("sendspin.connection.server_host is not set; mDNS discovery "
+                      "will locate the Music Assistant server.")
 
-        # Remove obsolete connection keys (old protocol client)
-        for key in ("mdns", "mode", "time_sync_adaptive", "time_sync_interval_seconds",
+        # Remove obsolete connection keys (old protocol client). "mdns" and
+        # "server_host" are NOT in this list — both are live settings again.
+        for key in ("mode", "time_sync_adaptive", "time_sync_interval_seconds",
                      "time_sync_min_interval_seconds", "time_sync_max_interval_seconds",
                      "time_sync_burst_size", "time_sync_burst_spacing_seconds",
                      "time_sync_burst_grace_seconds", "time_sync_burst_on_connect",

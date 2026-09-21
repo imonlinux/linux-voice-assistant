@@ -9,13 +9,9 @@
 > - **Self-updating fleet** — `script/update_lva` deploys its own freshly fetched version in place, with `--rollback` and `--branch` support, while untracked per-device data (thresholds, wake words, credentials, `config.json`) survives every update.
 
 > [!WARNING]
-> **Breaking change in 2.0 (Sendspin):** the Sendspin client was rebuilt on `aiosendspin` 9.x. The deprecated pre-encryption wire protocol and mDNS auto-discovery are gone, and the Music Assistant server address is now **required** in `config.json`:
+> **Breaking change in 2.0 (Sendspin):** the Sendspin client was rebuilt on `aiosendspin` 9.x. The deprecated pre-encryption wire protocol is gone and Python >= 3.12 is required.
 >
-> ```json
-> "sendspin": { "connection": { "server_host": "<MA-SERVER-IP>" } }
-> ```
->
-> Existing `config.json` files must add `sendspin.connection.server_host` before the client can connect. Run `script/migrate_config.py` after updating: it warns when the key is missing (it cannot guess your MA IP) and strips the other obsolete `sendspin.connection` keys. Devices without Sendspin enabled are unaffected.
+> Existing `config.json` files need no manual Sendspin edits: mDNS auto-discovery (`sendspin.connection.mdns`, default `true`) locates the Music Assistant server on the network. To pin a static address instead, set `sendspin.connection.server_host` — if you set server_host, discovery is bypassed. Run `script/migrate_config.py` after updating: it strips the obsolete `sendspin.connection` keys (the old `mdns` value is a live setting again) and warns only when both discovery is disabled and `server_host` is missing. Devices without Sendspin enabled are unaffected.
 
 > Forked from [OHF-Voice/linux-voice-assistant][ohf-voice] Release v1.0.0.
 >

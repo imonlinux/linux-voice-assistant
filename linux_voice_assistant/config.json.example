@@ -256,9 +256,13 @@
     },
 
     "connection": {
-      // REQUIRED: Music Assistant server address (discovery is not
-      // supported by the current protocol client).
-      "server_host": "192.168.0.100",
+      // mDNS discovery (default true): find the Music Assistant server
+      // automatically on the network (_sendspin-server._tcp.local.).
+      "mdns": true,
+
+      // Optional: static MA server address. If you set server_host,
+      // discovery is bypassed.
+      // "server_host": "192.168.0.100",
 
       // Optional: port and path (defaults: 8927, "/sendspin")
       "server_port": 8927,

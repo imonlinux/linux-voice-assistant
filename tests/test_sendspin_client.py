@@ -6,7 +6,7 @@ pytest.importorskip("aiosendspin", reason="sendspin extra not installed")
 
 import asyncio
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -53,10 +53,95 @@ def test_server_url_from_config(tmp_path: Path) -> None:
     assert client._server_url == "ws://192.168.0.100:8927/sendspin"
 
 
-def test_server_url_requires_host(tmp_path: Path) -> None:
-    """A missing server_host fails fast at construction with a clear error."""
-    with pytest.raises(ValueError, match="server_host"):
-        make_client(tmp_path, SendspinConfig(enabled=True), EventBus())
+def test_server_url_unset_with_mdns_defers_to_discovery(tmp_path: Path) -> None:
+    """No server_host + mdns (default true): resolve at connect time."""
+    from linux_voice_assistant.config import SendspinConnectionConfig
+
+    sendspin = SendspinConfig(enabled=True, connection=SendspinConnectionConfig())
+    client = make_client(tmp_path, sendspin, EventBus())
+    assert client._server_url is None
+
+
+def test_server_url_requires_host_when_mdns_disabled(tmp_path: Path) -> None:
+    """Discovery off and no static host is a hard configuration error."""
+    from linux_voice_assistant.config import SendspinConnectionConfig
+
+    with pytest.raises(ValueError, match="mdns"):
+        make_client(
+            tmp_path,
+            SendspinConfig(
+                enabled=True, connection=SendspinConnectionConfig(mdns=False)
+            ),
+            EventBus(),
+        )
+
+
+async def test_resolve_endpoint_uses_mdns_result(tmp_path: Path) -> None:
+    """Discovery feeds the ws:// endpoint when no static host is set."""
+    from linux_voice_assistant.config import SendspinConnectionConfig
+    from linux_voice_assistant.sendspin.discovery import DiscoveredSendspinServer
+
+    sendspin = SendspinConfig(enabled=True, connection=SendspinConnectionConfig())
+    client = make_client(tmp_path, sendspin, EventBus())
+
+    async def fake_discover(timeout_s: float = 2.5):
+        return [
+            DiscoveredSendspinServer(
+                instance_name="MA Server._sendspin-server._tcp.local.",
+                host="192.168.0.7",
+                port=8927,
+                path="/sendspin",
+            )
+        ]
+
+    with patch(
+        "linux_voice_assistant.sendspin.client.discover_sendspin_servers",
+        fake_discover,
+    ):
+        assert await client._resolve_endpoint() == "ws://192.168.0.7:8927/sendspin"
+
+
+async def test_resolve_endpoint_raises_when_discovery_finds_nothing(
+    tmp_path: Path,
+) -> None:
+    """An empty browse result surfaces as ConnectionError (reconnect retries)."""
+    from linux_voice_assistant.config import SendspinConnectionConfig
+
+    sendspin = SendspinConfig(enabled=True, connection=SendspinConnectionConfig())
+    client = make_client(tmp_path, sendspin, EventBus())
+
+    async def fake_discover(timeout_s: float = 2.5):
+        return []
+
+    with patch(
+        "linux_voice_assistant.sendspin.client.discover_sendspin_servers",
+        fake_discover,
+    ):
+        with pytest.raises(ConnectionError, match="mDNS"):
+            await client._resolve_endpoint()
+
+
+async def test_resolve_endpoint_static_host_bypasses_discovery(
+    tmp_path: Path,
+) -> None:
+    """If you set server_host, discovery is bypassed (pre-2.0 semantics)."""
+    from linux_voice_assistant.config import SendspinConnectionConfig
+    from linux_voice_assistant.sendspin.discovery import DiscoveredSendspinServer
+
+    sendspin = SendspinConfig(
+        enabled=True,
+        connection=SendspinConnectionConfig(server_host="10.0.0.5"),
+    )
+    client = make_client(tmp_path, sendspin, EventBus())
+
+    async def fake_discover(timeout_s: float = 2.5):
+        raise AssertionError("discovery must not run when server_host is set")
+
+    with patch(
+        "linux_voice_assistant.sendspin.client.discover_sendspin_servers",
+        fake_discover,
+    ):
+        assert await client._resolve_endpoint() == "ws://10.0.0.5:8927/sendspin"
 
 
 def test_ducking_updates_output_gain(tmp_path: Path) -> None:

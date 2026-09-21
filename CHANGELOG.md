@@ -1,3 +1,13 @@
+## Unreleased
+
+### Added
+
+- Sendspin: mDNS server auto-discovery restored with pre-2.0 config semantics — `sendspin.connection.mdns` (default `true`) browses `_sendspin-server._tcp.local.` when `sendspin.connection.server_host` is unset; setting `server_host` bypasses discovery. Existing `config.json` files that carried `mdns` need no migration (the migration script no longer strips it). Discovery re-runs on every reconnect, so a moved MA server is picked up without a restart.
+
+### Changed
+
+- `sendspin.connection`: the stale `mode` key is no longer accepted as a setting (server-initiated connections do not exist in the aiosendspin client); unknown keys already log and are ignored.
+
 <a id="v2.0.0"></a>
 # [v2.0.0](https://github.com/imonlinux/linux-voice-assistant/releases/tag/v2.0.0) - 2026-09-21
 
