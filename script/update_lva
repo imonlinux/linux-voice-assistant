@@ -5,6 +5,7 @@
 # Usage:
 #   bash ~/linux-voice-assistant/script/update_lva [options] [setup flags]
 #   e.g. bash ~/linux-voice-assistant/script/update_lva --sendspin --tray
+#   (invoking via `sh` also works: the script re-execs itself under bash)
 #
 # How it works:
 #   1. Sanity-checks that this directory is the LVA clone with a clean
@@ -38,6 +39,12 @@
 #   bash ~/linux-voice-assistant/script/update_lva --rollback
 # Roll forward again later by running a normal update.
 
+# Invoked via `sh`? POSIX sh (dash on Debian/RPi OS) cannot parse the bash
+# arrays and `set -o pipefail` below — hand the script to bash instead.
+if [ -z "${BASH_VERSION:-}" ]; then
+    exec bash "$0" "$@"
+fi
+
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -60,7 +67,7 @@ ROLLBACK=0
 SKIP_FETCH=0
 SETUP_ARGS=()
 
-usage() { sed -n '2,39p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'; }
 
 while [ $# -gt 0 ]; do
     case "$1" in
