@@ -10,6 +10,10 @@
 - Documentation: the README breaking-change warning is gone (mDNS discovery removed the need for it); the Sendspin docs now lead with the recommended setup — `enabled: true` plus `pairing.voice_engine: "piper"` for the spoken PIN announcement.
 - `sendspin.connection`: the stale `mode` key is no longer accepted as a setting (server-initiated connections do not exist in the aiosendspin client); unknown keys already log and are ignored.
 
+### Fixed
+
+- `update_lva` no longer crashes with `Syntax error: "(" unexpected` when invoked via `sh` (dash on Debian/RPi OS cannot parse the script's bash arrays). The script now re-execs itself under bash when `BASH_VERSION` is unset, so `sh script/update_lva`, `./script/update_lva`, and `bash script/update_lva` all work.
+
 <a id="v2.0.0"></a>
 # [v2.0.0](https://github.com/imonlinux/linux-voice-assistant/releases/tag/v2.0.0) - 2026-09-21
 
