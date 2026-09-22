@@ -198,7 +198,7 @@ fi
 if aplay -l 2>/dev/null | grep -q seeed2micvoicec; then
   echo "Card already registered; restoring mixer state."
   alsactl restore 2>/dev/null || true
-elif command -v dtoverlay >/dev/null 2>&1 && dtoverlay -d "${overlays_dir}" seeed-2mic-voicecard 2>/dev/null; then
+elif command -v dtoverlay >/dev/null 2>&1 && dtoverlay -d "${overlays_dir}" "${overlay_name}" 2>/dev/null; then
   sleep 2
   if aplay -l 2>/dev/null | grep -q seeed2micvoicec; then
     echo "Card registered live; no reboot needed. Restoring mixer state."

@@ -13,6 +13,7 @@
 ### Fixed
 
 - `update_lva` no longer crashes with `Syntax error: "(" unexpected` when invoked via `sh` (dash on Debian/RPi OS cannot parse the script's bash arrays). The script now re-execs itself under bash when `BASH_VERSION` is unset, so `sh script/update_lva`, `./script/update_lva`, and `bash script/update_lva` all work.
+- ReSpeaker 2-Mic installer: the bring-up-without-reboot path applied the v1 overlay regardless of the detected HAT revision, so a v2 board always ended with "please reboot" even when a live apply would have registered the card. The live apply now uses the detected revision's overlay. Devices that already rebooted are unaffected (the config.txt entry was always correct).
 
 <a id="v2.0.0"></a>
 # [v2.0.0](https://github.com/imonlinux/linux-voice-assistant/releases/tag/v2.0.0) - 2026-09-21
