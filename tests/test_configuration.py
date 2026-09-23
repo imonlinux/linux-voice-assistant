@@ -315,6 +315,66 @@ class TestConfigIntegration:
         finally:
             temp_path.unlink(missing_ok=True)
 
+    def test_config_with_mqtt_explicitly_disabled(self):
+        """Explicit enabled=false wins even when mqtt.host is set.
+
+        Regression: the loader used to force enabled=True whenever host
+        was present, silently restarting MQTT on configs that disabled it.
+        """
+        config_data = {
+            "app": {"name": "test"},
+            "mqtt": {
+                "enabled": False,
+                "host": "localhost",
+                "port": 1883,
+            }
+        }
+
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            temp_path = Path(f.name)
+            json.dump(config_data, f)
+
+        try:
+            config = load_config_from_json(temp_path)
+            assert config.mqtt.enabled == False
+            assert config.mqtt.host == "localhost"
+        finally:
+            temp_path.unlink(missing_ok=True)
+
+    def test_config_with_mqtt_host_implies_enabled_when_flag_omitted(self):
+        """Host set + no enabled key still enables MQTT (tray back-compat)."""
+        config_data = {
+            "app": {"name": "test"},
+            "mqtt": {
+                "host": "localhost",
+                "port": 1883,
+            }
+        }
+
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            temp_path = Path(f.name)
+            json.dump(config_data, f)
+
+        try:
+            config = load_config_from_json(temp_path)
+            assert config.mqtt.enabled == True
+        finally:
+            temp_path.unlink(missing_ok=True)
+
+    def test_config_with_mqtt_absent_stays_disabled(self):
+        """No mqtt section at all: disabled, even though defaults are None-host."""
+        config_data = {"app": {"name": "test"}}
+
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            temp_path = Path(f.name)
+            json.dump(config_data, f)
+
+        try:
+            config = load_config_from_json(temp_path)
+            assert config.mqtt.enabled == False
+        finally:
+            temp_path.unlink(missing_ok=True)
+
     def test_config_with_button_enabled(self):
         """Test configuration with button enabled."""
         config_data = {

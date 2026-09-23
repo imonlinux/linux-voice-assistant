@@ -664,8 +664,10 @@ def load_config_from_json(config_path: Path) -> Config:
         except Exception:
             pass
 
-    # Set MQTT 'enabled' flag
-    if mqtt_config.host:
+    # Back-compat: a config that sets mqtt.host but omits the enabled flag
+    # gets enabled=True (tray-era convenience). An explicit enabled=false
+    # always wins — host presence alone must not re-enable MQTT.
+    if mqtt_config.host and "enabled" not in raw_data.get("mqtt", {}):
         mqtt_config.enabled = True
 
     return Config(
