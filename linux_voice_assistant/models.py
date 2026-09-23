@@ -187,6 +187,14 @@ class ServerState:
     # events can be routed back to the right peripheral hardware.
     led_light_entities: "Dict[str, LEDLightEntity]" = field(default_factory=dict)
 
+    # Fork (retire_mqtt groundwork): native per-state LED lights for the
+    # in-daemon LED controller. led_ha_entities_enabled is set from
+    # config.led.ha_entities in _init_fork_controllers; the entities map
+    # mirrors led_light_entities so reattachment after an HA reconnect
+    # follows the same pattern.
+    led_ha_entities_enabled: bool = False
+    led_state_light_entities: "Dict[str, Any]" = field(default_factory=dict)
+
     # True once a peripheral sends register_button. Gates creation of
     # ButtonEventSensorEntity so the HA device page only shows the button
     # entity when hardware that actually supports button presses is present.

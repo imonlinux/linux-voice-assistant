@@ -65,6 +65,7 @@ from .entity import (
     WakeWord1SensitivityNumberEntity,
     WakeWord2SensitivityNumberEntity,
 )
+from .led_light_entities import LED_STATES as _LED_STATES, LedStateLightEntity
 from .models import AvailableWakeWord, ServerState, WakeWordType
 from .peripheral_api import LVAEvent
 from .util import call_all
@@ -446,6 +447,11 @@ class VoiceSatelliteProtocol(APIServer):
         # command (see register_pending_button below), mirroring the same
         # opt-in pattern used by register_light for LEDLightEntity.
 
+        # Fork (retire_mqtt groundwork): native per-state LED lights for
+        # the in-daemon LED controller, before peripheral lights so keys
+        # stay stable across boots where both exist.
+        self.register_native_led_lights()
+
         # Materialise the Light entities peripherals registered before
         # this satellite was constructed (or reattach existing ones).
         self.register_pending_lights()
@@ -533,6 +539,42 @@ class VoiceSatelliteProtocol(APIServer):
                 self.state.event_bus.publish("mic_muted" if muted else "mic_unmuted")
         except Exception:  # pylint: disable=broad-except
             _LOGGER.exception("Failed to publish %s to event bus", event)
+
+    def register_native_led_lights(self) -> None:
+        """Fork (retire_mqtt groundwork): materialise per-state LED lights.
+
+        One native Light entity per configurable LED state (idle,
+        listening, thinking, responding, error), translating HA light
+        commands into the EventBus topics LedController consumes. Gated
+        by config.led.ha_entities so MQTT-only deployments are untouched.
+        Idempotent across HA reconnects, mirroring register_pending_lights.
+        """
+        if not getattr(self.state, "led_ha_entities_enabled", False):
+            return
+
+        led_controller = getattr(self.state, "led_controller", None)
+        configs = getattr(led_controller, "configs", None) or {}
+
+        for state_name in _LED_STATES:
+            existing = self.state.led_state_light_entities.get(state_name)
+            if existing is not None:
+                # Reattach to the current satellite (HA reconnect).
+                existing.server = self
+                if existing not in self.state.entities:
+                    self.state.entities.append(existing)
+                continue
+
+            entity = LedStateLightEntity(
+                server=self,
+                key=len(self.state.entities),
+                state_name=state_name,
+                event_bus=self.state.event_bus,
+                initial=configs.get(state_name),
+            )
+            entity.subscribe_state_sync()
+            self.state.entities.append(entity)
+            self.state.led_state_light_entities[state_name] = entity
+            _LOGGER.debug("Native LED light registered for state '%s'", state_name)
 
     def register_pending_lights(self) -> None:
         """Materialise LightEntities for peripheral registered lights.

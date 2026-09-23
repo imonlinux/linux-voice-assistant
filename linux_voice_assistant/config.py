@@ -223,6 +223,11 @@ class LedConfig:
     """Settings for LEDs."""
     enabled: bool = True
 
+    # Fork (retire_mqtt groundwork): expose the in-daemon LED states to
+    # Home Assistant as native ESPHome Light entities instead of (or
+    # alongside) MQTT discovery. MQTT remains available independently.
+    ha_entities: bool = True
+
     # Supported values include:
     # - "dotstar" / "neopixel" for Pi-attached LED strips
     # - "xvf3800" for the ReSpeaker XVF3800 USB LED ring backend

@@ -342,6 +342,11 @@ def _init_fork_controllers(
     preferences = state.preferences
 
     # LED controller (DotStar/NeoPixel SPI/GPIO or XVF3800 USB backend)
+    # Fork (retire_mqtt groundwork): gate the native per-state HA lights
+    # on config.led.ha_entities, independent of whether the controller
+    # itself initialized (entity states fall back to defaults when it
+    # did not, and HA commands still flow into the EventBus).
+    state.led_ha_entities_enabled = bool(getattr(config.led, "ha_entities", True))  # type: ignore[attr-defined]
     try:
         led_controller = LedController(
             loop=loop,
