@@ -3,6 +3,7 @@
 > [!IMPORTANT]
 > **Major advancements in this fork**
 >
+> - **Native ESPHome LED controls** — each voice state (Idle, Listening, Thinking, Responding, Error) is now a full `light` entity on the Home Assistant device page with per-state effect, color, and brightness. LED control no longer requires MQTT; the MQTT-discovery LED entities remain available when MQTT is enabled.
 > - **Kernel-independent ReSpeaker 2-Mic HAT (v1 and v2) audio** — mainline kernel drivers via a device-tree overlay, with the installer auto-detecting the HAT revision (v1 WM8960, v2 TLV320AIC3104). No DKMS, no kernel headers, works on any kernel >= 5.4, and kernel upgrades can no longer break audio. Legacy DKMS installs upgrade in place, keeping the same ALSA card ID. ([2-Mic install guide](docs/linux-voice-assistant-2mic-install.md))
 > - **Re-founded on the upstream core** — the upstream architecture (`satellite.py`, `entity.py`, `player/`, peripheral API) is used as-is and the fork's differentiating features are add-on modules, so upstream releases merge cleanly again. ([docs/RESYNC_PLAN.md](docs/RESYNC_PLAN.md))
 > - **Sendspin rebuilt on `aiosendspin` 9.x** — the deprecated pre-encryption wire protocol is gone; encrypted pairing with a PIN spoken through the speaker (Piper), persistent player identity, Music Assistant multiroom.
@@ -71,6 +72,7 @@ All voice/audio controls appear on the HA device page via the native ESPHome API
 | Alarm Duration | `number` |
 | Wake Word 1/2 & Stop Word Sensitivity | `number` ×3 |
 | Mic Auto Gain / Noise Suppression / Volume | `number`/`select` |
+| LED State Lights (Idle/Listening/Thinking/Responding/Error) | `light` ×5 |
 
 ### MQTT Device Controls
 
@@ -84,7 +86,7 @@ When MQTT is enabled, *(See Section 5 of [the tutorial](docs/linux-voice-assista
 
 *LED states: Idle, Listening, Thinking, Responding, Error. Available effects: Off, Solid, Slow/Medium/Fast Pulse, Slow/Medium/Fast Blink, Spin*
 
-> **Note:** MQTT is only needed for LED controls and the desktop tray client (which mirrors state over MQTT). Everything else lives on the ESPHome device page.
+> **Note:** LED controls have moved to the native ESPHome device page (see above) — MQTT is no longer required for them. The MQTT-discovery LED entities are still published when MQTT is enabled for backward compatibility. MQTT is now only **required** for the desktop tray client (which mirrors state over MQTT).
 
 <img width="515" height="1033" alt="image" src="https://github.com/user-attachments/assets/cfc9e462-b301-4323-a3d8-5bab0322a548" />
 
@@ -302,6 +304,7 @@ linux-voice-assistant/
 │   ├── event_bus.py                            # Publish/subscribe event system
 │   ├── __init__.py
 │   ├── led_controller.py                        # LED effects and state mapping
+│   ├── led_light_entities.py           # Native per-state ESPHome LED light entities
 │   ├── __main__.py                                # Application entry point
 │   ├── microwakeword.py                            # Micro wake word detection module
 │   ├── models.py                                # Shared state and data models
@@ -360,10 +363,11 @@ linux-voice-assistant/
 │   │   └── timer_finished.flac
 │   └── wakeup                                    # Wake word triggered sounds
 │       └── wake_word_triggered.flac
-├── tests                                              # Test suite (625 passing: upstream unit + fork tests)
+├── tests                                              # Test suite (680 passing: upstream unit + fork tests)
 │   ├── conftest.py                                    # Shared pytest fixtures
 │   ├── unit/                                          # Upstream core unit tests (satellite, entity,
-│   │                                                  #   wake word, player, peripheral API, zeroconf…)
+│   │                                                  #   wake word, player, peripheral API, zeroconf,
+│   │                                                  #   LED state lights…)
 │   ├── test_button_controller.py                      # Button controller tests
 │   ├── test_configuration.py                          # Configuration management tests
 │   ├── test_event_bus.py                              # Event system architecture tests
@@ -463,7 +467,7 @@ pytest tests/ -m "not hardware"
 
 ### Current Test Status
 
-- **Total**: 625 passing, 1 skipped (timing-dependent threading test) with all install extras present; Sendspin and tray tests skip gracefully when their extras aren't installed
+- **Total**: 680 passing, 1 skipped (timing-dependent threading test) with all install extras present; Sendspin and tray tests skip gracefully when their extras aren't installed
 - **Coverage**: upstream core unit tests (`tests/unit/`) + fork subsystem tests
 - **Sendspin tests** skip gracefully when the sendspin extra isn't installed
 - **Framework**: pytest with asyncio, mock, and coverage support (Python 3.12+ for the full suite)

@@ -2,6 +2,7 @@
 
 ### Added
 
+- **Native per-state LED lights on the ESPHome device page** — each voice state (Idle, Listening, Thinking, Responding, Error) is now a full `light` entity with per-state effect, color, and brightness, translated to the LED controller over the same EventBus topics MQTT used. LED control no longer requires MQTT; the MQTT-discovery LED entities are still published when MQTT is enabled, and both control surfaces stay in sync device-side. A config gate (`led.ha_entities`, default `true`) turns the entities off if needed. Color and brightness are fully independent (the entity speaks HA's api >= 1.6 `color_brightness` convention), which also fixes the color wheel and the brightness slider fighting each other below 100% brightness.
 - Sendspin: mDNS server auto-discovery restored with pre-2.0 config semantics — `sendspin.connection.mdns` (default `true`) browses `_sendspin-server._tcp.local.` when `sendspin.connection.server_host` is unset; setting `server_host` bypasses discovery. Existing `config.json` files that carried `mdns` need no migration (the migration script no longer strips it). Discovery re-runs on every reconnect, so a moved MA server is picked up without a restart.
 
 ### Changed
@@ -12,6 +13,8 @@
 
 ### Fixed
 
+- **LED startup blink ran forever.** The boot blink animation was awaited unboundedly, and with MQTT disabled nothing cancelled it, so the ring kept flashing green until the first voice event. The blink is now bounded (about two flashes) and the ring settles into the configured idle state.
+- `mqtt.enabled: false` is now respected even when `mqtt.host` is set. Previously the loader treated a configured host as an implicit enable, so a device could not be switched off without also clearing the host.
 - `update_lva` no longer crashes with `Syntax error: "(" unexpected` when invoked via `sh` (dash on Debian/RPi OS cannot parse the script's bash arrays). The script now re-execs itself under bash when `BASH_VERSION` is unset, so `sh script/update_lva`, `./script/update_lva`, and `bash script/update_lva` all work.
 - ReSpeaker 2-Mic installer: the bring-up-without-reboot path applied the v1 overlay regardless of the detected HAT revision, so a v2 board always ended with "please reboot" even when a live apply would have registered the card. The live apply now uses the detected revision's overlay. Devices that already rebooted are unaffected (the config.txt entry was always correct).
 - ReSpeaker 2-Mic installer: on a fresh image I2C is disabled, so the HAT probe always failed with a misleading "no HAT found — is it seated?". The installer now enables I2C before probing — `dtparam=i2c_arm=on` in config.txt for the next boot, a live `dtparam i2c_arm=on` / `i2s=on` for the current session, and `i2c-dev` in `/etc/modules` (the same three steps raspi-config performs) — and only if the bus still cannot be created exits with a distinct "no I2C bus" error and reboot instructions.
