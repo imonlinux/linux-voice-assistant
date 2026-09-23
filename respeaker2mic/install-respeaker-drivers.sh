@@ -72,8 +72,25 @@ if [ "$(printf '%s\n' 5.4 "${kernel_major_minor}" | sort -V | head -1)" != "5.4"
 fi
 
 echo "Checking for the HAT on i2c bus 1..."
-modprobe i2c-dev 2>/dev/null || true
 apt-get install --no-install-recommends --yes i2c-tools
+
+# I2C is off by default on a fresh image. Enable it BEFORE probing: config.txt
+# entry for the next boot, live dtparam for this session, i2c-dev for the
+# /dev/i2c-* character devices (raspi-config does the same three things).
+touch "${config}"
+grep -q "^dtparam=i2c_arm=on" "${config}" || echo "dtparam=i2c_arm=on" >> "${config}"
+grep -qx "i2c-dev" /etc/modules 2>/dev/null || echo "i2c-dev" >> /etc/modules
+modprobe i2c-dev 2>/dev/null || true
+if command -v dtparam >/dev/null 2>&1; then
+  [ -e /dev/i2c-1 ] || dtparam i2c_arm=on 2>/dev/null || true
+  dtparam i2s=on 2>/dev/null || true
+fi
+if [ ! -e /dev/i2c-1 ]; then
+  echo "ERROR: no I2C bus on this system (/dev/i2c-1 is missing)."
+  echo "       dtparam=i2c_arm=on was added to ${config}; reboot and re-run"
+  echo "       this script, and check that the HAT is seated."
+  exit 1
+fi
 v1_found=0
 v2_found=0
 if i2cdetect -y -r 1 0x1a 0x1a 2>/dev/null | grep -qE "(^|[[:space:]])(1a|UU)"; then

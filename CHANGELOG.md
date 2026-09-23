@@ -14,6 +14,7 @@
 
 - `update_lva` no longer crashes with `Syntax error: "(" unexpected` when invoked via `sh` (dash on Debian/RPi OS cannot parse the script's bash arrays). The script now re-execs itself under bash when `BASH_VERSION` is unset, so `sh script/update_lva`, `./script/update_lva`, and `bash script/update_lva` all work.
 - ReSpeaker 2-Mic installer: the bring-up-without-reboot path applied the v1 overlay regardless of the detected HAT revision, so a v2 board always ended with "please reboot" even when a live apply would have registered the card. The live apply now uses the detected revision's overlay. Devices that already rebooted are unaffected (the config.txt entry was always correct).
+- ReSpeaker 2-Mic installer: on a fresh image I2C is disabled, so the HAT probe always failed with a misleading "no HAT found — is it seated?". The installer now enables I2C before probing — `dtparam=i2c_arm=on` in config.txt for the next boot, a live `dtparam i2c_arm=on` / `i2s=on` for the current session, and `i2c-dev` in `/etc/modules` (the same three steps raspi-config performs) — and only if the bus still cannot be created exits with a distinct "no I2C bus" error and reboot instructions.
 
 <a id="v2.0.0"></a>
 # [v2.0.0](https://github.com/imonlinux/linux-voice-assistant/releases/tag/v2.0.0) - 2026-09-21
