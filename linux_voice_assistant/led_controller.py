@@ -365,10 +365,28 @@ class LedController(EventHandler):
         self._xvf3800_backend.clear_ring()
 
     async def startup_sequence(self, color=None, brightness=None):
-        # Use a simple green blink on startup for all backends.
-        await self.blink(_GREEN, 1.0)
-        # After startup blink, explicitly apply idle state to prevent
-        # XVF3800 firmware from re-enabling DOA effects
+        """Green boot blink, then settle into the configured idle state.
+
+        The blink must be finite: voice_idle is not emitted at boot, so
+        with MQTT disabled nothing replays a retained idle config to
+        cancel an unbounded blink and the ring would flash green until
+        the first voice event.
+
+        A real action arriving during the blink cancels this task, but
+        the cancellation may surface either as CancelledError here or be
+        swallowed downstream (the blink handlers catch CancelledError to
+        blank the ring, and wait_for can then report a normal return), so
+        after the blink a pending-cancel check decides whether idle is
+        applied at all: the newer action owns the ring.
+        """
+        try:
+            await asyncio.wait_for(self.blink(_GREEN, 1.0), timeout=1.2)
+        except asyncio.CancelledError:
+            return
+        except asyncio.TimeoutError:
+            pass  # Expected: the blink is bounded by design.
+        if asyncio.current_task().cancelling():
+            return
         self._apply_state_effect("idle", publish_state=False)
 
 

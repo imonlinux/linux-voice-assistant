@@ -410,5 +410,104 @@ class TestLedControllerMqttIntegration:
         assert minimal_controller.num_leds == new_led_count
 
 
+class TestStartupSequence:
+    """Startup blink must be bounded and settle into the idle state.
+
+    Regression guard (retire_mqtt stage 2): with MQTT disabled there is
+    no retained-config bootstrap to cancel the startup blink, and no
+    voice_idle fires at boot, so an unbounded green blink used to run
+    from boot until the first voice event.
+    """
+
+    @pytest.fixture
+    def event_loop(self):
+        """Create event loop."""
+        loop = asyncio.new_event_loop()
+        yield loop
+        loop.close()
+
+    @pytest.fixture
+    def event_bus(self):
+        """Create EventBus."""
+        return EventBus()
+
+    @pytest.fixture
+    def hw_controller(self, event_loop, event_bus):
+        """Controller with a fake pixel backend (hardware path enabled)."""
+        config = LedConfig(
+            led_type="dotstar",
+            interface="spi",
+            clock_pin=11,
+            data_pin=10,
+            num_leds=12,
+        )
+        prefs = Preferences(num_leds=12)
+        controller = LedController(
+            loop=event_loop,
+            event_bus=event_bus,
+            config=config,
+            preferences=prefs,
+        )
+        controller._enabled = True
+        controller._is_ready = True
+        controller.leds = MagicMock()
+        return controller
+
+    @pytest.mark.asyncio
+    async def test_startup_sequence_completes_and_applies_idle(self, hw_controller):
+        """The sequence returns on its own and settles into idle."""
+        with patch.object(hw_controller, "run_action") as mock_run:
+            await asyncio.wait_for(hw_controller.startup_sequence(), timeout=5.0)
+
+        # Idle settle was requested (idle default: off, purple, 0.5).
+        mock_run.assert_called_once_with("off", (128, 0, 255), 0.5)
+        # The blink ran against the fake pixels (green at full brightness).
+        fills = [c.args[0] for c in hw_controller.leds.fill.call_args_list]
+        assert (0, 255, 0) in fills
+
+    @pytest.mark.asyncio
+    async def test_startup_sequence_cancelled_does_not_stomp_new_action(
+        self, hw_controller
+    ):
+        """A real action during the blink owns the ring; no idle re-apply.
+
+        The blink handlers swallow CancelledError (to blank the ring), and
+        wait_for can then report a normal return, so the sequence must
+        notice the pending cancellation itself.
+        """
+        with patch.object(hw_controller, "run_action") as mock_run:
+            task = asyncio.ensure_future(hw_controller.startup_sequence())
+            await asyncio.sleep(0.05)  # Let it enter the blink loop.
+            task.cancel()
+            await task  # Must not raise, and must finish fast (not at timeout).
+
+            # The cancelling action keeps the ring: idle was never applied.
+            mock_run.assert_not_called()
+            assert asyncio.current_task().cancelling() == 0  # test task unaffected
+
+    @pytest.mark.asyncio
+    async def test_startup_sequence_disabled_hardware_is_noop(self, event_loop, event_bus):
+        """Without ready hardware the sequence completes and writes no pixels."""
+        config = LedConfig(
+            led_type="dotstar",
+            interface="spi",
+            clock_pin=11,
+            data_pin=10,
+            num_leds=12,
+        )
+        controller = LedController(
+            loop=event_loop,
+            event_bus=event_bus,
+            config=config,
+            preferences=Preferences(num_leds=12),
+        )
+        # Mirror the failed hardware-init state from __init__ (board or
+        # driver unavailable): enabled flag kept, ready flag cleared.
+        controller._is_ready = False
+
+        await asyncio.wait_for(controller.startup_sequence(), timeout=5.0)
+        assert controller.leds is None
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
