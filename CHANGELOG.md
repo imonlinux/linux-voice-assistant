@@ -1,23 +1,35 @@
-## Unreleased
+<a id="v2.1.0"></a>
+# [2.1.0 — Native ESPHome LED lights (v2.1.0)](https://github.com/imonlinux/linux-voice-assistant/releases/tag/v2.1.0) - 2026-09-23
 
-### Added
+## Native per-state LED lights (MQTT no longer required)
 
-- **Native per-state LED lights on the ESPHome device page** — each voice state (Idle, Listening, Thinking, Responding, Error) is now a full `light` entity with per-state effect, color, and brightness, translated to the LED controller over the same EventBus topics MQTT used. LED control no longer requires MQTT; the MQTT-discovery LED entities are still published when MQTT is enabled, and both control surfaces stay in sync device-side. A config gate (`led.ha_entities`, default `true`) turns the entities off if needed. Color and brightness are fully independent (the entity speaks HA's api >= 1.6 `color_brightness` convention), which also fixes the color wheel and the brightness slider fighting each other below 100% brightness.
-- Sendspin: mDNS server auto-discovery restored with pre-2.0 config semantics — `sendspin.connection.mdns` (default `true`) browses `_sendspin-server._tcp.local.` when `sendspin.connection.server_host` is unset; setting `server_host` bypasses discovery. Existing `config.json` files that carried `mdns` need no migration (the migration script no longer strips it). Discovery re-runs on every reconnect, so a moved MA server is picked up without a restart.
+Each voice state — Idle, Listening, Thinking, Responding, Error — is now a full `light` entity on the Home Assistant device page with per-state effect, color, and brightness, translated to the LED controller over the same EventBus topics MQTT used. LED control no longer requires MQTT; the MQTT-discovery LED entities are still published when MQTT is enabled, and both control surfaces stay in sync device-side. A config gate (`led.ha_entities`, default `true`) turns the entities off if needed.
 
-### Changed
+Color and brightness are fully independent: the entities speak HA's api >= 1.6 `color_brightness` convention, fixing the color wheel and the brightness slider fighting each other below 100% brightness.
+
+## Sendspin
+
+- mDNS server auto-discovery restored with pre-2.0 config semantics — `sendspin.connection.mdns` (default `true`) browses `_sendspin-server._tcp.local.` when `sendspin.connection.server_host` is unset; setting `server_host` bypasses discovery. Existing `config.json` files that carried `mdns` need no migration (the migration script no longer strips it). Discovery re-runs on every reconnect, so a moved Music Assistant server is picked up without a restart.
+
+## Changed
 
 - `update_lva` now remembers the last-used setup flags (`--sendspin`, `--tray`, `--dev`) in `.lva-setup-flags` and reuses them when an update runs without flags. Previously a bare `update_lva` rebuilt the venv without the extras — silently dropping the Sendspin client (and piper-tts with it) after every update. Explicit flags on any update replace the remembered set.
+- `sendspin.connection`: the stale `mode` key is no longer accepted as a setting (server-initiated connections do not exist in the aiosendspin client); unknown keys log and are ignored.
 - Documentation: the README breaking-change warning is gone (mDNS discovery removed the need for it); the Sendspin docs now lead with the recommended setup — `enabled: true` plus `pairing.voice_engine: "piper"` for the spoken PIN announcement.
-- `sendspin.connection`: the stale `mode` key is no longer accepted as a setting (server-initiated connections do not exist in the aiosendspin client); unknown keys already log and are ignored.
 
-### Fixed
+## Fixed
 
 - **LED startup blink ran forever.** The boot blink animation was awaited unboundedly, and with MQTT disabled nothing cancelled it, so the ring kept flashing green until the first voice event. The blink is now bounded (about two flashes) and the ring settles into the configured idle state.
 - `mqtt.enabled: false` is now respected even when `mqtt.host` is set. Previously the loader treated a configured host as an implicit enable, so a device could not be switched off without also clearing the host.
-- `update_lva` no longer crashes with `Syntax error: "(" unexpected` when invoked via `sh` (dash on Debian/RPi OS cannot parse the script's bash arrays). The script now re-execs itself under bash when `BASH_VERSION` is unset, so `sh script/update_lva`, `./script/update_lva`, and `bash script/update_lva` all work.
-- ReSpeaker 2-Mic installer: the bring-up-without-reboot path applied the v1 overlay regardless of the detected HAT revision, so a v2 board always ended with "please reboot" even when a live apply would have registered the card. The live apply now uses the detected revision's overlay. Devices that already rebooted are unaffected (the config.txt entry was always correct).
-- ReSpeaker 2-Mic installer: on a fresh image I2C is disabled, so the HAT probe always failed with a misleading "no HAT found — is it seated?". The installer now enables I2C before probing — `dtparam=i2c_arm=on` in config.txt for the next boot, a live `dtparam i2c_arm=on` / `i2s=on` for the current session, and `i2c-dev` in `/etc/modules` (the same three steps raspi-config performs) — and only if the bus still cannot be created exits with a distinct "no I2C bus" error and reboot instructions.
+- `update_lva` no longer crashes with `Syntax error: "(" unexpected` when invoked via `sh` (dash on Debian/RPi OS cannot parse the script's bash arrays). The script re-execs itself under bash when `BASH_VERSION` is unset, so `sh script/update_lva`, `./script/update_lva`, and `bash script/update_lva` all work.
+- ReSpeaker 2-Mic installer: the bring-up-without-reboot path applied the v1 overlay regardless of the detected HAT revision, so a v2 board always ended with "please reboot" even when a live apply would have registered the card. The live apply now uses the detected revision's overlay.
+- ReSpeaker 2-Mic installer: on a fresh image I2C is disabled, so the HAT probe always failed with a misleading "no HAT found". The installer now enables I2C before probing (`dtparam=i2c_arm=on`, live `dtparam i2c_arm=on` / `i2s=on`, `i2c-dev` in `/etc/modules`) and only exits with a distinct "no I2C bus" error and reboot instructions if the bus still cannot be created.
+
+**Full changelog**: https://github.com/imonlinux/linux-voice-assistant/compare/v2.0.0...v2.1.0
+
+
+[Changes][v2.1.0]
+
 
 <a id="v2.0.0"></a>
 # [v2.0.0](https://github.com/imonlinux/linux-voice-assistant/releases/tag/v2.0.0) - 2026-09-21
@@ -161,6 +173,7 @@ sh ~/linux-voice-assistant/script/update_lva.sh
 [Changes][v1.1.0]
 
 
+[v2.1.0]: https://github.com/imonlinux/linux-voice-assistant/compare/v2.0.0...v2.1.0
 [v2.0.0]: https://github.com/imonlinux/linux-voice-assistant/compare/v1.1.0...v2.0.0
 [v1.1.0]: https://github.com/imonlinux/linux-voice-assistant/tree/v1.1.0
 
