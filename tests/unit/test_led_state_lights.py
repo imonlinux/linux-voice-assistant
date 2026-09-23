@@ -295,3 +295,150 @@ class TestStateSync:
         entity.subscribe_state_sync()
         entity.subscribe_state_sync()
         assert len(bus.topics["publish_state_to_mqtt"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# ESPHome color wire model (api >= 1.6)
+# ---------------------------------------------------------------------------
+
+
+class TestColorWireModel:
+    """HA (api >= 1.6) commands rgb as a hue vector (max channel 1.0) plus a
+    separate color_brightness intensity and displays red x color_brightness x
+    255. The entity must keep the color wheel and the master brightness
+    slider independent below 100%."""
+
+    def test_seed_splits_raw_color_into_hue_and_intensity(self):
+        entity, _, _ = make_entity(
+            initial={"effect": "solid", "color": (64, 0, 128), "brightness": 0.5}
+        )
+        assert (entity.red, entity.green, entity.blue) == (0.5, 0.0, 1.0)
+        assert abs(entity._color_brightness - 128 / 255.0) < 0.001
+
+    def test_black_color_seeds_zero_intensity(self):
+        entity, _, _ = make_entity(
+            initial={"effect": "solid", "color": (0, 0, 0), "brightness": 0.5}
+        )
+        assert (entity.red, entity.green, entity.blue) == (0.0, 0.0, 0.0)
+        assert entity._color_brightness == 0.0
+
+    def test_response_color_brightness_independent_of_brightness(self):
+        entity, _, _ = make_entity()  # (128, 0, 255), brightness 0.5
+        response = entity._state_response()
+        assert abs(response.color_brightness - 1.0) < 0.001
+        assert abs(response.brightness - 0.5) < 0.001
+
+    def test_ha_wheel_command_keeps_brightness(self):
+        # Pure red pick at 40% color intensity while master brightness sits
+        # at 50%: HA sends hue (1,0,0) + color_brightness 0.4 + brightness.
+        entity, _, bus = make_entity(
+            initial={"effect": "solid", "color": (0, 255, 0), "brightness": 0.5}
+        )
+        list(
+            entity.handle_message(
+                make_light_command(
+                    7,
+                    red=1.0,
+                    green=0.0,
+                    blue=0.0,
+                    has_rgb=True,
+                    color_brightness=0.4,
+                    has_color_brightness=True,
+                    brightness=0.5,
+                    has_brightness=True,
+                )
+            )
+        )
+        assert events_for(bus, "set_idle_color") == [
+            {"color": {"r": 102, "g": 0, "b": 0}, "brightness": 128}
+        ]
+        assert (entity.red, entity.green, entity.blue) == (1.0, 0.0, 0.0)
+        response = entity._state_response()
+        assert abs(response.color_brightness - 0.4) < 0.001
+        assert abs(response.brightness - 0.5) < 0.001
+
+    def test_brightness_only_command_does_not_move_color(self):
+        entity, _, bus = make_entity(
+            initial={"effect": "solid", "color": (255, 0, 0), "brightness": 1.0}
+        )
+        list(
+            entity.handle_message(
+                make_light_command(7, brightness=0.25, has_brightness=True)
+            )
+        )
+        assert events_for(bus, "set_idle_color") == [
+            {"color": {"r": 255, "g": 0, "b": 0}, "brightness": 64}
+        ]
+        response = entity._state_response()
+        assert entity.red == 1.0
+        assert abs(entity._color_brightness - 1.0) < 0.001
+        assert abs(response.brightness - 0.25) < 0.001
+
+    def test_legacy_raw_rgb_without_color_brightness_splits(self):
+        # Legacy clients fold intensity into rgb (max channel < 1.0).
+        entity, _, bus = make_entity(
+            initial={"effect": "solid", "color": (0, 0, 255), "brightness": 0.5}
+        )
+        list(
+            entity.handle_message(
+                make_light_command(7, red=0.5, green=0.0, blue=0.0, has_rgb=True)
+            )
+        )
+        assert events_for(bus, "set_idle_color") == [
+            {"color": {"r": 128, "g": 0, "b": 0}, "brightness": 128}
+        ]
+        assert (entity.red, entity.green, entity.blue) == (1.0, 0.0, 0.0)
+        assert abs(entity._color_brightness - 0.5) < 0.001
+
+    def test_device_sync_round_trip_is_stable(self):
+        # HA pick (hue red, color_brightness 0.4) -> ring raw (102, 0, 0) ->
+        # controller echoes (102, 0, 0); the mirror must not drift and no
+        # redundant broadcast may fire.
+        entity, server, bus = make_entity(
+            initial={"effect": "solid", "color": (0, 255, 0), "brightness": 0.5}
+        )
+        list(
+            entity.handle_message(
+                make_light_command(
+                    7,
+                    red=1.0,
+                    green=0.0,
+                    blue=0.0,
+                    has_rgb=True,
+                    color_brightness=0.4,
+                    has_color_brightness=True,
+                )
+            )
+        )
+        entity.subscribe_state_sync()
+        bus.publish(
+            "publish_state_to_mqtt",
+            {
+                "state_name": "idle",
+                "effect": "solid",
+                "color": (102, 0, 0),
+                "brightness": 0.5,
+            },
+        )
+        assert (entity.red, entity.green, entity.blue) == (1.0, 0.0, 0.0)
+        assert abs(entity._color_brightness - 0.4) < 0.001
+        server.state.broadcast.assert_not_called()
+
+    def test_sync_broadcast_response_carries_color_brightness(self):
+        entity, server, bus = make_entity(
+            state_name="listening",
+            initial={"effect": "solid", "color": (0, 0, 255), "brightness": 0.5},
+        )
+        entity.subscribe_state_sync()
+        bus.publish(
+            "publish_state_to_mqtt",
+            {
+                "state_name": "listening",
+                "effect": "medium_pulse",
+                "color": (0, 0, 64),
+                "brightness": 0.5,
+            },
+        )
+        (response,) = server.state.broadcast.call_args[0][0]
+        assert abs(response.color_brightness - 64 / 255.0) < 0.001
+        assert (response.red, response.green, response.blue) == (0.0, 0.0, 1.0)

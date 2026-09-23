@@ -24,7 +24,7 @@ commanded.
 import logging
 from typing import TYPE_CHECKING, Any, Dict, Iterable, Optional
 
-from .entity import LEDLightEntity, LightCommandRequest
+from .entity import LEDLightEntity, LightCommandRequest, LightStateResponse
 from .event_bus import EventBus
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -97,6 +97,11 @@ class LedStateLightEntity(LEDLightEntity):
         )
         self._event_bus = event_bus
         self._sync_subscribed = False
+        # ESPHome wire model (api >= 1.6): rgb is a hue vector (max channel
+        # 1.0) and color_brightness the 0-1 intensity, so HA's displayed
+        # color (red x color_brightness x 255) is independent of the master
+        # brightness slider. Seeding below sets the real values.
+        self._color_brightness = 1.0
 
         super().__init__(
             server=server,
@@ -118,9 +123,11 @@ class LedStateLightEntity(LEDLightEntity):
         self.is_on = self.effect != "Off"
         self.brightness = max(0.0, min(1.0, float(config.get("brightness", 0.5))))
         try:
-            self.red = max(0.0, min(1.0, int(color[0]) / 255.0))
-            self.green = max(0.0, min(1.0, int(color[1]) / 255.0))
-            self.blue = max(0.0, min(1.0, int(color[2]) / 255.0))
+            hue, intensity = self._split_raw_color(
+                int(color[0]), int(color[1]), int(color[2])
+            )
+            self.red, self.green, self.blue = hue
+            self._color_brightness = intensity
         except (TypeError, ValueError, IndexError):
             pass
 
@@ -134,18 +141,76 @@ class LedStateLightEntity(LEDLightEntity):
         )
 
     def _publish_color(self) -> None:
+        # LedController consumes raw 0-255 color; fold hue x intensity back
+        # to raw. Master brightness travels separately and no longer scales
+        # the color the ring receives.
+        scale = self._color_brightness
         self._event_bus.publish(
             f"set_{self.state_name}_color",
             {
                 "color": {
-                    "r": int(round(self.red * 255)),
-                    "g": int(round(self.green * 255)),
-                    "b": int(round(self.blue * 255)),
+                    "r": int(round(self.red * scale * 255)),
+                    "g": int(round(self.green * scale * 255)),
+                    "b": int(round(self.blue * scale * 255)),
                 },
                 # LedController divides by 255; keep the MQTT wire scale.
                 "brightness": int(round(self.brightness * 255)),
             },
         )
+
+    # ------------------------------------------------------------------
+    # ESPHome color wire model
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _split_raw_color(r: int, g: int, b: int):
+        """Split a raw 0-255 color into (hue vector, intensity).
+
+        Matches HA's api >= 1.6 convention: hue is normalized so the max
+        channel is 1.0 and the intensity carries the rest. Black keeps a
+        (0, 0, 0) hue with intensity 0.
+        """
+        raw = (
+            max(0.0, min(1.0, r / 255.0)),
+            max(0.0, min(1.0, g / 255.0)),
+            max(0.0, min(1.0, b / 255.0)),
+        )
+        intensity = max(raw)
+        if intensity > 0:
+            hue = (raw[0] / intensity, raw[1] / intensity, raw[2] / intensity)
+        else:
+            hue = (0.0, 0.0, 0.0)
+        return hue, intensity
+
+    def _state_response(self) -> LightStateResponse:
+        response = super()._state_response()
+        # The parent folds master brightness into color_brightness; HA
+        # reconstructs displayed color as red x color_brightness x 255,
+        # so that folding is exactly what made the color wheel and the
+        # brightness slider fight each other below 100%.
+        response.color_brightness = self._color_brightness
+        return response
+
+    def _apply_color_brightness(self, msg: Any) -> None:
+        """Reconcile the parent's mirror with the ESPHome color wire model.
+
+        Runs after the parent has applied the command: HA (api >= 1.6)
+        commands rgb as a hue vector plus a separate color_brightness,
+        while the parent stores rgb raw and ignores color_brightness.
+        Without color_brightness (legacy clients fold intensity into
+        rgb), treat the commanded rgb as raw and split it.
+        """
+        if msg.has_color_brightness:
+            self._color_brightness = max(0.0, min(1.0, float(msg.color_brightness)))
+            # msg.rgb already carries the hue vector; nothing to renormalize.
+            return
+        if msg.has_rgb:
+            intensity = max(self.red, self.green, self.blue)
+            if intensity > 0:
+                self.red /= intensity
+                self.green /= intensity
+                self.blue /= intensity
+            self._color_brightness = intensity
 
     def _translate_command(self, msg: Any) -> None:
         """Mirror the MQTT handler's light_command translation.
@@ -175,9 +240,11 @@ class LedStateLightEntity(LEDLightEntity):
     def handle_message(self, msg: Any) -> Iterable[Any]:
         if isinstance(msg, LightCommandRequest) and msg.key == self.key:
             # Parent applies the command to the mirrored state first
-            # (clamping, effect validation), then the translation reads
-            # the mirror so published values match what was applied.
+            # (clamping, effect validation), then the color wire-model
+            # reconciliation reads the mirror, then the translation
+            # publishes values that match what was applied.
             responses = list(super().handle_message(msg))
+            self._apply_color_brightness(msg)
             self._translate_command(msg)
             return iter(responses)
         return super().handle_message(msg)
@@ -207,9 +274,10 @@ class LedStateLightEntity(LEDLightEntity):
         is_on = effect_display != "Off"
         brightness = max(0.0, min(1.0, float(data.get("brightness", 0.5))))
         color = data.get("color", _FALLBACK_INITIAL["color"])
-        red = max(0.0, min(1.0, int(color[0]) / 255.0))
-        green = max(0.0, min(1.0, int(color[1]) / 255.0))
-        blue = max(0.0, min(1.0, int(color[2]) / 255.0))
+        hue, color_brightness = self._split_raw_color(
+            int(color[0]), int(color[1]), int(color[2])
+        )
+        red, green, blue = hue
 
         changed = (
             self.is_on != is_on
@@ -218,6 +286,7 @@ class LedStateLightEntity(LEDLightEntity):
             or abs(self.red - red) > 0.001
             or abs(self.green - green) > 0.001
             or abs(self.blue - blue) > 0.001
+            or abs(self._color_brightness - color_brightness) > 0.001
         )
         if not changed:
             return
@@ -225,9 +294,8 @@ class LedStateLightEntity(LEDLightEntity):
         self.is_on = is_on
         self.effect = effect_display
         self.brightness = brightness
-        self.red = red
-        self.green = green
-        self.blue = blue
+        self.red, self.green, self.blue = hue
+        self._color_brightness = color_brightness
         if effect_display != "Off":
             self._last_effect_display = effect_display
 
