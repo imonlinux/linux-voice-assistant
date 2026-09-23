@@ -88,7 +88,7 @@ When MQTT is enabled, *(See Section 5 of [the tutorial](docs/linux-voice-assista
 
 > **Note:** LED controls have moved to the native ESPHome device page (see above) — MQTT is no longer required for them. The MQTT-discovery LED entities are still published when MQTT is enabled for backward compatibility. MQTT is now only **required** for the desktop tray client (which mirrors state over MQTT).
 
-<img width="515" height="1033" alt="image" src="https://github.com/user-attachments/assets/cfc9e462-b301-4323-a3d8-5bab0322a548" />
+<img width="515" height="1033" alt="image" src="https://github.com/imonlinux/linux-voice-assistant/blob/main/docs/images/esphome_device.png" />
 
 
 ### Hardware Integrations *(See Section 5 of [the tutorial](docs/linux-voice-assistant-install.md))*
