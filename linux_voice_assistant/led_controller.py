@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from typing import Any, Optional, Tuple
+from typing import Any, Callable, Optional, Tuple
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -30,6 +30,20 @@ _DIM_RED = (50, 0, 0)
 _ORANGE = (255, 165, 0)
 _PURPLE = (128, 0, 255)
 
+# Valid effect ids for per-state configs (the set the MQTT effect select
+# and the native HA light entities both offer).
+VALID_EFFECTS = frozenset({
+    "off",
+    "solid",
+    "slow_pulse",
+    "medium_pulse",
+    "fast_pulse",
+    "slow_blink",
+    "medium_blink",
+    "fast_blink",
+    "spin",
+})
+
 
 class LedController(EventHandler):
     def __init__(
@@ -38,13 +52,19 @@ class LedController(EventHandler):
         event_bus: EventBus,
         config: LedConfig,
         preferences: Preferences,
+        persist: Optional[Callable[[], None]] = None,
     ):
         super().__init__(event_bus)
         self.loop = loop
+        self.preferences = preferences
         self.num_leds = preferences.num_leds  # Get num_leds from preferences
         self.current_task: Optional[asyncio.Future] = None
         self._is_ready = False
         self.leds = None
+
+        # Fork: persistence hook for per-state configs (saves preferences).
+        # Optional so tests/standalone use can skip disk writes.
+        self._persist = persist
 
         # Track mute overlay so reconnect/bootstrap state sync can't override it
         self._mic_is_muted: bool = False
@@ -63,6 +83,12 @@ class LedController(EventHandler):
             "responding": {"effect": "medium_pulse",  "color": _GREEN,  "brightness": 0.5},
             "error":      {"effect": "fast_blink",    "color": _ORANGE, "brightness": 1.0},
         }
+
+        # Fork: overlay configs saved by a previous run. The MQTT era
+        # leaned on retained messages as the persistence layer; the
+        # native path has none, so preferences.json carries the
+        # selection across reboots.
+        self._restore_saved_configs()
 
         # Determine whether hardware LEDs should be used at all
         config_enabled = getattr(config, "enabled", True)
@@ -642,6 +668,65 @@ class LedController(EventHandler):
         self._apply_state_effect("idle")
 
     # -----------------------------------------------------------------------
+    # Fork: per-state config persistence (preferences.json)
+    # -----------------------------------------------------------------------
+
+    def _restore_saved_configs(self) -> None:
+        """Overlay configs saved by a previous run onto the defaults.
+
+        Defensive: unknown state names, unknown effects, and malformed
+        colors/brightness values are skipped so a corrupt preferences
+        file cannot break LED startup.
+        """
+        saved = getattr(self.preferences, "led_states", None)
+        if not isinstance(saved, dict):
+            return
+        for state_name, data in saved.items():
+            if state_name not in self.configs or not isinstance(data, dict):
+                continue
+            config = self.configs[state_name]
+
+            effect = data.get("effect")
+            if isinstance(effect, str) and effect in VALID_EFFECTS:
+                config["effect"] = effect
+
+            color = data.get("color")
+            if isinstance(color, (list, tuple)) and len(color) == 3:
+                try:
+                    config["color"] = tuple(
+                        max(0, min(255, int(channel))) for channel in color
+                    )
+                except (TypeError, ValueError):
+                    pass
+
+            brightness = data.get("brightness")
+            if isinstance(brightness, (int, float)) and not isinstance(
+                brightness, bool
+            ):
+                config["brightness"] = max(0.0, min(1.0, float(brightness)))
+
+    def _persist_state_config(self, state_name: str) -> None:
+        """Snapshot one state's config into preferences and save."""
+        if self._persist is None:
+            return
+        config = self.configs[state_name]
+        led_states = getattr(self.preferences, "led_states", None)
+        if not isinstance(led_states, dict):
+            led_states = {}
+            self.preferences.led_states = led_states
+        led_states[state_name] = {
+            "effect": str(config["effect"]),
+            "color": [int(channel) for channel in config["color"]],
+            "brightness": float(config["brightness"]),
+        }
+        try:
+            self._persist()
+        except Exception:  # pylint: disable=broad-except
+            _LOGGER.exception(
+                "Failed to persist LED config for state '%s'", state_name
+            )
+
+    # -----------------------------------------------------------------------
     # MQTT Config Subscriptions
     # -----------------------------------------------------------------------
 
@@ -674,6 +759,11 @@ class LedController(EventHandler):
                 changed = True
 
         if is_retained:
+            if changed:
+                # Retained replay is the MQTT-era persistence layer
+                # syncing in; mirror its truth into preferences so a
+                # later native-only boot keeps the selection.
+                self._persist_state_config(state_name)
             if changed and state_name == "idle":
                 # Re-apply idle but don't republish back to MQTT.
                 # IMPORTANT: Don't override mute overlay during reconnect/bootstrap.
@@ -686,6 +776,7 @@ class LedController(EventHandler):
             return
 
         if changed:
+            self._persist_state_config(state_name)
             if apply:
                 self._apply_state_effect(state_name)
             else:

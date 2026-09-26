@@ -139,6 +139,11 @@ class Preferences:
     wake_word_sensitivity: str = "Slightly sensitive"
     # Persisted listen-during-wake-sound selection (fork default True).
     listen_during_wake_sound: bool = True
+    # Fork: per-state LED light configs (effect/color/brightness) chosen
+    # from HA (native light entities or MQTT), restored on boot. Maps
+    # state name ("idle", "listening", ...) to
+    # {"effect": str, "color": [r, g, b], "brightness": float}.
+    led_states: Dict[str, Dict[str, Any]] = field(default_factory=dict)
 
 
 @dataclass

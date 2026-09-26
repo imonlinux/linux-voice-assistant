@@ -509,5 +509,195 @@ class TestStartupSequence:
         assert controller.leds is None
 
 
+class TestLedConfigPersistence:
+    """Fork: per-state configs persist via preferences and restore on boot.
+
+    The MQTT era relied on retained messages as the persistence layer;
+    the native ESPHome path has none, so preferences.json carries HA's
+    effect/color/brightness selections across reboots.
+    """
+
+    @pytest.fixture
+    def event_loop(self):
+        """Create event loop for LED controller tests."""
+        loop = asyncio.new_event_loop()
+        yield loop
+        loop.close()
+
+    @pytest.fixture
+    def event_bus(self):
+        return EventBus()
+
+    @pytest.fixture
+    def led_config(self):
+        """DotStar config without hardware: controller runs in no-op mode."""
+        return LedConfig(
+            led_type="dotstar",
+            interface="spi",
+            clock_pin=11,
+            data_pin=10,
+            num_leds=12,
+        )
+
+    def make_controller(
+        self, event_loop, event_bus, led_config, preferences, persist=None
+    ):
+        return LedController(
+            loop=event_loop,
+            event_bus=event_bus,
+            config=led_config,
+            preferences=preferences,
+            persist=persist,
+        )
+
+    def test_config_change_persists_to_preferences(
+        self, event_loop, event_bus, led_config
+    ):
+        """A set_<state>_effect command writes through to preferences."""
+        prefs = Preferences(num_leds=12)
+        save = Mock()
+        controller = self.make_controller(
+            event_loop, event_bus, led_config, prefs, persist=save
+        )
+
+        event_bus.publish("set_listening_effect", {"effect": "slow_pulse"})
+
+        assert prefs.led_states["listening"]["effect"] == "slow_pulse"
+        assert prefs.led_states["listening"]["color"] == [0, 0, 255]
+        assert prefs.led_states["listening"]["brightness"] == pytest.approx(0.5)
+        save.assert_called_once()
+
+    def test_color_change_persists_clamped_values(
+        self, event_loop, event_bus, led_config
+    ):
+        """Color commands snapshot the raw 0-255 scale into preferences."""
+        prefs = Preferences(num_leds=12)
+        save = Mock()
+        controller = self.make_controller(
+            event_loop, event_bus, led_config, prefs, persist=save
+        )
+
+        event_bus.publish(
+            "set_thinking_color",
+            {"color": {"r": 10, "g": 20, "b": 30}, "brightness": 255},
+        )
+
+        assert prefs.led_states["thinking"]["color"] == [10, 20, 30]
+        assert prefs.led_states["thinking"]["brightness"] == pytest.approx(1.0)
+        assert controller.configs["thinking"]["color"] == (10, 20, 30)
+
+    def test_retained_replay_persists(self, event_loop, event_bus, led_config):
+        """Retained MQTT replay syncs its truth into preferences too."""
+        prefs = Preferences(num_leds=12)
+        save = Mock()
+        self.make_controller(event_loop, event_bus, led_config, prefs, persist=save)
+
+        event_bus.publish(
+            "set_idle_effect",
+            {"effect": "slow_pulse", "retained": True},
+        )
+
+        assert prefs.led_states["idle"]["effect"] == "slow_pulse"
+        save.assert_called_once()
+
+    def test_unchanged_config_does_not_save(self, event_loop, event_bus, led_config):
+        """Replays matching the current config must not write preferences."""
+        prefs = Preferences(num_leds=12)
+        save = Mock()
+        controller = self.make_controller(
+            event_loop, event_bus, led_config, prefs, persist=save
+        )
+
+        event_bus.publish(
+            "set_thinking_color",
+            {"color": {"r": 255, "g": 255, "b": 0}, "brightness": 204},
+        )
+
+        save.assert_not_called()
+        assert prefs.led_states == {}
+
+    def test_saved_configs_restored_on_init(self, event_loop, event_bus, led_config):
+        """A fresh controller picks up the previous run's selections."""
+        prefs = Preferences(num_leds=12)
+        prefs.led_states = {
+            "idle": {"effect": "solid", "color": [1, 2, 3], "brightness": 0.25},
+            "error": {"effect": "slow_blink", "color": [255, 0, 0], "brightness": 0.9},
+        }
+        controller = self.make_controller(event_loop, event_bus, led_config, prefs)
+
+        assert controller.configs["idle"]["effect"] == "solid"
+        assert controller.configs["idle"]["color"] == (1, 2, 3)
+        assert controller.configs["idle"]["brightness"] == pytest.approx(0.25)
+        assert controller.configs["error"]["effect"] == "slow_blink"
+        # Untouched states keep their defaults.
+        assert controller.configs["listening"]["effect"] == "medium_pulse"
+
+    def test_restore_is_defensive(self, event_loop, event_bus, led_config):
+        """Corrupt saved data cannot break startup or poison configs."""
+        prefs = Preferences(num_leds=12)
+        prefs.led_states = {
+            "bogus_state": {"effect": "solid"},  # unknown state
+            "idle": {"effect": "not_an_effect"},  # unknown effect
+            "listening": {"color": [999, -5, "x"], "brightness": 7},  # bad color
+            "thinking": {"color": [5, 5, 5], "brightness": True},  # bool is not brightness
+            "responding": "garbage",  # not a dict
+        }
+        controller = self.make_controller(event_loop, event_bus, led_config, prefs)
+
+        # idle: unknown effect skipped, defaults kept.
+        assert controller.configs["idle"]["effect"] == "off"
+        # listening: malformed color aborts the channel write, default kept;
+        # numeric brightness still restored.
+        assert controller.configs["listening"]["color"] == (0, 0, 255)
+        assert controller.configs["listening"]["brightness"] == pytest.approx(1.0)
+        # thinking: valid color applied, bool brightness rejected (default).
+        assert controller.configs["thinking"]["color"] == (5, 5, 5)
+        assert controller.configs["thinking"]["brightness"] == pytest.approx(0.8)
+
+    def test_persist_none_skips_bookkeeping(self, event_loop, event_bus, led_config):
+        """Without a save hook (tests/standalone) nothing is written."""
+        prefs = Preferences(num_leds=12)
+        controller = self.make_controller(event_loop, event_bus, led_config, prefs)
+
+        event_bus.publish("set_listening_effect", {"effect": "slow_pulse"})
+
+        # The in-memory config still reflects the command.
+        assert controller.configs["listening"]["effect"] == "slow_pulse"
+        assert prefs.led_states == {}
+
+    def test_restore_failure_never_raises(self, event_loop, event_bus, led_config):
+        """A non-dict led_states value is ignored, not fatal."""
+        prefs = Preferences(num_leds=12)
+        prefs.led_states = "garbage"  # type: ignore[assignment]
+        controller = self.make_controller(event_loop, event_bus, led_config, prefs)
+
+        assert controller.configs["idle"]["effect"] == "off"
+
+    def test_entity_seeds_from_restored_config(
+        self, event_loop, event_bus, led_config
+    ):
+        """The reboot path end to end: entity reflects the restored config."""
+        from linux_voice_assistant.led_light_entities import LedStateLightEntity
+
+        prefs = Preferences(num_leds=12)
+        prefs.led_states = {
+            "idle": {"effect": "solid", "color": [128, 0, 255], "brightness": 0.5},
+        }
+        controller = self.make_controller(event_loop, event_bus, led_config, prefs)
+
+        server = MagicMock()
+        server.state = MagicMock()
+        entity = LedStateLightEntity(
+            server=server,
+            key=7,
+            state_name="idle",
+            event_bus=event_bus,
+            initial=controller.configs.get("idle"),
+        )
+
+        assert entity.is_on is True
+        assert entity.effect == "Solid"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

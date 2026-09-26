@@ -353,6 +353,7 @@ def _init_fork_controllers(
             event_bus=state.event_bus,
             config=config.led,
             preferences=preferences,
+            persist=state.save_preferences,
         )
         state.led_controller = led_controller  # type: ignore[attr-defined]
     except Exception:  # pylint: disable=broad-except
