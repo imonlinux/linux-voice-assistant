@@ -51,6 +51,14 @@ class TestInit:
         zc = make_zeroconf(host_ip_address="10.0.0.1")
         assert zc.host_ip_address == "10.0.0.1"
 
+    def test_friendly_name_stored(self):
+        zc = make_zeroconf(friendly_name="Kitchen Satellite")
+        assert zc.friendly_name == "Kitchen Satellite"
+
+    def test_friendly_name_defaults_to_none(self):
+        zc = make_zeroconf()
+        assert zc.friendly_name is None
+
     def test_name_defaults_to_mac_when_not_provided(self):
         with patch("linux_voice_assistant.zeroconf.AsyncZeroconf"):
             from linux_voice_assistant.zeroconf import HomeAssistantZeroconf
@@ -176,3 +184,31 @@ class TestRegisterServer:
 
         addresses = captured["kwargs"].get("addresses", [])
         assert socket.inet_aton("10.0.0.5") in addresses
+
+    @pytest.mark.asyncio
+    async def test_friendly_name_included_in_properties_when_set(self):
+        zc = make_zeroconf(friendly_name="Kitchen Satellite")
+        zc._mock_zc.async_register_service = AsyncMock()
+
+        captured = {}
+
+        with patch("linux_voice_assistant.zeroconf.AsyncServiceInfo") as mock_info_cls:
+            mock_info_cls.side_effect = lambda *a, **kw: captured.update({"args": a, "kwargs": kw}) or MagicMock()
+            await zc.register_server()
+
+        props = captured["kwargs"].get("properties", {})
+        assert props["friendly_name"] == "Kitchen Satellite"
+
+    @pytest.mark.asyncio
+    async def test_friendly_name_absent_from_properties_when_unset(self):
+        zc = make_zeroconf()
+        zc._mock_zc.async_register_service = AsyncMock()
+
+        captured = {}
+
+        with patch("linux_voice_assistant.zeroconf.AsyncServiceInfo") as mock_info_cls:
+            mock_info_cls.side_effect = lambda *a, **kw: captured.update({"args": a, "kwargs": kw}) or MagicMock()
+            await zc.register_server()
+
+        props = captured["kwargs"].get("properties", {})
+        assert "friendly_name" not in props
