@@ -42,6 +42,13 @@ class LibMpvPlayer(AudioPlayer):
             cache="yes",
             demuxer_max_bytes="16MiB",
             cache_secs="20",
+            # LVA only ever plays local files and direct HTTP URLs, never
+            # sites that need yt-dlp. mpv's ytdl hook only runs as a
+            # fallback after a URL fails to open natively; when a TTS URL
+            # is slow it adds a long stall (observed ~20 s) before the
+            # failure surfaces and the satellite is stuck in the responding
+            # state the whole time. Disable the fallback.
+            ytdl=False,
         )
 
         if device:
