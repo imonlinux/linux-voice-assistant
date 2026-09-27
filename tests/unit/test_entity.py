@@ -333,11 +333,26 @@ class TestMuteSwitchEntity:
         list(entity.handle_message(msg))
         assert entity._switch_state is True
 
-    def test_switch_command_yields_switch_state_response(self):
+    def test_switch_command_does_not_yield_duplicate_response(self):
+        # publish_state() (from _set_muted) already broadcasts the response
+        # to every client including the requester; yielding one here too
+        # would double-send to the toggling client.
         entity = make_mute_switch(key=2)
         msg = SwitchCommandRequest(key=2, state=True)
         msgs = list(entity.handle_message(msg))
-        assert any(isinstance(m, SwitchStateResponse) for m in msgs)
+        assert not any(isinstance(m, SwitchStateResponse) for m in msgs)
+
+    def test_switch_command_response_delivered_via_broadcast(self):
+        entity = make_mute_switch(key=2)
+        entity._get_muted.return_value = True
+        entity._set_muted.side_effect = lambda state: entity.publish_state()
+        msg = SwitchCommandRequest(key=2, state=True)
+        list(entity.handle_message(msg))
+        entity.server.state.broadcast.assert_called_once()
+        broadcast_msgs = entity.server.state.broadcast.call_args[0][0]
+        assert len(broadcast_msgs) == 1
+        assert isinstance(broadcast_msgs[0], SwitchStateResponse)
+        assert broadcast_msgs[0].state is True
 
     def test_switch_command_wrong_key_ignored(self):
         entity = make_mute_switch(key=2)
@@ -375,6 +390,44 @@ class TestMuteSwitchEntity:
         entity.update_get_muted(new_get_muted)
         entity.sync_with_state()
         assert entity._switch_state is True
+
+
+class TestMuteSwitchEntityPublishState:
+    def test_publish_state_syncs_and_broadcasts(self):
+        entity = make_mute_switch(initial_muted=False)
+        entity._get_muted.return_value = True
+
+        entity.publish_state()
+
+        assert entity._switch_state is True
+        entity.server.state.broadcast.assert_called_once()
+        msgs = entity.server.state.broadcast.call_args[0][0]
+        assert len(msgs) == 1
+        assert isinstance(msgs[0], SwitchStateResponse)
+        assert msgs[0].key == entity.key
+        assert msgs[0].state is True
+
+    def test_publish_state_broadcasts_unmute(self):
+        entity = make_mute_switch(initial_muted=True)
+        entity._get_muted.return_value = False
+
+        entity.publish_state()
+
+        assert entity._switch_state is False
+        msgs = entity.server.state.broadcast.call_args[0][0]
+        assert msgs[0].state is False
+
+    def test_publish_state_falls_back_to_server_send(self):
+        entity = make_mute_switch(initial_muted=False)
+        entity._get_muted.return_value = True
+        del entity.server.state  # no ServerState attached (bare APIServer)
+
+        entity.publish_state()
+
+        entity.server.send_messages.assert_called_once()
+        msgs = entity.server.send_messages.call_args[0][0]
+        assert isinstance(msgs[0], SwitchStateResponse)
+        assert msgs[0].state is True
 
 
 # ---------------------------------------------------------------------------

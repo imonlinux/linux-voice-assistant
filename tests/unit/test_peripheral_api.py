@@ -374,7 +374,9 @@ class TestDispatchMute:
         satellite._set_muted.assert_not_called()  # pylint: disable=protected-access
 
     @pytest.mark.asyncio
-    async def test_mute_mic_pushes_switch_state_to_ha(self, tmp_path):
+    async def test_mute_mic_delegates_ha_sync_to_set_muted(self, tmp_path):
+        """The satellite's _set_muted publishes the switch state itself; the
+        dispatcher must not maintain a second, competing push mechanism."""
         state = make_state(tmp_path, muted=False)
         state.mute_switch_entity = MagicMock(key=1)
         satellite = MagicMock()
@@ -383,7 +385,8 @@ class TestDispatchMute:
 
         await dispatch(server, LVACommand.MUTE_MIC.value)
 
-        satellite.send_messages.assert_called_once()
+        satellite._set_muted.assert_called_once_with(True)  # pylint: disable=protected-access
+        satellite.send_messages.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

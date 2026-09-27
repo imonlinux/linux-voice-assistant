@@ -317,15 +317,34 @@ class MuteSwitchEntity(ESPHomeEntity):
         # Sync internal switch state with the actual mute state.
         self._switch_state = self._get_muted()
 
+    def publish_state(self) -> None:
+        """Sync the internal state and push it to all connected clients.
+
+        Mute changes can originate outside the switch command path (e.g.
+        peripheral API clients). The state must reach *all* subscribed
+        clients, not just the connection that happens to be referenced by
+        the entity's server; without this push any other client keeps
+        showing the stale switch position until it reconnects.
+        """
+        self.sync_with_state()
+        response = SwitchStateResponse(key=self.key, state=self._switch_state)
+        state = getattr(self.server, "state", None)
+        if state is not None:
+            state.broadcast([response])
+        else:  # pragma: no cover - no ServerState (e.g. a bare APIServer)
+            self.server.send_messages([response])
+
     def handle_message(self, msg: message.Message) -> Iterable[message.Message]:
         if isinstance(msg, SwitchCommandRequest) and (msg.key == self.key):
-            # User toggled the switch - update our internal state and trigger actions
+            # User toggled the switch - update our internal state and trigger
+            # actions. _set_muted() publishes the new state to every connected
+            # client via publish_state(), which already covers the requester,
+            # so no per-request response here.
             new_state = bool(msg.state)
             self._switch_state = new_state
             self._set_muted(new_state)
-            # Return the new state immediately
-            yield SwitchStateResponse(key=self.key, state=self._switch_state)
-        elif isinstance(msg, ListEntitiesRequest):
+            return
+        if isinstance(msg, ListEntitiesRequest):
             yield ListEntitiesSwitchResponse(
                 object_id=self.object_id,
                 key=self.key,
