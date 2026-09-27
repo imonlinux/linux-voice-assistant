@@ -334,6 +334,44 @@ class TestMuteSwitchEntity:
         assert entity._switch_state is True
 
 
+class TestMuteSwitchEntityPublishState:
+    def test_publish_state_syncs_and_broadcasts(self):
+        entity = make_mute_switch(initial_muted=False)
+        entity._get_muted.return_value = True
+
+        entity.publish_state()
+
+        assert entity._switch_state is True
+        entity.server.state.broadcast.assert_called_once()
+        msgs = entity.server.state.broadcast.call_args[0][0]
+        assert len(msgs) == 1
+        assert isinstance(msgs[0], SwitchStateResponse)
+        assert msgs[0].key == entity.key
+        assert msgs[0].state is True
+
+    def test_publish_state_broadcasts_unmute(self):
+        entity = make_mute_switch(initial_muted=True)
+        entity._get_muted.return_value = False
+
+        entity.publish_state()
+
+        assert entity._switch_state is False
+        msgs = entity.server.state.broadcast.call_args[0][0]
+        assert msgs[0].state is False
+
+    def test_publish_state_falls_back_to_server_send(self):
+        entity = make_mute_switch(initial_muted=False)
+        entity._get_muted.return_value = True
+        del entity.server.state  # no ServerState attached (bare APIServer)
+
+        entity.publish_state()
+
+        entity.server.send_messages.assert_called_once()
+        msgs = entity.server.send_messages.call_args[0][0]
+        assert isinstance(msgs[0], SwitchStateResponse)
+        assert msgs[0].state is True
+
+
 # ---------------------------------------------------------------------------
 # MicSettingEntity — number mode (no options)
 # ---------------------------------------------------------------------------
