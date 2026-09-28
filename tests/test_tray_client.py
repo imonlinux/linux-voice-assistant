@@ -19,9 +19,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-pytest.importorskip(
-    "PyQt5", reason="tray client tests require PyQt5 (pip install .[tray])"
-)
+pytest.importorskip("PyQt5", reason="tray client tests require PyQt5 (pip install .[tray])")
 
 from PyQt5 import QtWidgets  # noqa: E402
 
@@ -73,9 +71,7 @@ class TestTrayVoiceState:
     """Consolidated voice-state topic drives the displayed state."""
 
     def test_voice_state_topic_sets_state(self, tray):
-        tray._on_message(
-            None, None, _message(f"{tray._topic_prefix}/state", "thinking")
-        )
+        tray._on_message(None, None, _message(f"{tray._topic_prefix}/state", "thinking"))
         assert tray._current_state == "thinking"
 
         tray._on_message(None, None, _message(f"{tray._topic_prefix}/state", "idle"))
@@ -87,9 +83,7 @@ class TestTrayVoiceState:
         assert tray._current_state == "idle"
 
     def test_voice_state_topic_is_case_insensitive(self, tray):
-        tray._on_message(
-            None, None, _message(f"{tray._topic_prefix}/state", "LISTENING\n")
-        )
+        tray._on_message(None, None, _message(f"{tray._topic_prefix}/state", "LISTENING\n"))
         assert tray._current_state == "listening"
 
 
@@ -169,9 +163,7 @@ class TestRetainedReplayRegression:
         tray._on_message(None, None, _message(f"{tray._topic_prefix}/state", "idle"))
 
         for state_name in ("thinking", "listening", "responding", "error"):
-            payload = json.dumps(
-                {"state": "ON", "brightness": 255, "color": {"r": 10, "g": 20, "b": 30}}
-            )
+            payload = json.dumps({"state": "ON", "brightness": 255, "color": {"r": 10, "g": 20, "b": 30}})
             tray._on_message(
                 None,
                 None,
@@ -181,12 +173,8 @@ class TestRetainedReplayRegression:
 
     def test_light_state_messages_update_color_cache(self, tray):
         """Light topics still feed the per-state color cache."""
-        payload = json.dumps(
-            {"state": "ON", "brightness": 128, "color": {"r": 255, "g": 255, "b": 0}}
-        )
-        tray._on_message(
-            None, None, _message(f"{tray._topic_prefix}/thinking_light/state", payload)
-        )
+        payload = json.dumps({"state": "ON", "brightness": 128, "color": {"r": 255, "g": 255, "b": 0}})
+        tray._on_message(None, None, _message(f"{tray._topic_prefix}/thinking_light/state", payload))
 
         color = tray._last_color_by_state["thinking"]
         # Brightness 128/255 scaling on the pure-yellow source color

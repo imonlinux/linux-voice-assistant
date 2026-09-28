@@ -24,6 +24,7 @@ T = TypeVar("T")
 # Helpers
 # -----------------------------------------------------------------------------
 
+
 def _load_json_with_comments(path: Path) -> dict:
     """Load JSON from file, stripping JSON-with-comments (JSONC) comments.
 
@@ -49,20 +50,21 @@ def _load_json_with_comments(path: Path) -> dict:
         i = 0
         while i < len(line):
             c = line[i]
-            if c == '"' and (i == 0 or line[i-1] != '\\'):
+            if c == '"' and (i == 0 or line[i - 1] != "\\"):
                 in_string = not in_string
-            elif not in_string and c == '/' and i + 1 < len(line) and line[i+1] == '/':
+            elif not in_string and c == "/" and i + 1 < len(line) and line[i + 1] == "/":
                 # Found // comment, strip rest of line
                 line = line[:i]
                 break
             i += 1
         lines.append(line)
-    content = '\n'.join(lines)
+    content = "\n".join(lines)
 
     # Strip /* block comments */
-    content = re.sub(r'/\*.*?\*/', '', content, flags=re.DOTALL)
+    content = re.sub(r"/\*.*?\*/", "", content, flags=re.DOTALL)
 
     return json.loads(content)
+
 
 def _clamp_0_1(name: str, value: float) -> float:
     """Clamp a float to [0.0, 1.0], logging a warning if clamped."""
@@ -146,9 +148,11 @@ def _dataclass_from_dict(cls: Type[T], raw: Any, *, context: str) -> T:
 # Core Configuration Dataclasses
 # -----------------------------------------------------------------------------
 
+
 @dataclass
 class AppConfig:
     """Top-level app configuration."""
+
     name: str
     wakeup_sound: str = "sounds/wakeup/wake_word_triggered.flac"
     thinking_sound: str = "sounds/thinking/nothing.flac"
@@ -183,6 +187,7 @@ class AppConfig:
 @dataclass
 class AudioConfig:
     """Settings for audio input and output."""
+
     input_device: Optional[str] = None
     input_block_size: int = 1024
     output_device: Optional[str] = None
@@ -206,6 +211,7 @@ class AudioConfig:
 @dataclass
 class WakeWordConfig:
     """Wake word configuration."""
+
     directories: List[str] = field(default_factory=list)
     model: str = "okay_nabu"
     stop_model: str = "stop"
@@ -217,6 +223,7 @@ class WakeWordConfig:
 @dataclass
 class ESPHomeConfig:
     """Settings for the built-in ESPHome API server."""
+
     host: str = "0.0.0.0"
     port: int = 6053
 
@@ -224,6 +231,7 @@ class ESPHomeConfig:
 @dataclass
 class LedConfig:
     """LED controller configuration."""
+
     """Settings for LEDs."""
     enabled: bool = True
 
@@ -252,6 +260,7 @@ class LedConfig:
 @dataclass
 class MqttConfig:
     """MQTT configuration."""
+
     enabled: bool = False
     host: Optional[str] = None
     port: int = 1883
@@ -283,14 +292,18 @@ class ButtonConfig:
     # traffic on slower boards.
     poll_interval_seconds: float = 0.05
 
+
 @dataclass
 class TrayConfig:
     """Settings for the tray client."""
+
     systemd_service_name: str = "linux-voice-assistant.service"
+
 
 # -----------------------------------------------------------------------------
 # Sendspin Configuration Dataclasses
 # -----------------------------------------------------------------------------
+
 
 @dataclass
 class SendspinConnectionConfig:
@@ -302,6 +315,7 @@ class SendspinConnectionConfig:
       - ``server_host``: static MA server address. If you set server_host,
         discovery is bypassed.
     """
+
     mdns: bool = True
     server_host: Optional[str] = None
     server_port: int = 8927
@@ -336,6 +350,7 @@ class SendspinConnectionConfig:
 @dataclass
 class SendspinRolesConfig:
     """Enable/disable Sendspin roles."""
+
     player: bool = True
     metadata: bool = True
     controller: bool = True
@@ -449,6 +464,7 @@ class SendspinPlayerConfig:
 @dataclass
 class SendspinAudioOutputConfig:
     """Local audio output settings for Sendspin playback."""
+
     backend: str = "soundcard"  # Phase 1: soundcard experiment
     device: Optional[str] = None  # None -> default output device
     block_ms: int = 20
@@ -458,6 +474,7 @@ class SendspinAudioOutputConfig:
 @dataclass
 class SendspinCoordinationConfig:
     """Coordination between voice interaction and Sendspin playback."""
+
     duck_during_voice: bool = True
     duck_gain: float = 0.3  # 0.0-1.0 multiplier applied to PCM samples
     on_error: str = "mute"  # "mute" | "stop"
@@ -503,6 +520,7 @@ class SendspinPairingConfig:
 @dataclass
 class SendspinConfig:
     """Top-level Sendspin config block."""
+
     enabled: bool = False
     pairing: SendspinPairingConfig = field(default_factory=SendspinPairingConfig)
     connection: SendspinConnectionConfig = field(default_factory=SendspinConnectionConfig)
@@ -515,6 +533,7 @@ class SendspinConfig:
 @dataclass
 class Config:
     """Main configuration object."""
+
     app: AppConfig
     audio: AudioConfig = field(default_factory=AudioConfig)
     wake_word: WakeWordConfig = field(default_factory=WakeWordConfig)
@@ -528,6 +547,7 @@ class Config:
 # -----------------------------------------------------------------------------
 # Loader
 # -----------------------------------------------------------------------------
+
 
 def load_config_from_json(config_path: Path) -> Config:
     """Loads configuration from a JSON file and populates dataclasses.
@@ -559,24 +579,12 @@ def load_config_from_json(config_path: Path) -> Config:
 
     sendspin_cfg = SendspinConfig(
         enabled=bool(sendspin_raw.get("enabled", False)),
-        pairing=_dataclass_from_dict(
-            SendspinPairingConfig, (sendspin_raw.get("pairing", {}) or {}), context="sendspin.pairing"
-        ),
-        connection=_dataclass_from_dict(
-            SendspinConnectionConfig, (sendspin_raw.get("connection", {}) or {}), context="sendspin.connection"
-        ),
-        roles=_dataclass_from_dict(
-            SendspinRolesConfig, (sendspin_raw.get("roles", {}) or {}), context="sendspin.roles"
-        ),
-        player=_dataclass_from_dict(
-            SendspinPlayerConfig, (sendspin_raw.get("player", {}) or {}), context="sendspin.player"
-        ),
-        audio_output=_dataclass_from_dict(
-            SendspinAudioOutputConfig, (sendspin_raw.get("audio_output", {}) or {}), context="sendspin.audio_output"
-        ),
-        coordination=_dataclass_from_dict(
-            SendspinCoordinationConfig, (sendspin_raw.get("coordination", {}) or {}), context="sendspin.coordination"
-        ),
+        pairing=_dataclass_from_dict(SendspinPairingConfig, (sendspin_raw.get("pairing", {}) or {}), context="sendspin.pairing"),
+        connection=_dataclass_from_dict(SendspinConnectionConfig, (sendspin_raw.get("connection", {}) or {}), context="sendspin.connection"),
+        roles=_dataclass_from_dict(SendspinRolesConfig, (sendspin_raw.get("roles", {}) or {}), context="sendspin.roles"),
+        player=_dataclass_from_dict(SendspinPlayerConfig, (sendspin_raw.get("player", {}) or {}), context="sendspin.player"),
+        audio_output=_dataclass_from_dict(SendspinAudioOutputConfig, (sendspin_raw.get("audio_output", {}) or {}), context="sendspin.audio_output"),
+        coordination=_dataclass_from_dict(SendspinCoordinationConfig, (sendspin_raw.get("coordination", {}) or {}), context="sendspin.coordination"),
     )
 
     # Normalize / validate wake word threshold
@@ -745,9 +753,7 @@ def apply_config_defaults(parser: "argparse.ArgumentParser", config: Config) -> 
 
     # --- wake_word ---
     if config.wake_word.directories:
-        defaults["wake_word_dir"] = [
-            _resolve_repo_path(d) for d in config.wake_word.directories
-        ]
+        defaults["wake_word_dir"] = [_resolve_repo_path(d) for d in config.wake_word.directories]
     if config.wake_word.model:
         defaults["wake_model"] = config.wake_word.model
     if config.wake_word.stop_model:

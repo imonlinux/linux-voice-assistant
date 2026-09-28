@@ -92,9 +92,7 @@ class LedStateLightEntity(LEDLightEntity):
         # Last non-off effect, used to restore when HA turns the light ON
         # without naming an effect (the MQTT path published a turn_on_
         # topic that had no subscriber, i.e. ON was a silent no-op there).
-        self._last_effect_display = (
-            effect_display if effect_display != "Off" else "Solid"
-        )
+        self._last_effect_display = effect_display if effect_display != "Off" else "Solid"
         self._event_bus = event_bus
         self._sync_subscribed = False
         # ESPHome wire model (api >= 1.6): rgb is a hue vector (max channel
@@ -123,9 +121,7 @@ class LedStateLightEntity(LEDLightEntity):
         self.is_on = self.effect != "Off"
         self.brightness = max(0.0, min(1.0, float(config.get("brightness", 0.5))))
         try:
-            hue, intensity = self._split_raw_color(
-                int(color[0]), int(color[1]), int(color[2])
-            )
+            hue, intensity = self._split_raw_color(int(color[0]), int(color[1]), int(color[2]))
             self.red, self.green, self.blue = hue
             self._color_brightness = intensity
         except (TypeError, ValueError, IndexError):
@@ -136,9 +132,7 @@ class LedStateLightEntity(LEDLightEntity):
     # ------------------------------------------------------------------
 
     def _publish_effect(self, effect_id: str) -> None:
-        self._event_bus.publish(
-            f"set_{self.state_name}_effect", {"effect": effect_id}
-        )
+        self._event_bus.publish(f"set_{self.state_name}_effect", {"effect": effect_id})
 
     def _publish_color(self) -> None:
         # LedController consumes raw 0-255 color; fold hue x intensity back
@@ -274,9 +268,7 @@ class LedStateLightEntity(LEDLightEntity):
         is_on = effect_display != "Off"
         brightness = max(0.0, min(1.0, float(data.get("brightness", 0.5))))
         color = data.get("color", _FALLBACK_INITIAL["color"])
-        hue, color_brightness = self._split_raw_color(
-            int(color[0]), int(color[1]), int(color[2])
-        )
+        hue, color_brightness = self._split_raw_color(int(color[0]), int(color[1]), int(color[2]))
         red, green, blue = hue
 
         changed = (

@@ -74,9 +74,7 @@ def find_available_wake_words(wake_word_dirs: List[Path], stop_model_id: str) ->
                     # (ServerState.oww_global_threshold) at detection time.
                     probability_cutoff=type_config.get(
                         "probability_cutoff",
-                        model_config.get(
-                            "threshold", model_config.get("openwakeword_threshold", 0.7)
-                        ),
+                        model_config.get("threshold", model_config.get("openwakeword_threshold", 0.7)),
                     ),
                 )
                 _LOGGER.debug("Successfully registered wake word: %s", model_id)

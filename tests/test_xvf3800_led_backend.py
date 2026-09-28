@@ -1,25 +1,25 @@
 """Tests for XVF3800 LED Backend hardware integration."""
 
-import pytest
 import struct
 import time
-from unittest.mock import Mock, MagicMock, patch
+from unittest.mock import MagicMock, Mock, patch
 
+import pytest
 import usb.util  # noqa: F401  # imported so the patched constants resolve correctly
 
 from linux_voice_assistant.xvf3800_led_backend import (
-    _ReSpeaker,
-    XVF3800USBDevice,
-    XVF3800LedBackend,
-    PARAMETERS,
     CONTROL_SUCCESS,
+    PARAMETERS,
     SERVICER_COMMAND_RETRY,
+    XVF3800LedBackend,
+    XVF3800USBDevice,
+    _ReSpeaker,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers used by tests in this module
 # ---------------------------------------------------------------------------
+
 
 def _make_init_mock(supports_per_led: bool = True):
     """
@@ -62,6 +62,7 @@ def _finish_init(mock):
 # ---------------------------------------------------------------------------
 # Parameter table
 # ---------------------------------------------------------------------------
+
 
 class TestXVF3800Parameters:
     """Test XVF3800 parameter definitions."""
@@ -123,6 +124,7 @@ class TestXVF3800Parameters:
 # _ReSpeaker low-level USB wrapper
 # ---------------------------------------------------------------------------
 
+
 class TestReSpeakerLowLevel:
     """Test _ReSpeaker low-level USB wrapper."""
 
@@ -139,7 +141,7 @@ class TestReSpeakerLowLevel:
 
         assert resp.dev == mock_device
 
-    @patch('linux_voice_assistant.xvf3800_led_backend.usb.util.dispose_resources')
+    @patch("linux_voice_assistant.xvf3800_led_backend.usb.util.dispose_resources")
     def test_context_manager(self, mock_dispose):
         """``__enter__`` returns self and ``__exit__`` runs cleanup."""
         mock_device = MagicMock()
@@ -223,7 +225,7 @@ class TestReSpeakerLowLevel:
 
         # uint32/int32: (count * 4) + status byte
         assert resp._read_length("uint32", 12) == 49  # (12 * 4) + 1
-        assert resp._read_length("int32", 3) == 13   # (3 * 4) + 1
+        assert resp._read_length("int32", 3) == 13  # (3 * 4) + 1
 
     def test_read_length_unsupported_type(self):
         """Test read length calculation for unsupported type raises error."""
@@ -249,11 +251,7 @@ class TestReSpeakerLowLevel:
         # bmRequestType: build the expected value from the same constants the
         # production code uses, rather than asserting against magic numbers
         # whose actual values vary across pyusb versions / platforms.
-        expected_bm_request_type = (
-            usb.util.CTRL_OUT
-            | usb.util.CTRL_TYPE_VENDOR
-            | usb.util.CTRL_RECIPIENT_DEVICE
-        )
+        expected_bm_request_type = usb.util.CTRL_OUT | usb.util.CTRL_TYPE_VENDOR | usb.util.CTRL_RECIPIENT_DEVICE
         assert args[0] == expected_bm_request_type
 
         # Check command ID (wValue) for a write: production passes cmdid directly.
@@ -313,8 +311,8 @@ class TestReSpeakerLowLevel:
 
         # First call returns retry status, second succeeds
         mock_device.ctrl_transfer.side_effect = [
-            [SERVICER_COMMAND_RETRY],          # Retry
-            [CONTROL_SUCCESS, 1, 2, 3],        # Success
+            [SERVICER_COMMAND_RETRY],  # Retry
+            [CONTROL_SUCCESS, 1, 2, 3],  # Success
         ]
 
         result = resp.read("VERSION", max_retries=2)
@@ -369,10 +367,11 @@ class TestReSpeakerLowLevel:
 # XVF3800USBDevice high-level helper
 # ---------------------------------------------------------------------------
 
+
 class TestXVF3800USBDevice:
     """Test XVF3800USBDevice high-level interface."""
 
-    @patch('linux_voice_assistant.xvf3800_led_backend._find_device')
+    @patch("linux_voice_assistant.xvf3800_led_backend._find_device")
     def test_initialization_success(self, mock_find):
         """Test successful device initialization."""
         mock_resp = MagicMock()
@@ -382,7 +381,7 @@ class TestXVF3800USBDevice:
 
         assert device._rsp == mock_resp
 
-    @patch('linux_voice_assistant.xvf3800_led_backend._find_device')
+    @patch("linux_voice_assistant.xvf3800_led_backend._find_device")
     def test_initialization_failure(self, mock_find):
         """Test device initialization failure."""
         mock_find.return_value = None
@@ -392,7 +391,7 @@ class TestXVF3800USBDevice:
 
         assert "USB device not found" in str(exc_info.value)
 
-    @patch('linux_voice_assistant.xvf3800_led_backend._find_device')
+    @patch("linux_voice_assistant.xvf3800_led_backend._find_device")
     def test_reboot(self, mock_find):
         """Test device reboot command."""
         mock_resp = MagicMock()
@@ -403,7 +402,7 @@ class TestXVF3800USBDevice:
 
         mock_resp.write.assert_called_once_with("REBOOT", [1])
 
-    @patch('linux_voice_assistant.xvf3800_led_backend._find_device')
+    @patch("linux_voice_assistant.xvf3800_led_backend._find_device")
     def test_save_configuration(self, mock_find):
         """Test save configuration command."""
         mock_resp = MagicMock()
@@ -414,7 +413,7 @@ class TestXVF3800USBDevice:
 
         mock_resp.write.assert_called_once_with("SAVE_CONFIGURATION", [1])
 
-    @patch('linux_voice_assistant.xvf3800_led_backend._find_device')
+    @patch("linux_voice_assistant.xvf3800_led_backend._find_device")
     def test_set_audio_routing(self, mock_find):
         """Test audio routing configuration."""
         mock_resp = MagicMock()
@@ -430,14 +429,14 @@ class TestXVF3800USBDevice:
         # Verify right channel routing
         mock_resp.write.assert_any_call("AUDIO_MGR_OP_R", [3, 4])
 
-    @patch('linux_voice_assistant.xvf3800_led_backend.usb.core.find')
+    @patch("linux_voice_assistant.xvf3800_led_backend.usb.core.find")
     def test_wait_for_reenumeration(self, mock_usb_find):
         """Test waiting for device re-enumeration."""
         # Simulate device disappearing and reappearing
         mock_usb_find.side_effect = [
             MagicMock(),  # Device exists initially
-            None,         # Device disappears
-            None,         # Still gone
+            None,  # Device disappears
+            None,  # Still gone
             MagicMock(),  # Device reappears
         ]
 
@@ -451,10 +450,11 @@ class TestXVF3800USBDevice:
 # XVF3800LedBackend high-level interface
 # ---------------------------------------------------------------------------
 
+
 class TestXVF3800LedBackend:
     """Test XVF3800 LED Backend high-level interface."""
 
-    @patch('linux_voice_assistant.xvf3800_led_backend._find_device')
+    @patch("linux_voice_assistant.xvf3800_led_backend._find_device")
     def test_initialization_with_per_led_support(self, mock_find):
         """Test LED backend initialization with per-LED support."""
         mock_resp = _make_init_mock(supports_per_led=True)
@@ -465,7 +465,7 @@ class TestXVF3800LedBackend:
         assert backend.supports_per_led is True
         assert backend._dev == mock_resp
 
-    @patch('linux_voice_assistant.xvf3800_led_backend._find_device')
+    @patch("linux_voice_assistant.xvf3800_led_backend._find_device")
     def test_initialization_without_per_led_support(self, mock_find):
         """Test LED backend initialization without per-LED support."""
         mock_resp = _make_init_mock(supports_per_led=False)
@@ -475,7 +475,7 @@ class TestXVF3800LedBackend:
 
         assert backend.supports_per_led is False
 
-    @patch('linux_voice_assistant.xvf3800_led_backend._find_device')
+    @patch("linux_voice_assistant.xvf3800_led_backend._find_device")
     def test_initialization_device_not_found(self, mock_find):
         """Test LED backend initialization when device not found."""
         mock_find.return_value = None
@@ -485,7 +485,7 @@ class TestXVF3800LedBackend:
 
         assert "USB device not found" in str(exc_info.value)
 
-    @patch('linux_voice_assistant.xvf3800_led_backend._find_device')
+    @patch("linux_voice_assistant.xvf3800_led_backend._find_device")
     def test_set_effect(self, mock_find):
         """Test setting LED effect."""
         mock_resp = _make_init_mock()
@@ -501,7 +501,7 @@ class TestXVF3800LedBackend:
         # test stays robust to that behaviour.
         mock_resp.write.assert_any_call("LED_EFFECT", [2])
 
-    @patch('linux_voice_assistant.xvf3800_led_backend._find_device')
+    @patch("linux_voice_assistant.xvf3800_led_backend._find_device")
     def test_set_brightness(self, mock_find):
         """Test setting LED brightness."""
         mock_resp = _make_init_mock()
@@ -514,7 +514,7 @@ class TestXVF3800LedBackend:
 
         mock_resp.write.assert_called_once_with("LED_BRIGHTNESS", [200])
 
-    @patch('linux_voice_assistant.xvf3800_led_backend._find_device')
+    @patch("linux_voice_assistant.xvf3800_led_backend._find_device")
     def test_set_brightness_clamping(self, mock_find):
         """Test brightness value clamping."""
         mock_resp = _make_init_mock()
@@ -531,7 +531,7 @@ class TestXVF3800LedBackend:
         backend.set_brightness(-10)
         mock_resp.write.assert_called_with("LED_BRIGHTNESS", [0])
 
-    @patch('linux_voice_assistant.xvf3800_led_backend._find_device')
+    @patch("linux_voice_assistant.xvf3800_led_backend._find_device")
     def test_set_speed(self, mock_find):
         """Test setting LED effect speed."""
         mock_resp = _make_init_mock()
@@ -544,7 +544,7 @@ class TestXVF3800LedBackend:
 
         mock_resp.write.assert_called_once_with("LED_SPEED", [1])
 
-    @patch('linux_voice_assistant.xvf3800_led_backend._find_device')
+    @patch("linux_voice_assistant.xvf3800_led_backend._find_device")
     def test_set_color(self, mock_find):
         """Test setting LED color."""
         mock_resp = _make_init_mock()
@@ -560,7 +560,7 @@ class TestXVF3800LedBackend:
 
         mock_resp.write.assert_called_once_with("LED_COLOR", [expected])
 
-    @patch('linux_voice_assistant.xvf3800_led_backend._find_device')
+    @patch("linux_voice_assistant.xvf3800_led_backend._find_device")
     def test_set_color_clamping(self, mock_find):
         """Test color value clamping."""
         mock_resp = _make_init_mock()
@@ -581,10 +581,10 @@ class TestXVF3800LedBackend:
         b = color_value & 0xFF
 
         assert r == 255  # Max
-        assert g == 0    # Min
+        assert g == 0  # Min
         assert b == 255  # Max
 
-    @patch('linux_voice_assistant.xvf3800_led_backend._find_device')
+    @patch("linux_voice_assistant.xvf3800_led_backend._find_device")
     def test_set_ring_colors(self, mock_find):
         """Test setting individual ring LED colors."""
         mock_resp = _make_init_mock()
@@ -597,18 +597,13 @@ class TestXVF3800LedBackend:
 
         # set_ring_colors calls _ensure_led_power() first, so there may be an
         # additional GPO_WRITE_VALUE call. Filter to LED_RING_COLOR specifically.
-        ring_calls = [
-            c for c in mock_resp.write.call_args_list
-            if c[0][0] == "LED_RING_COLOR"
-        ]
-        assert len(ring_calls) == 1, (
-            f"Expected exactly one LED_RING_COLOR write, got {len(ring_calls)}"
-        )
+        ring_calls = [c for c in mock_resp.write.call_args_list if c[0][0] == "LED_RING_COLOR"]
+        assert len(ring_calls) == 1, f"Expected exactly one LED_RING_COLOR write, got {len(ring_calls)}"
         # Sanity-check the payload length
         payload = ring_calls[0][0][1]
         assert len(payload) == 12
 
-    @patch('linux_voice_assistant.xvf3800_led_backend._find_device')
+    @patch("linux_voice_assistant.xvf3800_led_backend._find_device")
     def test_set_ring_colors_wrong_count(self, mock_find):
         """Test setting ring colors with wrong count raises error."""
         mock_resp = _make_init_mock()
@@ -621,7 +616,7 @@ class TestXVF3800LedBackend:
 
         assert "expects 12 values, got 2" in str(exc_info.value)
 
-    @patch('linux_voice_assistant.xvf3800_led_backend._find_device')
+    @patch("linux_voice_assistant.xvf3800_led_backend._find_device")
     def test_set_ring_colors_not_supported(self, mock_find):
         """Test setting ring colors when not supported raises error."""
         mock_resp = _make_init_mock(supports_per_led=False)
@@ -634,7 +629,7 @@ class TestXVF3800LedBackend:
 
         assert "not supported" in str(exc_info.value)
 
-    @patch('linux_voice_assistant.xvf3800_led_backend._find_device')
+    @patch("linux_voice_assistant.xvf3800_led_backend._find_device")
     def test_set_ring_rgb(self, mock_find):
         """Test setting ring colors with RGB tuples."""
         mock_resp = _make_init_mock()
@@ -648,13 +643,10 @@ class TestXVF3800LedBackend:
         backend.set_ring_rgb(colors)
 
         # Filter to LED_RING_COLOR; _ensure_led_power may have written GPO too.
-        ring_calls = [
-            c for c in mock_resp.write.call_args_list
-            if c[0][0] == "LED_RING_COLOR"
-        ]
+        ring_calls = [c for c in mock_resp.write.call_args_list if c[0][0] == "LED_RING_COLOR"]
         assert len(ring_calls) == 1
 
-    @patch('linux_voice_assistant.xvf3800_led_backend._find_device')
+    @patch("linux_voice_assistant.xvf3800_led_backend._find_device")
     def test_set_ring_solid(self, mock_find):
         """Test setting all ring LEDs to solid color."""
         mock_resp = _make_init_mock()
@@ -666,10 +658,7 @@ class TestXVF3800LedBackend:
         backend.set_ring_solid(100, 150, 200)
 
         # Filter to LED_RING_COLOR
-        ring_calls = [
-            c for c in mock_resp.write.call_args_list
-            if c[0][0] == "LED_RING_COLOR"
-        ]
+        ring_calls = [c for c in mock_resp.write.call_args_list if c[0][0] == "LED_RING_COLOR"]
         assert len(ring_calls) == 1
 
         # Verify all 12 LEDs have same color
@@ -677,7 +666,7 @@ class TestXVF3800LedBackend:
         expected_color = (100 << 16) | (150 << 8) | 200
         assert all(c == expected_color for c in colors)
 
-    @patch('linux_voice_assistant.xvf3800_led_backend._find_device')
+    @patch("linux_voice_assistant.xvf3800_led_backend._find_device")
     def test_clear_ring(self, mock_find):
         """Test clearing ring (turning off all LEDs)."""
         mock_resp = _make_init_mock()
@@ -689,14 +678,11 @@ class TestXVF3800LedBackend:
         backend.clear_ring()
 
         # The relevant write is LED_RING_COLOR with 12 zeros.
-        ring_calls = [
-            c for c in mock_resp.write.call_args_list
-            if c[0][0] == "LED_RING_COLOR"
-        ]
+        ring_calls = [c for c in mock_resp.write.call_args_list if c[0][0] == "LED_RING_COLOR"]
         assert len(ring_calls) == 1
         assert ring_calls[0] == (("LED_RING_COLOR", [0] * 12),)
 
-    @patch('linux_voice_assistant.xvf3800_led_backend._find_device')
+    @patch("linux_voice_assistant.xvf3800_led_backend._find_device")
     def test_clear_ring_legacy_fallback(self, mock_find):
         """Test clear ring falls back to legacy mode when per-LED not supported."""
         mock_resp = _make_init_mock(supports_per_led=False)
@@ -709,15 +695,15 @@ class TestXVF3800LedBackend:
         mock_resp.write.assert_any_call("LED_EFFECT", [0])
         mock_resp.write.assert_any_call("LED_BRIGHTNESS", [0])
 
-    @patch('linux_voice_assistant.xvf3800_led_backend._find_device')
+    @patch("linux_voice_assistant.xvf3800_led_backend._find_device")
     def test_get_version(self, mock_find):
         """Test getting firmware version."""
         # Init consumes 2 reads; get_version() does a 3rd read.
         mock_resp = MagicMock()
         mock_resp.read.side_effect = [
             [255, 255, 255],  # init: LED_RING_COLOR
-            [1, 2, 3],        # init: VERSION
-            [1, 2, 3],        # get_version(): VERSION
+            [1, 2, 3],  # init: VERSION
+            [1, 2, 3],  # get_version(): VERSION
         ]
         mock_find.return_value = mock_resp
 
@@ -726,15 +712,15 @@ class TestXVF3800LedBackend:
 
         assert version == (1, 2, 3)
 
-    @patch('linux_voice_assistant.xvf3800_led_backend._find_device')
+    @patch("linux_voice_assistant.xvf3800_led_backend._find_device")
     def test_get_version_unavailable(self, mock_find):
         """Test getting version when unavailable."""
         # Init succeeds; the explicit get_version() call after init fails.
         mock_resp = MagicMock()
         mock_resp.read.side_effect = [
-            [255, 255, 255],                 # init: LED_RING_COLOR
-            [1, 2, 3],                       # init: VERSION
-            RuntimeError("Read error"),      # get_version(): VERSION fails
+            [255, 255, 255],  # init: LED_RING_COLOR
+            [1, 2, 3],  # init: VERSION
+            RuntimeError("Read error"),  # get_version(): VERSION fails
         ]
         mock_find.return_value = mock_resp
 
@@ -743,7 +729,7 @@ class TestXVF3800LedBackend:
 
         assert version is None
 
-    @patch('linux_voice_assistant.xvf3800_led_backend._find_device')
+    @patch("linux_voice_assistant.xvf3800_led_backend._find_device")
     def test_close(self, mock_find):
         """Test closing LED backend."""
         mock_resp = _make_init_mock()
@@ -760,32 +746,28 @@ class TestXVF3800LedBackend:
 # Error handling and LED-power belt-and-suspenders behaviour
 # ---------------------------------------------------------------------------
 
+
 class TestXVF3800LedBackendErrorHandling:
     """Test XVF3800 LED Backend error handling."""
 
-    @patch('linux_voice_assistant.xvf3800_led_backend._find_device')
+    @patch("linux_voice_assistant.xvf3800_led_backend._find_device")
     def test_led_power_ensure_on_operations(self, mock_find):
         """Test that LED power is ensured during initialization."""
         mock_resp = MagicMock()
         # Init writes GPO_WRITE_VALUE unconditionally before reading.
         mock_resp.read.side_effect = [
             [255, 255, 255],  # LED_RING_COLOR
-            [1, 2, 3],        # VERSION
+            [1, 2, 3],  # VERSION
         ]
         mock_find.return_value = mock_resp
 
         XVF3800LedBackend()
 
         # During initialization, WS2812 power should be enabled
-        power_enable_calls = [
-            c for c in mock_resp.write.call_args_list
-            if c[0][0] == "GPO_WRITE_VALUE" and c[0][1] == [33, 1]
-        ]
-        assert len(power_enable_calls) > 0, (
-            "WS2812 LED power should be enabled during initialization"
-        )
+        power_enable_calls = [c for c in mock_resp.write.call_args_list if c[0][0] == "GPO_WRITE_VALUE" and c[0][1] == [33, 1]]
+        assert len(power_enable_calls) > 0, "WS2812 LED power should be enabled during initialization"
 
-    @patch('linux_voice_assistant.xvf3800_led_backend._find_device')
+    @patch("linux_voice_assistant.xvf3800_led_backend._find_device")
     def test_led_power_check_before_ring_operations(self, mock_find):
         """If GPO reports WS2812 power off, ring ops should re-enable it."""
         mock_resp = _make_init_mock()
@@ -803,13 +785,8 @@ class TestXVF3800LedBackendErrorHandling:
         backend.set_ring_solid(255, 0, 0)
 
         # _ensure_led_power should have written [33, 1] to re-enable power.
-        write_calls = [
-            c for c in mock_resp.write.call_args_list
-            if c[0][0] == "GPO_WRITE_VALUE" and c[0][1] == [33, 1]
-        ]
-        assert len(write_calls) >= 1, (
-            "WS2812 LED power should be re-enabled if reported off"
-        )
+        write_calls = [c for c in mock_resp.write.call_args_list if c[0][0] == "GPO_WRITE_VALUE" and c[0][1] == [33, 1]]
+        assert len(write_calls) >= 1, "WS2812 LED power should be re-enabled if reported off"
 
 
 if __name__ == "__main__":

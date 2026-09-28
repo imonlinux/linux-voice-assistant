@@ -1,7 +1,9 @@
 """Tests for EventBus system."""
 
-import pytest
 from unittest.mock import Mock, patch
+
+import pytest
+
 from linux_voice_assistant.event_bus import EventBus, EventHandler, subscribe
 
 
@@ -12,8 +14,8 @@ class TestEventBus:
         """Test EventBus can be initialized."""
         bus = EventBus()
         assert bus is not None
-        assert hasattr(bus, 'publish')
-        assert hasattr(bus, 'subscribe')
+        assert hasattr(bus, "publish")
+        assert hasattr(bus, "subscribe")
 
     def test_basic_publish_subscribe(self):
         """Test basic event publishing and subscribing."""
@@ -111,7 +113,7 @@ class TestEventBus:
 
         bus.subscribe("test_event", handler)
         # Verify that EventBus does not have an unsubscribe method
-        assert not hasattr(bus, 'unsubscribe'), "EventBus should not have unsubscribe method"
+        assert not hasattr(bus, "unsubscribe"), "EventBus should not have unsubscribe method"
 
         # The first publish should work
         bus.publish("test_event", {"first": "call"})

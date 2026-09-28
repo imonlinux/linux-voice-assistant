@@ -33,7 +33,7 @@ import logging
 import threading
 import time
 from dataclasses import dataclass
-from typing import List, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, List, Optional
 
 import usb.core  # type: ignore[import]
 import usb.util  # type: ignore[import]
@@ -88,10 +88,7 @@ class XVF3800USBClient:
     def __init__(self) -> None:
         dev = usb.core.find(idVendor=self.VENDOR_ID, idProduct=self.PRODUCT_ID)
         if dev is None:
-            raise RuntimeError(
-                "ReSpeaker XVF3800 USB device not found "
-                f"(VID=0x{self.VENDOR_ID:04X}, PID=0x{self.PRODUCT_ID:04X})"
-            )
+            raise RuntimeError("ReSpeaker XVF3800 USB device not found " f"(VID=0x{self.VENDOR_ID:04X}, PID=0x{self.PRODUCT_ID:04X})")
 
         self._dev = dev
         _LOGGER.debug(
@@ -104,7 +101,7 @@ class XVF3800USBClient:
     def __enter__(self):
         """Context manager entry."""
         return self
-    
+
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Context manager exit."""
         self.close()
@@ -112,7 +109,7 @@ class XVF3800USBClient:
 
     def close(self) -> None:
         """Dispose of USB resources."""
-        if hasattr(self, '_dev') and self._dev is not None:
+        if hasattr(self, "_dev") and self._dev is not None:
             try:
                 usb.util.dispose_resources(self._dev)
             except Exception as e:
@@ -212,9 +209,7 @@ class XVF3800USBClient:
         try:
             values = self.read_gpo_values()
             if len(values) <= self.GPO_MUTE_INDEX:
-                _LOGGER.error(
-                    "XVF3800 GPO_READ_VALUES payload too short: %r", values
-                )
+                _LOGGER.error("XVF3800 GPO_READ_VALUES payload too short: %r", values)
                 return None
             mute_val = values[self.GPO_MUTE_INDEX]
             return bool(mute_val)
@@ -264,8 +259,7 @@ class XVF3800ButtonController(EventHandler):
                 poll_interval = float(button_config.poll_interval_seconds)
             except Exception:
                 _LOGGER.warning(
-                    "Invalid poll_interval_seconds in button config; "
-                    "defaulting to %.3fs",
+                    "Invalid poll_interval_seconds in button config; " "defaulting to %.3fs",
                     poll_interval,
                 )
 
@@ -342,10 +336,7 @@ class XVF3800ButtonController(EventHandler):
             self._usb_client = XVF3800USBClient()
             _LOGGER.info("Connected to ReSpeaker XVF3800 for mute control")
         except Exception:
-            _LOGGER.exception(
-                "Failed to initialize XVF3800 USB client; "
-                "mute button integration will be disabled"
-            )
+            _LOGGER.exception("Failed to initialize XVF3800 USB client; " "mute button integration will be disabled")
             self._usb_client = None
         return self._usb_client
 
@@ -356,9 +347,7 @@ class XVF3800ButtonController(EventHandler):
     def _poll_loop(self) -> None:
         _LOGGER.debug("XVF3800ButtonController polling thread started")
 
-        while not self._shutdown_flag.is_set() and not getattr(
-            self.state, "shutdown", False
-        ):
+        while not self._shutdown_flag.is_set() and not getattr(self.state, "shutdown", False):
             client = self._ensure_usb_client()
             if client is None:
                 time.sleep(2.0)
@@ -371,9 +360,7 @@ class XVF3800ButtonController(EventHandler):
                     success = client.set_mute_gpo(target)
                     if success:
                         self._last_hw_muted = target
-                        _LOGGER.debug(
-                            "Set XVF3800 hardware mute state -> %s", target
-                        )
+                        _LOGGER.debug("Set XVF3800 hardware mute state -> %s", target)
 
             # 2) Read current hardware GPO values (mute + WS2812 power)
             try:
@@ -402,9 +389,7 @@ class XVF3800ButtonController(EventHandler):
             if hw_muted is not None:
                 if self._last_hw_muted is None:
                     self._last_hw_muted = hw_muted
-                    _LOGGER.info(
-                        "Initial XVF3800 hardware mute state: %s", hw_muted
-                    )
+                    _LOGGER.info("Initial XVF3800 hardware mute state: %s", hw_muted)
                     self.loop.call_soon_threadsafe(
                         self.state.event_bus.publish,
                         "set_mic_mute",
@@ -412,8 +397,7 @@ class XVF3800ButtonController(EventHandler):
                     )
                 elif hw_muted != self._last_hw_muted:
                     _LOGGER.info(
-                        "Detected XVF3800 mute state change from %s to %s; "
-                        "publishing set_mic_mute event",
+                        "Detected XVF3800 mute state change from %s to %s; " "publishing set_mic_mute event",
                         self._last_hw_muted,
                         hw_muted,
                     )

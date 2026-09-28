@@ -38,13 +38,13 @@ def _clamp01(v: float) -> float:
 def _pactl_sink_from_output_device(output_device: Optional[str]) -> str:
     """Best-effort mapping of mpv audio-device -> pactl sink name.
 
-LVA commonly uses:
-  - "pipewire/<pactl sink name>"
-  - "pulse/<pactl sink name>"
-  - "alsa_output...." (already a sink name)
+    LVA commonly uses:
+      - "pipewire/<pactl sink name>"
+      - "pulse/<pactl sink name>"
+      - "alsa_output...." (already a sink name)
 
-Fallback is @DEFAULT_SINK@.
-"""
+    Fallback is @DEFAULT_SINK@.
+    """
     if not output_device:
         return "@DEFAULT_SINK@"
 
@@ -196,6 +196,7 @@ async def ensure_output_volume(
 # Granular backend-specific functions for testing compatibility
 # -----------------------------------------------------------------------------
 
+
 def get_pulseaudio_sink_volume(
     sink: str = "@DEFAULT_SINK@",
     logger: logging.Logger = _LOGGER,
@@ -214,7 +215,7 @@ def get_pulseaudio_sink_volume(
 
     # Handle both bytes (from mocks) and str (from real subprocess with text=True)
     if isinstance(out, bytes):
-        out = out.decode('utf-8')
+        out = out.decode("utf-8")
 
     # Parse "Volume: front-left: 65536 /  50% / -18.00 dB"
     # OR handle simplified mocked output like "50%"
@@ -272,7 +273,7 @@ def get_wpctl_sink_volume(
 
     # Handle both bytes (from mocks) and str (from real subprocess with text=True)
     if isinstance(out, bytes):
-        out = out.decode('utf-8')
+        out = out.decode("utf-8")
 
     # Parse "Volume: 0.40" or "Volume: 0.40 [MUTED]"
     # OR handle simplified mocked output like "Volume: 50%"

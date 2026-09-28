@@ -118,9 +118,7 @@ def detect_supported_audio_formats(
 
     # Test each dimension independently
     supported_rates = [r for r in sample_rates if _check_format(device, r, 2, "int16")]
-    supported_depths = [
-        d for d in bit_depths if _check_format(device, 48000, 2, SOUNDDEVICE_DTYPE_MAP[d])
-    ]
+    supported_depths = [d for d in bit_depths if _check_format(device, 48000, 2, SOUNDDEVICE_DTYPE_MAP[d])]
     supported_channels = [c for c in channel_counts if _check_format(device, 48000, c, "int16")]
 
     # Build formats for both FLAC (preferred) and PCM
@@ -131,28 +129,18 @@ def detect_supported_audio_formats(
     for depth in supported_depths:
         for rate in supported_rates:
             for ch in supported_channels:
-                supported.append(
-                    SupportedAudioFormat(
-                        codec=AudioCodec.FLAC, channels=ch, sample_rate=rate, bit_depth=depth
-                    )
-                )
+                supported.append(SupportedAudioFormat(codec=AudioCodec.FLAC, channels=ch, sample_rate=rate, bit_depth=depth))
 
     # Add PCM formats as fallback
     for depth in supported_depths:
         for rate in supported_rates:
             for ch in supported_channels:
-                supported.append(
-                    SupportedAudioFormat(
-                        codec=AudioCodec.PCM, channels=ch, sample_rate=rate, bit_depth=depth
-                    )
-                )
+                supported.append(SupportedAudioFormat(codec=AudioCodec.PCM, channels=ch, sample_rate=rate, bit_depth=depth))
 
     if not supported:
         logger.warning("Could not detect supported formats, using safe defaults")
         supported = [
-            SupportedAudioFormat(
-                codec=AudioCodec.FLAC, channels=2, sample_rate=44100, bit_depth=16
-            ),
+            SupportedAudioFormat(codec=AudioCodec.FLAC, channels=2, sample_rate=44100, bit_depth=16),
             SupportedAudioFormat(codec=AudioCodec.PCM, channels=2, sample_rate=44100, bit_depth=16),
         ]
 
@@ -177,10 +165,7 @@ def parse_audio_format(format_str: str) -> SupportedAudioFormat:
     """
     parts = format_str.lower().split(":")
     if len(parts) != 4:
-        raise ValueError(
-            f"Invalid audio format '{format_str}'. "
-            "Expected format: codec:sample_rate:bit_depth:channels (e.g., flac:48000:24:2)"
-        )
+        raise ValueError(f"Invalid audio format '{format_str}'. " "Expected format: codec:sample_rate:bit_depth:channels (e.g., flac:48000:24:2)")
 
     codec_str, rate_str, depth_str, channels_str = parts
 
@@ -206,9 +191,7 @@ def parse_audio_format(format_str: str) -> SupportedAudioFormat:
     except ValueError:
         raise ValueError(f"Invalid channel count '{channels_str}'. Expected an integer.") from None
 
-    return SupportedAudioFormat(
-        codec=codec, channels=channels, sample_rate=sample_rate, bit_depth=bit_depth
-    )
+    return SupportedAudioFormat(codec=codec, channels=channels, sample_rate=sample_rate, bit_depth=bit_depth)
 
 
 def validate_audio_format(fmt: SupportedAudioFormat, device: AudioDevice) -> bool:

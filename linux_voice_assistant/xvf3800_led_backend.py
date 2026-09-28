@@ -33,31 +33,26 @@ PARAMETERS = {
     # APPLICATION_SERVICER_RESID (core info)
     # ---------------------------------------------------------------------
     "VERSION": (48, 0, 3, "ro", "uint8"),
-
     # Firmware / device control
-    "REBOOT":             (48, 7, 1, "wo", "uint8"),
+    "REBOOT": (48, 7, 1, "wo", "uint8"),
     "SAVE_CONFIGURATION": (48, 9, 1, "wo", "uint8"),
-
     # Audio manager output routing (category, source) per channel
-    "AUDIO_MGR_OP_L":     (35, 15, 2, "rw", "uint8"),
-    "AUDIO_MGR_OP_R":     (35, 19, 2, "rw", "uint8"),
-
+    "AUDIO_MGR_OP_L": (35, 15, 2, "rw", "uint8"),
+    "AUDIO_MGR_OP_R": (35, 19, 2, "rw", "uint8"),
     # ---------------------------------------------------------------------
     # GPO_SERVICER_RESID (LED controls)
     # ---------------------------------------------------------------------
     # Legacy/global controls
-    "LED_EFFECT":     (20, 12, 1, "rw", "uint8"),
+    "LED_EFFECT": (20, 12, 1, "rw", "uint8"),
     "LED_BRIGHTNESS": (20, 13, 1, "rw", "uint8"),
-    "LED_GAMMIFY":    (20, 14, 1, "rw", "uint8"),
-    "LED_SPEED":      (20, 15, 1, "rw", "uint8"),
-    "LED_COLOR":      (20, 16, 1, "rw", "uint32"),
-
+    "LED_GAMMIFY": (20, 14, 1, "rw", "uint8"),
+    "LED_SPEED": (20, 15, 1, "rw", "uint8"),
+    "LED_COLOR": (20, 16, 1, "rw", "uint32"),
     # Newer firmware: per-LED ring control (12 WS2812 LEDs)
     "LED_RING_COLOR": (20, 19, 12, "rw", "uint32"),
-    
     # GPO control for button monitoring and LED power
-    "GPO_READ_VALUES": (20, 0, 5, "ro", "uint8"),   # [X0D11, X0D30, X0D31, X0D33, X0D39]
-    "GPO_WRITE_VALUE": (20, 1, 2, "wo", "uint8"),   # [pin_index, value]
+    "GPO_READ_VALUES": (20, 0, 5, "ro", "uint8"),  # [X0D11, X0D30, X0D31, X0D33, X0D39]
+    "GPO_WRITE_VALUE": (20, 1, 2, "wo", "uint8"),  # [pin_index, value]
 }
 
 
@@ -75,7 +70,7 @@ class _ReSpeaker:
     def __enter__(self):
         """Context manager entry."""
         return self
-    
+
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Context manager exit."""
         self.close()
@@ -83,7 +78,7 @@ class _ReSpeaker:
 
     def close(self) -> None:
         """Release any underlying libusb resources (best-effort)."""
-        if hasattr(self, 'dev') and self.dev is not None:
+        if hasattr(self, "dev") and self.dev is not None:
             try:
                 usb.util.dispose_resources(self.dev)
             except Exception as e:
@@ -148,9 +143,7 @@ class _ReSpeaker:
         )
 
         self.dev.ctrl_transfer(
-            usb.util.CTRL_OUT
-            | usb.util.CTRL_TYPE_VENDOR
-            | usb.util.CTRL_RECIPIENT_DEVICE,
+            usb.util.CTRL_OUT | usb.util.CTRL_TYPE_VENDOR | usb.util.CTRL_RECIPIENT_DEVICE,
             0,
             cmdid,
             resid,
@@ -174,9 +167,7 @@ class _ReSpeaker:
         while True:
             attempt += 1
             resp = self.dev.ctrl_transfer(
-                usb.util.CTRL_IN
-                | usb.util.CTRL_TYPE_VENDOR
-                | usb.util.CTRL_RECIPIENT_DEVICE,
+                usb.util.CTRL_IN | usb.util.CTRL_TYPE_VENDOR | usb.util.CTRL_RECIPIENT_DEVICE,
                 0,
                 wValue,
                 resid,
@@ -214,9 +205,7 @@ class XVF3800USBDevice:
     def __init__(self, vid: int = _ReSpeaker.VID, pid: int = _ReSpeaker.PID):
         self._rsp = _find_device(vid=vid, pid=pid)
         if self._rsp is None:
-            raise RuntimeError(
-                f"XVF3800 USB device not found (vid=0x{vid:04x}, pid=0x{pid:04x})"
-            )
+            raise RuntimeError(f"XVF3800 USB device not found (vid=0x{vid:04x}, pid=0x{pid:04x})")
 
     def close(self) -> None:
         if self._rsp is not None:
@@ -277,20 +266,18 @@ class XVF3800LedBackend:
     """High-level LED backend for the XVF3800."""
 
     ring_led_count: int = 12
-    
+
     # GPO indices (from XVF3800 documentation)
     GPO_WS2812_POWER_INDEX = 3  # X0D33 in GPO_READ_VALUES response
 
     def __init__(self, vid: int = _ReSpeaker.VID, pid: int = _ReSpeaker.PID) -> None:
         wrapper = _find_device(vid, pid)
         if wrapper is None:
-            raise RuntimeError(
-                f"XVF3800 USB device not found (vid=0x{vid:04x}, pid=0x{pid:04x})"
-            )
+            raise RuntimeError(f"XVF3800 USB device not found (vid=0x{vid:04x}, pid=0x{pid:04x})")
 
         self._dev = wrapper
         self.supports_per_led: bool = False
-        
+
         # CRITICAL FIX: Ensure WS2812 LED power is enabled BEFORE any LED operations
         # This prevents intermittent LED failures caused by X0D33 being low at startup
         try:
@@ -299,9 +286,7 @@ class XVF3800LedBackend:
             time.sleep(0.05)  # Give firmware time to settle
             _LOGGER.info("XVF3800 WS2812 LED power enabled")
         except Exception as e:
-            _LOGGER.warning(
-                "Could not enable WS2812 LED power, LEDs may not work reliably: %s", e
-            )
+            _LOGGER.warning("Could not enable WS2812 LED power, LEDs may not work reliably: %s", e)
 
         # Best-effort feature detection: if we can read LED_RING_COLOR, we assume
         # per-LED control is supported by the current firmware.
@@ -332,13 +317,13 @@ class XVF3800LedBackend:
     # ---------------------------------------------------------------------
     # Helper: Ensure LED power before critical operations
     # ---------------------------------------------------------------------
-    
+
     def _ensure_led_power(self) -> bool:
         """Ensure WS2812 LED power is enabled before operations.
-        
+
         This provides belt-and-suspenders protection against the LED power
         being disabled by firmware or button interactions.
-        
+
         Returns:
             bool: True if power is confirmed on, False if check failed
         """
@@ -394,10 +379,8 @@ class XVF3800LedBackend:
         if not self.supports_per_led:
             raise RuntimeError("Per-LED ring control is not supported by this firmware")
         if len(color_values) != self.ring_led_count:
-            raise ValueError(
-                f"LED_RING_COLOR expects {self.ring_led_count} values, got {len(color_values)}"
-            )
-        
+            raise ValueError(f"LED_RING_COLOR expects {self.ring_led_count} values, got {len(color_values)}")
+
         # Ensure power before writing ring colors
         self._ensure_led_power()
         self._dev.write("LED_RING_COLOR", [int(v) & 0xFFFFFFFF for v in color_values])
@@ -405,9 +388,7 @@ class XVF3800LedBackend:
     def set_ring_rgb(self, colors: Sequence[Tuple[int, int, int]]) -> None:
         """Set all 12 ring LEDs with (r,g,b) tuples (length must be 12)."""
         if len(colors) != self.ring_led_count:
-            raise ValueError(
-                f"Ring expects {self.ring_led_count} colors, got {len(colors)}"
-            )
+            raise ValueError(f"Ring expects {self.ring_led_count} colors, got {len(colors)}")
         vals: List[int] = []
         for r, g, b in colors:
             r = max(0, min(255, int(r)))

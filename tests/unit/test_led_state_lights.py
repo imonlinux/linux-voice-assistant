@@ -94,9 +94,7 @@ class TestLedStateLightEntityInit:
         assert entity.effect == "Off"
 
     def test_off_effect_seeds_last_effect_to_solid(self):
-        entity, _, _ = make_entity(
-            initial={"effect": "off", "color": (0, 0, 0), "brightness": 0.5}
-        )
+        entity, _, _ = make_entity(initial={"effect": "off", "color": (0, 0, 0), "brightness": 0.5})
         # Turning ON later must restore something sensible, not "Off".
         assert entity._last_effect_display == "Solid"
 
@@ -128,11 +126,7 @@ class TestLedStateLightEntityInit:
 class TestCommandTranslation:
     def test_effect_command_normalizes_to_event_bus_id(self):
         entity, _, bus = make_entity(state_name="thinking")
-        list(
-            entity.handle_message(
-                make_light_command(7, effect="Slow Pulse", has_effect=True)
-            )
-        )
+        list(entity.handle_message(make_light_command(7, effect="Slow Pulse", has_effect=True)))
         assert events_for(bus, "set_thinking_effect") == [{"effect": "slow_pulse"}]
         assert events_for(bus, "set_thinking_color") == []
 
@@ -142,18 +136,14 @@ class TestCommandTranslation:
         assert events_for(bus, "set_idle_effect") == [{"effect": "off"}]
 
     def test_turn_on_restores_last_effect(self):
-        entity, _, bus = make_entity(
-            initial={"effect": "spin", "color": (255, 255, 0), "brightness": 0.8}
-        )
+        entity, _, bus = make_entity(initial={"effect": "spin", "color": (255, 255, 0), "brightness": 0.8})
         list(entity.handle_message(make_light_command(7, state=False, has_state=True)))
         list(entity.handle_message(make_light_command(7, state=True, has_state=True)))
         effects = events_for(bus, "set_idle_effect")
         assert effects == [{"effect": "off"}, {"effect": "spin"}]
 
     def test_turn_on_without_prior_effect_falls_back_to_solid(self):
-        entity, _, bus = make_entity(
-            initial={"effect": "off", "color": (0, 0, 0), "brightness": 0.5}
-        )
+        entity, _, bus = make_entity(initial={"effect": "off", "color": (0, 0, 0), "brightness": 0.5})
         list(entity.handle_message(make_light_command(7, state=True, has_state=True)))
         assert events_for(bus, "set_idle_effect") == [{"effect": "solid"}]
 
@@ -186,31 +176,19 @@ class TestCommandTranslation:
 
     def test_combined_state_and_effect_command(self):
         entity, _, bus = make_entity(state_name="error")
-        list(
-            entity.handle_message(
-                make_light_command(
-                    7, state=True, has_state=True, effect="Fast Blink", has_effect=True
-                )
-            )
-        )
+        list(entity.handle_message(make_light_command(7, state=True, has_state=True, effect="Fast Blink", has_effect=True)))
         # An explicit effect supersedes the ON restore path: exactly one
         # effect publish, no redundant restore.
         assert events_for(bus, "set_error_effect") == [{"effect": "fast_blink"}]
 
     def test_unknown_key_ignored(self):
         entity, _, bus = make_entity()
-        list(
-            entity.handle_message(make_light_command(99, state=False, has_state=True))
-        )
+        list(entity.handle_message(make_light_command(99, state=False, has_state=True)))
         assert events_for(bus, "set_idle_effect") == []
 
     def test_command_yields_state_response_and_updates_mirror(self):
         entity, _, _ = make_entity()
-        responses = list(
-            entity.handle_message(
-                make_light_command(7, state=False, has_state=True, effect="Off", has_effect=True)
-            )
-        )
+        responses = list(entity.handle_message(make_light_command(7, state=False, has_state=True, effect="Off", has_effect=True)))
         assert len(responses) == 1
         assert responses[0].key == 7
         assert entity.is_on is False
@@ -309,16 +287,12 @@ class TestColorWireModel:
     slider independent below 100%."""
 
     def test_seed_splits_raw_color_into_hue_and_intensity(self):
-        entity, _, _ = make_entity(
-            initial={"effect": "solid", "color": (64, 0, 128), "brightness": 0.5}
-        )
+        entity, _, _ = make_entity(initial={"effect": "solid", "color": (64, 0, 128), "brightness": 0.5})
         assert (entity.red, entity.green, entity.blue) == (0.5, 0.0, 1.0)
         assert abs(entity._color_brightness - 128 / 255.0) < 0.001
 
     def test_black_color_seeds_zero_intensity(self):
-        entity, _, _ = make_entity(
-            initial={"effect": "solid", "color": (0, 0, 0), "brightness": 0.5}
-        )
+        entity, _, _ = make_entity(initial={"effect": "solid", "color": (0, 0, 0), "brightness": 0.5})
         assert (entity.red, entity.green, entity.blue) == (0.0, 0.0, 0.0)
         assert entity._color_brightness == 0.0
 
@@ -331,9 +305,7 @@ class TestColorWireModel:
     def test_ha_wheel_command_keeps_brightness(self):
         # Pure red pick at 40% color intensity while master brightness sits
         # at 50%: HA sends hue (1,0,0) + color_brightness 0.4 + brightness.
-        entity, _, bus = make_entity(
-            initial={"effect": "solid", "color": (0, 255, 0), "brightness": 0.5}
-        )
+        entity, _, bus = make_entity(initial={"effect": "solid", "color": (0, 255, 0), "brightness": 0.5})
         list(
             entity.handle_message(
                 make_light_command(
@@ -349,26 +321,16 @@ class TestColorWireModel:
                 )
             )
         )
-        assert events_for(bus, "set_idle_color") == [
-            {"color": {"r": 102, "g": 0, "b": 0}, "brightness": 128}
-        ]
+        assert events_for(bus, "set_idle_color") == [{"color": {"r": 102, "g": 0, "b": 0}, "brightness": 128}]
         assert (entity.red, entity.green, entity.blue) == (1.0, 0.0, 0.0)
         response = entity._state_response()
         assert abs(response.color_brightness - 0.4) < 0.001
         assert abs(response.brightness - 0.5) < 0.001
 
     def test_brightness_only_command_does_not_move_color(self):
-        entity, _, bus = make_entity(
-            initial={"effect": "solid", "color": (255, 0, 0), "brightness": 1.0}
-        )
-        list(
-            entity.handle_message(
-                make_light_command(7, brightness=0.25, has_brightness=True)
-            )
-        )
-        assert events_for(bus, "set_idle_color") == [
-            {"color": {"r": 255, "g": 0, "b": 0}, "brightness": 64}
-        ]
+        entity, _, bus = make_entity(initial={"effect": "solid", "color": (255, 0, 0), "brightness": 1.0})
+        list(entity.handle_message(make_light_command(7, brightness=0.25, has_brightness=True)))
+        assert events_for(bus, "set_idle_color") == [{"color": {"r": 255, "g": 0, "b": 0}, "brightness": 64}]
         response = entity._state_response()
         assert entity.red == 1.0
         assert abs(entity._color_brightness - 1.0) < 0.001
@@ -376,17 +338,9 @@ class TestColorWireModel:
 
     def test_legacy_raw_rgb_without_color_brightness_splits(self):
         # Legacy clients fold intensity into rgb (max channel < 1.0).
-        entity, _, bus = make_entity(
-            initial={"effect": "solid", "color": (0, 0, 255), "brightness": 0.5}
-        )
-        list(
-            entity.handle_message(
-                make_light_command(7, red=0.5, green=0.0, blue=0.0, has_rgb=True)
-            )
-        )
-        assert events_for(bus, "set_idle_color") == [
-            {"color": {"r": 128, "g": 0, "b": 0}, "brightness": 128}
-        ]
+        entity, _, bus = make_entity(initial={"effect": "solid", "color": (0, 0, 255), "brightness": 0.5})
+        list(entity.handle_message(make_light_command(7, red=0.5, green=0.0, blue=0.0, has_rgb=True)))
+        assert events_for(bus, "set_idle_color") == [{"color": {"r": 128, "g": 0, "b": 0}, "brightness": 128}]
         assert (entity.red, entity.green, entity.blue) == (1.0, 0.0, 0.0)
         assert abs(entity._color_brightness - 0.5) < 0.001
 
@@ -394,9 +348,7 @@ class TestColorWireModel:
         # HA pick (hue red, color_brightness 0.4) -> ring raw (102, 0, 0) ->
         # controller echoes (102, 0, 0); the mirror must not drift and no
         # redundant broadcast may fire.
-        entity, server, bus = make_entity(
-            initial={"effect": "solid", "color": (0, 255, 0), "brightness": 0.5}
-        )
+        entity, server, bus = make_entity(initial={"effect": "solid", "color": (0, 255, 0), "brightness": 0.5})
         list(
             entity.handle_message(
                 make_light_command(

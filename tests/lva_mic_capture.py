@@ -1,12 +1,14 @@
 import argparse
-import soundcard as sc
-import numpy as np
 import wave
+
+import numpy as np
+import soundcard as sc
 
 DEVICE = "reSpeaker XVF3800 4-Mic Array Analog Stereo"
 SECONDS = 5
 SR = 16000
 BLOCK = 1024
+
 
 def main():
     parser = argparse.ArgumentParser(description="Record from soundcard mic to WAV.")
@@ -68,6 +70,6 @@ def main():
 
     print("Wrote:", out_path)
 
+
 if __name__ == "__main__":
     main()
-

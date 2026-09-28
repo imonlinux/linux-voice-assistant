@@ -2,7 +2,8 @@
 """Quick test to verify format_mac function works correctly."""
 
 import sys
-sys.path.insert(0, '/home/pi/linux-voice-assistant')
+
+sys.path.insert(0, "/home/pi/linux-voice-assistant")
 
 from linux_voice_assistant.util import format_mac
 

@@ -64,10 +64,7 @@ def choose_device(devices: List[dict]) -> Optional[dict]:
         mfg = dev.get("manufacturer_string") or "<unknown>"
         prod = dev.get("product_string") or "<unknown>"
         iface = dev.get("interface_number", -1)
-        print(
-            f"  [{idx}] path={path!r}, serial={serial!r}, iface={iface}, "
-            f"manufacturer={mfg!r}, product={prod!r}"
-        )
+        print(f"  [{idx}] path={path!r}, serial={serial!r}, iface={iface}, " f"manufacturer={mfg!r}, product={prod!r}")
 
     print()
     print("NOTE: Using index 0 by default. If this is not the HID interface, ")
@@ -94,9 +91,7 @@ def open_device(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(
-        description="Probe HID reports for the ReSpeaker XVF3800 mute button."
-    )
+    parser = argparse.ArgumentParser(description="Probe HID reports for the ReSpeaker XVF3800 mute button.")
     parser.add_argument(
         "--vendor-id",
         type=lambda x: int(x, 0),
@@ -106,7 +101,7 @@ def main() -> int:
     parser.add_argument(
         "--product-id",
         type=lambda x: int(x, 0),
-        default=0x001a,
+        default=0x001A,
         help="USB product ID (default: 0x001a for XVF3800)",
     )
     parser.add_argument(

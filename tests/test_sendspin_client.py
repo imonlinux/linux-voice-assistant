@@ -9,20 +9,17 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from aiosendspin.client import client as aio_client_mod
 
 from linux_voice_assistant.config import SendspinConfig
 from linux_voice_assistant.event_bus import EventBus
 from linux_voice_assistant.sendspin.client import LVASendspinClient
-from aiosendspin.client import client as aio_client_mod
-
 
 
 def make_config(**kwargs) -> SendspinConfig:
     from linux_voice_assistant.config import SendspinConnectionConfig, SendspinPairingConfig
 
-    kwargs.setdefault(
-        "connection", SendspinConnectionConfig(server_host="192.168.0.100", server_port=8927)
-    )
+    kwargs.setdefault("connection", SendspinConnectionConfig(server_host="192.168.0.100", server_port=8927))
     # Default to the explicit espeak engine so tests don't hit the piper
     # model download path; piper-specific tests override this.
     kwargs.setdefault("pairing", SendspinPairingConfig(voice_engine="espeak-ng"))
@@ -45,9 +42,7 @@ def test_server_url_from_config(tmp_path: Path) -> None:
 
     sendspin = SendspinConfig(
         enabled=True,
-        connection=SendspinConnectionConfig(
-            server_host="192.168.0.100", server_port=8927, server_path="/sendspin"
-        ),
+        connection=SendspinConnectionConfig(server_host="192.168.0.100", server_port=8927, server_path="/sendspin"),
     )
     client = make_client(tmp_path, sendspin, EventBus())
     assert client._server_url == "ws://192.168.0.100:8927/sendspin"
@@ -69,9 +64,7 @@ def test_server_url_requires_host_when_mdns_disabled(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="mdns"):
         make_client(
             tmp_path,
-            SendspinConfig(
-                enabled=True, connection=SendspinConnectionConfig(mdns=False)
-            ),
+            SendspinConfig(enabled=True, connection=SendspinConnectionConfig(mdns=False)),
             EventBus(),
         )
 
@@ -192,9 +185,7 @@ def test_server_volume_command_applies_and_publishes(tmp_path: Path) -> None:
     client._connected = True
     client._client = MagicMock()
 
-    client._on_server_command(
-        SimpleNamespace(player=SimpleNamespace(command=PlayerCommand.VOLUME, volume=42))
-    )
+    client._on_server_command(SimpleNamespace(player=SimpleNamespace(command=PlayerCommand.VOLUME, volume=42)))
 
     output.set_volume.assert_called_once_with(42, muted=False)
     assert len(echo_tasks) == 1, "volume command must be echoed via client/state"
@@ -222,9 +213,7 @@ def test_server_mute_command_applies(tmp_path: Path) -> None:
     client._connected = True
     client._client = MagicMock()
 
-    client._on_server_command(
-        SimpleNamespace(player=SimpleNamespace(command=PlayerCommand.MUTE, mute=True))
-    )
+    client._on_server_command(SimpleNamespace(player=SimpleNamespace(command=PlayerCommand.MUTE, mute=True)))
 
     output.set_volume.assert_called_once_with(100, muted=True)
     assert len(echo_tasks) == 1, "mute command must also be echoed via client/state"
@@ -307,9 +296,7 @@ _CALLBACK_CONTRACTS = [
 
 
 @pytest.mark.parametrize("add_method,alias_name,handler_name", _CALLBACK_CONTRACTS)
-def test_handler_matches_library_callback_contract(
-    tmp_path: Path, add_method: str, alias_name: str, handler_name: str
-) -> None:
+def test_handler_matches_library_callback_contract(tmp_path: Path, add_method: str, alias_name: str, handler_name: str) -> None:
     """Our handlers must accept exactly the arguments the library passes."""
     client = make_client(tmp_path, make_config(), EventBus())
     handler = getattr(client, handler_name)
@@ -319,19 +306,11 @@ def test_handler_matches_library_callback_contract(
     # is the argument list.
     arg_types = typing.get_args(callback_alias)[0]
 
-    params = [
-        p for name, p in inspect.signature(handler).parameters.items() if name != "self"
-    ]
+    params = [p for name, p in inspect.signature(handler).parameters.items() if name != "self"]
     required = [p for p in params if p.default is inspect.Parameter.empty]
 
-    assert len(arg_types) >= len(required), (
-        f"{handler_name}: library passes {len(arg_types)} arg(s) "
-        f"but handler requires {len(required)}"
-    )
-    assert len(arg_types) <= len(params), (
-        f"{handler_name}: handler accepts {len(params)} arg(s) "
-        f"but library passes {len(arg_types)}"
-    )
+    assert len(arg_types) >= len(required), f"{handler_name}: library passes {len(arg_types)} arg(s) " f"but handler requires {len(required)}"
+    assert len(arg_types) <= len(params), f"{handler_name}: handler accepts {len(params)} arg(s) " f"but library passes {len(arg_types)}"
 
 
 def test_every_library_listener_we_register_exists(tmp_path: Path) -> None:
@@ -425,6 +404,7 @@ def test_start_gate_respects_configured_buffer_target(tmp_path: Path) -> None:
     immediate underflow/clear/re-buffer cycle at every stream start.
     """
     from aiosendspin.client.models import PCMFormat
+
     from linux_voice_assistant.sendspin.output import AudioPlayer
 
     player = AudioPlayer(
@@ -457,6 +437,7 @@ def test_start_gate_respects_configured_buffer_target(tmp_path: Path) -> None:
 # Spoken pairing PIN (espeak-ng)
 # --------------------------------------------------------------------------- #
 
+
 def make_speaker_client(tmp_path: Path, **pairing_kwargs) -> LVASendspinClient:
     from linux_voice_assistant.config import SendspinPairingConfig
 
@@ -482,8 +463,7 @@ def test_speak_pin_builds_espeak_command(tmp_path: Path) -> None:
             return mpv_proc
         return espeak_proc
 
-    with patch("linux_voice_assistant.sendspin.client.shutil.which", return_value="/usr/bin/espeak-ng"), \
-         patch("linux_voice_assistant.sendspin.client.subprocess.Popen", side_effect=fake_popen):
+    with patch("linux_voice_assistant.sendspin.client.shutil.which", return_value="/usr/bin/espeak-ng"), patch("linux_voice_assistant.sendspin.client.subprocess.Popen", side_effect=fake_popen):
         asyncio.run(client._on_pairing_speak_pin("900984", languages=("en-US",)))
 
     # first Popen is espeak (WAV to stdout), second is mpv reading stdin
@@ -505,8 +485,7 @@ def test_speak_pin_none_stops_previous_announcement(tmp_path: Path) -> None:
     espeak_proc.poll.return_value = None
     client._pin_speech_procs = [espeak_proc, None]
 
-    with patch("linux_voice_assistant.sendspin.client.shutil.which", return_value="/usr/bin/espeak-ng"), \
-         patch("linux_voice_assistant.sendspin.client.subprocess.Popen") as mock_popen:
+    with patch("linux_voice_assistant.sendspin.client.shutil.which", return_value="/usr/bin/espeak-ng"), patch("linux_voice_assistant.sendspin.client.subprocess.Popen") as mock_popen:
         asyncio.run(client._on_pairing_speak_pin(None, languages=()))
 
     espeak_proc.terminate.assert_called_once()
@@ -518,8 +497,7 @@ def test_speak_pin_disabled_by_config(tmp_path: Path) -> None:
     from unittest.mock import patch
 
     client = make_speaker_client(tmp_path, speak_pin=False)
-    with patch("linux_voice_assistant.sendspin.client.shutil.which", return_value="/usr/bin/espeak-ng"), \
-         patch("linux_voice_assistant.sendspin.client.subprocess.Popen") as mock_popen:
+    with patch("linux_voice_assistant.sendspin.client.shutil.which", return_value="/usr/bin/espeak-ng"), patch("linux_voice_assistant.sendspin.client.subprocess.Popen") as mock_popen:
         asyncio.run(client._on_pairing_speak_pin("1234", languages=()))
     mock_popen.assert_not_called()
 
@@ -528,8 +506,7 @@ def test_speak_pin_missing_espeak_degrades_gracefully(tmp_path: Path) -> None:
     from unittest.mock import patch
 
     client = make_speaker_client(tmp_path, voice_engine="espeak-ng")
-    with patch("linux_voice_assistant.sendspin.client.shutil.which", return_value=None), \
-         patch("linux_voice_assistant.sendspin.client.subprocess.Popen") as mock_popen:
+    with patch("linux_voice_assistant.sendspin.client.shutil.which", return_value=None), patch("linux_voice_assistant.sendspin.client.subprocess.Popen") as mock_popen:
         asyncio.run(client._on_pairing_speak_pin("1234", languages=()))
     mock_popen.assert_not_called()
 
@@ -546,8 +523,7 @@ def test_config_voice_overrides_server_languages(tmp_path: Path) -> None:
         commands.append(cmd)
         return MagicMock()
 
-    with patch("linux_voice_assistant.sendspin.client.shutil.which", return_value="/usr/bin/espeak-ng"), \
-         patch("linux_voice_assistant.sendspin.client.subprocess.Popen", side_effect=fake_popen):
+    with patch("linux_voice_assistant.sendspin.client.shutil.which", return_value="/usr/bin/espeak-ng"), patch("linux_voice_assistant.sendspin.client.subprocess.Popen", side_effect=fake_popen):
         asyncio.run(client._on_pairing_speak_pin("123456", languages=("en-US",)))
 
     assert commands[0][1:5] == ["-s", "120", "-v", "de"]

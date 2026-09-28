@@ -34,8 +34,8 @@ from linux_voice_assistant.util import slugify_device_id
 _LOGGER = logging.getLogger("lva_tray_client")
 
 # This file is: <repo>/linux_voice_assistant/tray_client/client.py
-_PKG_DIR = Path(__file__).resolve().parents[1]   # <repo>/linux_voice_assistant
-_REPO_DIR = _PKG_DIR.parent                      # <repo>
+_PKG_DIR = Path(__file__).resolve().parents[1]  # <repo>/linux_voice_assistant
+_REPO_DIR = _PKG_DIR.parent  # <repo>
 
 
 def _resolve_config_path(config_path: Optional[Path]) -> Path:
@@ -82,9 +82,7 @@ class LvaTrayClient(QtWidgets.QSystemTrayIcon):
         # MQTT configuration
         mqtt_cfg = config.mqtt
         if not mqtt_cfg.enabled or not mqtt_cfg.host:
-            raise RuntimeError(
-                "Tray client requires MQTT to be enabled and mqtt.host to be set in config.json"
-            )
+            raise RuntimeError("Tray client requires MQTT to be enabled and mqtt.host to be set in config.json")
 
         self._mqtt_host = mqtt_cfg.host
         self._mqtt_port = mqtt_cfg.port
@@ -100,11 +98,11 @@ class LvaTrayClient(QtWidgets.QSystemTrayIcon):
 
         # Default colors per state (fallbacks)
         self._default_colors: Dict[str, QtGui.QColor] = {
-            SatelliteState.IDLE.value: QtGui.QColor(128, 0, 255),        # purple
-            SatelliteState.LISTENING.value: QtGui.QColor(0, 0, 255),     # blue
-            SatelliteState.THINKING.value: QtGui.QColor(255, 255, 0),    # yellow
-            SatelliteState.RESPONDING.value: QtGui.QColor(0, 255, 0),    # green
-            SatelliteState.ERROR.value: QtGui.QColor(255, 165, 0),       # orange
+            SatelliteState.IDLE.value: QtGui.QColor(128, 0, 255),  # purple
+            SatelliteState.LISTENING.value: QtGui.QColor(0, 0, 255),  # blue
+            SatelliteState.THINKING.value: QtGui.QColor(255, 255, 0),  # yellow
+            SatelliteState.RESPONDING.value: QtGui.QColor(0, 255, 0),  # green
+            SatelliteState.ERROR.value: QtGui.QColor(255, 165, 0),  # orange
         }
 
         # Last MQTT-derived color per state (idle included)
@@ -360,9 +358,7 @@ class LvaTrayClient(QtWidgets.QSystemTrayIcon):
             color = QtGui.QColor(128, 128, 128)
             tooltip_state = "offline"
         else:
-            color = self._last_color_by_state.get(
-                key, self._default_colors.get(key, QtGui.QColor(128, 128, 128))
-            )
+            color = self._last_color_by_state.get(key, self._default_colors.get(key, QtGui.QColor(128, 128, 128)))
             tooltip_state = key
 
         # If muted, tint red (but keep some info from base color)

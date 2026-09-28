@@ -7,6 +7,7 @@ channel, sample-rate mismatch) are visible before starting the satellite.
 
 Uses the same `soundcard` library as the daemon itself.
 """
+
 import argparse
 
 import numpy as np
@@ -44,10 +45,7 @@ def main():
     for idx, mic in enumerate(mics):
         flag = "*" if args.device in (mic.name, str(idx)) else " "
         marker = " [system default]" if mic.id == default_id else ""
-        print(
-            f"{flag} [{idx}] {mic.name} "
-            f"(channels={mic.channels}){marker}"
-        )
+        print(f"{flag} [{idx}] {mic.name} " f"(channels={mic.channels}){marker}")
         if flag == "*":
             selected = mic
 
@@ -56,10 +54,7 @@ def main():
         try:
             selected = sc.get_microphone(args.device)
         except Exception as err:
-            raise SystemExit(
-                f"Device {args.device!r} not found by exact name or substring; "
-                f"pick one from the list above ({err})"
-            )
+            raise SystemExit(f"Device {args.device!r} not found by exact name or substring; " f"pick one from the list above ({err})")
 
     print(f"\n=== Opening recorder: {selected.name} ===")
     num_frames = int(args.seconds * args.samplerate)
@@ -78,8 +73,7 @@ def main():
     print(f"Sample min/max (int16): {pcm16.min()} / {pcm16.max()}")
     peak = np.max(np.abs(pcm16))
     if peak < 100:
-        print("-> WARNING: capture is essentially silent (peak < 100). "
-              "Check the device is the XVF3800 and its input gain/mute state.")
+        print("-> WARNING: capture is essentially silent (peak < 100). " "Check the device is the XVF3800 and its input gain/mute state.")
 
 
 if __name__ == "__main__":

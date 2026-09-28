@@ -79,9 +79,7 @@ async def discover_sendspin_servers(
     found: Dict[str, DiscoveredSendspinServer] = {}
     lock = asyncio.Lock()
 
-    async def _handle_service_change(
-        zeroconf, stype: str, name: str, state_change: ServiceStateChange
-    ) -> None:
+    async def _handle_service_change(zeroconf, stype: str, name: str, state_change: ServiceStateChange) -> None:
         if state_change not in (ServiceStateChange.Added, ServiceStateChange.Updated):
             return
         try:
@@ -107,12 +105,8 @@ async def discover_sendspin_servers(
             _LOGGER.debug("Sendspin discovery error for %s", name, exc_info=True)
 
     # zeroconf invokes handlers with keyword arguments; keep the names.
-    def _on_state_change(
-        zeroconf, service_type: str, name: str, state_change: ServiceStateChange
-    ) -> None:
-        asyncio.create_task(
-            _handle_service_change(zeroconf, service_type, name, state_change)
-        )
+    def _on_state_change(zeroconf, service_type: str, name: str, state_change: ServiceStateChange) -> None:
+        asyncio.create_task(_handle_service_change(zeroconf, service_type, name, state_change))
 
     browser = AsyncServiceBrowser(azc.zeroconf, service_type, handlers=[_on_state_change])
     try:

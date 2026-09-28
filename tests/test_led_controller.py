@@ -1,12 +1,14 @@
 """Tests for LED Controller integration and hardware abstraction."""
 
-import pytest
 import asyncio
-from unittest.mock import Mock, MagicMock, patch
-from linux_voice_assistant.led_controller import LedController
+from unittest.mock import MagicMock, Mock, patch
+
+import pytest
+
 from linux_voice_assistant.config import LedConfig
-from linux_voice_assistant.models import Preferences
 from linux_voice_assistant.event_bus import EventBus
+from linux_voice_assistant.led_controller import LedController
+from linux_voice_assistant.models import Preferences
 
 
 class TestLedControllerInitialization:
@@ -27,13 +29,7 @@ class TestLedControllerInitialization:
     @pytest.fixture
     def led_config(self):
         """Create basic LED configuration."""
-        return LedConfig(
-            led_type="dotstar",
-            interface="spi",
-            clock_pin=11,
-            data_pin=10,
-            num_leds=12
-        )
+        return LedConfig(led_type="dotstar", interface="spi", clock_pin=11, data_pin=10, num_leds=12)
 
     @pytest.fixture
     def preferences(self):
@@ -44,12 +40,7 @@ class TestLedControllerInitialization:
 
     def test_led_controller_initialization(self, event_loop, event_bus, led_config, preferences):
         """Test LedController can be initialized."""
-        controller = LedController(
-            loop=event_loop,
-            event_bus=event_bus,
-            config=led_config,
-            preferences=preferences
-        )
+        controller = LedController(loop=event_loop, event_bus=event_bus, config=led_config, preferences=preferences)
 
         assert controller.loop == event_loop
         assert controller.num_leds == 12
@@ -60,48 +51,21 @@ class TestLedControllerInitialization:
     def test_led_controller_with_different_led_counts(self, event_loop, event_bus, led_config):
         """Test LedController with different LED counts."""
         prefs_10 = Preferences(num_leds=10)
-        controller_10 = LedController(
-            loop=event_loop,
-            event_bus=event_bus,
-            config=led_config,
-            preferences=prefs_10
-        )
+        controller_10 = LedController(loop=event_loop, event_bus=event_bus, config=led_config, preferences=prefs_10)
         assert controller_10.num_leds == 10
 
         # Create new config for LED controller 15
-        led_config_15 = LedConfig(
-            led_type="dotstar",
-            interface="spi",
-            clock_pin=11,
-            data_pin=10,
-            num_leds=15
-        )
+        led_config_15 = LedConfig(led_type="dotstar", interface="spi", clock_pin=11, data_pin=10, num_leds=15)
         prefs_15 = Preferences(num_leds=15)
-        controller_15 = LedController(
-            loop=event_loop,
-            event_bus=event_bus,
-            config=led_config_15,
-            preferences=prefs_15
-        )
+        controller_15 = LedController(loop=event_loop, event_bus=event_bus, config=led_config_15, preferences=prefs_15)
         assert controller_15.num_leds == 15
 
     def test_led_controller_with_xvf3800_config(self, event_loop, event_bus):
         """Test LedController with XVF3800 configuration."""
-        xvf_config = LedConfig(
-            led_type="xvf3800",
-            interface="usb",
-            clock_pin=0,
-            data_pin=0,
-            num_leds=12
-        )
+        xvf_config = LedConfig(led_type="xvf3800", interface="usb", clock_pin=0, data_pin=0, num_leds=12)
 
         prefs = Preferences(num_leds=12)
-        controller = LedController(
-            loop=event_loop,
-            event_bus=event_bus,
-            config=xvf_config,
-            preferences=prefs
-        )
+        controller = LedController(loop=event_loop, event_bus=event_bus, config=xvf_config, preferences=prefs)
 
         assert controller.num_leds == 12
 
@@ -124,13 +88,7 @@ class TestLedControllerEventHandler:
     @pytest.fixture
     def led_config(self):
         """Create LED configuration."""
-        return LedConfig(
-            led_type="dotstar",
-            interface="spi",
-            clock_pin=11,
-            data_pin=12,
-            num_leds=12
-        )
+        return LedConfig(led_type="dotstar", interface="spi", clock_pin=11, data_pin=12, num_leds=12)
 
     @pytest.fixture
     def preferences(self):
@@ -147,7 +105,7 @@ class TestLedControllerEventHandler:
         has_subscribe = False
         for attr_name in dir(LedController):
             attr = getattr(LedController, attr_name)
-            if hasattr(attr, '_event_bus_subscribe'):
+            if hasattr(attr, "_event_bus_subscribe"):
                 has_subscribe = True
                 break
 
@@ -174,27 +132,14 @@ class TestLedControllerColorHandling:
     @pytest.fixture
     def minimal_controller(self, event_loop, event_bus):
         """Create minimal LED controller."""
-        config = LedConfig(
-            led_type="dotstar",
-            interface="spi",
-            clock_pin=11,
-            data_pin=10,
-            num_leds=12
-        )
+        config = LedConfig(led_type="dotstar", interface="spi", clock_pin=11, data_pin=10, num_leds=12)
         prefs = Preferences(num_leds=12)
 
-        return LedController(
-            loop=event_loop,
-            event_bus=event_bus,
-            config=config,
-            preferences=prefs
-        )
+        return LedController(loop=event_loop, event_bus=event_bus, config=config, preferences=prefs)
 
     def test_led_controller_default_colors_exist(self):
         """Test that default LED colors are defined."""
-        from linux_voice_assistant.led_controller import (
-            _OFF, _BLUE, _YELLOW, _GREEN, _DIM_RED, _ORANGE, _PURPLE
-        )
+        from linux_voice_assistant.led_controller import _BLUE, _DIM_RED, _GREEN, _OFF, _ORANGE, _PURPLE, _YELLOW
 
         # Check that color constants are defined
         assert _OFF == (0, 0, 0)
@@ -209,7 +154,7 @@ class TestLedControllerColorHandling:
         """Test color tuple validation."""
         # Valid colors
         valid_colors = [
-            (0, 0, 0),    # Off
+            (0, 0, 0),  # Off
             (255, 0, 0),  # Red
             (0, 255, 0),  # Green
             (0, 0, 255),  # Blue
@@ -243,7 +188,7 @@ class TestLedControllerHardwareAbstraction:
     def mock_board(self, monkeypatch):
         """Mock Adafruit board module."""
         mock_board = MagicMock()
-        monkeypatch.setitem(globals(), 'board', mock_board)
+        monkeypatch.setitem(globals(), "board", mock_board)
         return mock_board
 
     def test_led_controller_handles_missing_board_module(self, event_loop, event_bus):
@@ -251,42 +196,20 @@ class TestLedControllerHardwareAbstraction:
         # This test verifies that when board module is not available,
         # the controller doesn't crash but logs a warning
 
-        config = LedConfig(
-            led_type="dotstar",
-            interface="spi",
-            clock_pin=11,
-            data_pin=10,
-            num_leds=12
-        )
+        config = LedConfig(led_type="dotstar", interface="spi", clock_pin=11, data_pin=10, num_leds=12)
         prefs = Preferences(num_leds=12)
 
         # Should not raise exception even if board module is missing
-        controller = LedController(
-            loop=event_loop,
-            event_bus=event_bus,
-            config=config,
-            preferences=prefs
-        )
+        controller = LedController(loop=event_loop, event_bus=event_bus, config=config, preferences=prefs)
 
         assert controller is not None
 
     def test_led_controller_with_neopixel_config(self, event_loop, event_bus):
         """Test LedController with NeoPixel configuration."""
-        neo_config = LedConfig(
-            led_type="neopixel",
-            interface="spi",
-            clock_pin=0,
-            data_pin=0,
-            num_leds=16
-        )
+        neo_config = LedConfig(led_type="neopixel", interface="spi", clock_pin=0, data_pin=0, num_leds=16)
 
         prefs = Preferences(num_leds=16)
-        controller = LedController(
-            loop=event_loop,
-            event_bus=event_bus,
-            config=neo_config,
-            preferences=prefs
-        )
+        controller = LedController(loop=event_loop, event_bus=event_bus, config=neo_config, preferences=prefs)
 
         assert controller.num_leds == 16
 
@@ -309,26 +232,15 @@ class TestLedControllerStateTransitions:
     @pytest.fixture
     def minimal_controller(self, event_loop, event_bus):
         """Create minimal LED controller."""
-        config = LedConfig(
-            led_type="dotstar",
-            interface="spi",
-            clock_pin=11,
-            data_pin=10,
-            num_leds=12
-        )
+        config = LedConfig(led_type="dotstar", interface="spi", clock_pin=11, data_pin=10, num_leds=12)
         prefs = Preferences(num_leds=12)
 
-        return LedController(
-            loop=event_loop,
-            event_bus=event_bus,
-            config=config,
-            preferences=prefs
-        )
+        return LedController(loop=event_loop, event_bus=event_bus, config=config, preferences=prefs)
 
     def test_led_controller_mute_state_tracking(self, minimal_controller):
         """Test that LED controller tracks mute state."""
         # Controller should track mute state for overlay effects
-        assert hasattr(minimal_controller, '_mic_is_muted')
+        assert hasattr(minimal_controller, "_mic_is_muted")
         assert isinstance(minimal_controller._mic_is_muted, bool)
 
     def test_muted_state_still_publishes_to_mqtt(self, minimal_controller, event_bus):
@@ -342,7 +254,7 @@ class TestLedControllerStateTransitions:
         published = []
         event_bus.subscribe("publish_state_to_mqtt", published.append)
 
-        with patch.object(minimal_controller, 'run_action') as mock_run:
+        with patch.object(minimal_controller, "run_action") as mock_run:
             minimal_controller._mic_is_muted = True
             minimal_controller._apply_state_effect("idle")
 
@@ -381,21 +293,10 @@ class TestLedControllerMqttIntegration:
     @pytest.fixture
     def minimal_controller(self, event_loop, event_bus):
         """Create minimal LED controller."""
-        config = LedConfig(
-            led_type="dotstar",
-            interface="spi",
-            clock_pin=11,
-            data_pin=10,
-            num_leds=12
-        )
+        config = LedConfig(led_type="dotstar", interface="spi", clock_pin=11, data_pin=10, num_leds=12)
         prefs = Preferences(num_leds=12)
 
-        return LedController(
-            loop=event_loop,
-            event_bus=event_bus,
-            config=config,
-            preferences=prefs
-        )
+        return LedController(loop=event_loop, event_bus=event_bus, config=config, preferences=prefs)
 
     def test_led_controller_num_leds_update(self, minimal_controller):
         """Test that LED count can be updated dynamically."""
@@ -466,9 +367,7 @@ class TestStartupSequence:
         assert (0, 255, 0) in fills
 
     @pytest.mark.asyncio
-    async def test_startup_sequence_cancelled_does_not_stomp_new_action(
-        self, hw_controller
-    ):
+    async def test_startup_sequence_cancelled_does_not_stomp_new_action(self, hw_controller):
         """A real action during the blink owns the ring; no idle re-apply.
 
         The blink handlers swallow CancelledError (to blank the ring), and
@@ -539,9 +438,7 @@ class TestLedConfigPersistence:
             num_leds=12,
         )
 
-    def make_controller(
-        self, event_loop, event_bus, led_config, preferences, persist=None
-    ):
+    def make_controller(self, event_loop, event_bus, led_config, preferences, persist=None):
         return LedController(
             loop=event_loop,
             event_bus=event_bus,
@@ -550,15 +447,11 @@ class TestLedConfigPersistence:
             persist=persist,
         )
 
-    def test_config_change_persists_to_preferences(
-        self, event_loop, event_bus, led_config
-    ):
+    def test_config_change_persists_to_preferences(self, event_loop, event_bus, led_config):
         """A set_<state>_effect command writes through to preferences."""
         prefs = Preferences(num_leds=12)
         save = Mock()
-        controller = self.make_controller(
-            event_loop, event_bus, led_config, prefs, persist=save
-        )
+        controller = self.make_controller(event_loop, event_bus, led_config, prefs, persist=save)
 
         event_bus.publish("set_listening_effect", {"effect": "slow_pulse"})
 
@@ -567,15 +460,11 @@ class TestLedConfigPersistence:
         assert prefs.led_states["listening"]["brightness"] == pytest.approx(0.5)
         save.assert_called_once()
 
-    def test_color_change_persists_clamped_values(
-        self, event_loop, event_bus, led_config
-    ):
+    def test_color_change_persists_clamped_values(self, event_loop, event_bus, led_config):
         """Color commands snapshot the raw 0-255 scale into preferences."""
         prefs = Preferences(num_leds=12)
         save = Mock()
-        controller = self.make_controller(
-            event_loop, event_bus, led_config, prefs, persist=save
-        )
+        controller = self.make_controller(event_loop, event_bus, led_config, prefs, persist=save)
 
         event_bus.publish(
             "set_thinking_color",
@@ -604,9 +493,7 @@ class TestLedConfigPersistence:
         """Replays matching the current config must not write preferences."""
         prefs = Preferences(num_leds=12)
         save = Mock()
-        controller = self.make_controller(
-            event_loop, event_bus, led_config, prefs, persist=save
-        )
+        controller = self.make_controller(event_loop, event_bus, led_config, prefs, persist=save)
 
         event_bus.publish(
             "set_thinking_color",
@@ -673,9 +560,7 @@ class TestLedConfigPersistence:
 
         assert controller.configs["idle"]["effect"] == "off"
 
-    def test_entity_seeds_from_restored_config(
-        self, event_loop, event_bus, led_config
-    ):
+    def test_entity_seeds_from_restored_config(self, event_loop, event_bus, led_config):
         """The reboot path end to end: entity reflects the restored config."""
         from linux_voice_assistant.led_light_entities import LedStateLightEntity
 

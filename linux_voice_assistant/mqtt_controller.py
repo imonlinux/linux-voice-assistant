@@ -179,21 +179,17 @@ class MqttController(EventHandler):
 
         self._bootstrap_state_sync = True
         self._bootstrap_ends_at = self.loop.time() + 5.0
-        self._bootstrap_end_handle = self.loop.call_later(
-            5.0, self._end_bootstrap_state_sync
-        )
+        self._bootstrap_end_handle = self.loop.call_later(5.0, self._end_bootstrap_state_sync)
 
         client.subscribe(f"{self._topic_prefix}/+/set")
         client.subscribe(f"{self._topic_prefix}/+/state")
 
         self._publish_discovery_configs()
-            
+
     def _on_disconnect(self, client, userdata, disconnect_flags, rc, properties=None):
         self._connected = False
         if rc != 0:
-            _LOGGER.warning(
-                "Unexpected MQTT disconnection (rc=%s); paho will retry with backoff", rc
-            )
+            _LOGGER.warning("Unexpected MQTT disconnection (rc=%s); paho will retry with backoff", rc)
         else:
             _LOGGER.debug("MQTT client disconnected cleanly")
 
@@ -354,7 +350,7 @@ class MqttController(EventHandler):
 
         self.publish_mute_state(self._is_muted)
         self.publish_num_leds_state(self.preferences.num_leds)
-        
+
     def publish_mute_state(self, is_muted: bool):
         self._is_muted = is_muted
         self._client.publish(
@@ -390,9 +386,7 @@ class MqttController(EventHandler):
             # Consolidated truth topic: exactly one retained message that
             # names the currently-active state, so reconnect/replays cannot
             # leave consumers on a stale state.
-            self._client.publish(
-                self.topics["voice_state"]["state"], state_name, retain=True
-            )
+            self._client.publish(self.topics["voice_state"]["state"], state_name, retain=True)
 
     @subscribe
     def mic_muted(self, data: dict):

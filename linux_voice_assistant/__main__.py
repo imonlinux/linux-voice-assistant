@@ -20,9 +20,15 @@ from getmac import get_mac_address  # type: ignore
 from pymicro_wakeword import MicroWakeWord, MicroWakeWordFeatures
 from pyopen_wakeword import OpenWakeWord, OpenWakeWordFeatures
 
+# Fork: hardware controllers and subsystems (all optional, config-gated)
+from .audio_volume import ensure_output_volume
+from .button_controller import ButtonController
 from .config import Config, apply_config_defaults, load_config_from_json
+from .event_bus import EventBus, EventHandler, subscribe
+from .led_controller import LedController
 from .models import Preferences, ServerState, WakeWordType, initial_stop_word_threshold
 from .mpv_player import MpvMediaPlayer
+from .mqtt_controller import MqttController
 from .peripheral_api import LVAEvent, PeripheralAPIServer
 from .satellite import VoiceSatelliteProtocol
 from .util import (
@@ -34,15 +40,8 @@ from .util import (
 )
 from .wake_word import find_available_wake_words, load_stop_model, load_wake_models
 from .webrtc import WebRTCProcessor
-from .zeroconf import HomeAssistantZeroconf
-
-# Fork: hardware controllers and subsystems (all optional, config-gated)
-from .audio_volume import ensure_output_volume
-from .button_controller import ButtonController
-from .event_bus import EventBus, EventHandler, subscribe
-from .led_controller import LedController
-from .mqtt_controller import MqttController
 from .xvf3800_button_controller import XVF3800ButtonController
+from .zeroconf import HomeAssistantZeroconf
 
 # Fork: Sendspin (optional — needs the sendspin extra)
 try:
@@ -100,11 +99,7 @@ def _scan_sound_files(repo_dir: Path) -> Dict[str, List[str]]:
         if not scan_dir.is_dir():
             scan_dir.mkdir(parents=True, exist_ok=True)
             _LOGGER.info("Created sound directory: %s — add .flac/.wav/.mp3 files here", scan_dir)
-        files = sorted(
-            f.name
-            for f in scan_dir.iterdir()
-            if f.is_file() and f.suffix.lower() in SOUND_EXTENSIONS
-        )
+        files = sorted(f.name for f in scan_dir.iterdir() if f.is_file() and f.suffix.lower() in SOUND_EXTENSIONS)
         result[cat_key] = files
     return result
 
@@ -179,6 +174,7 @@ def _resolve_wake_volume(preferences: Preferences, config_value: Optional[int]) 
 # Fork: hardware controller wiring
 # -----------------------------------------------------------------------------
 
+
 class MicMuteBridge(EventHandler):
     """Routes hardware mute requests into the upstream mute pipeline.
 
@@ -251,10 +247,7 @@ def _start_sendspin(
             return None, None
 
         if LVASendspinClient is None:
-            _LOGGER.warning(
-                "Sendspin enabled in config but the sendspin extra is not installed. "
-                "Run 'pip install -e .[sendspin]' to enable Sendspin support."
-            )
+            _LOGGER.warning("Sendspin enabled in config but the sendspin extra is not installed. " "Run 'pip install -e .[sendspin]' to enable Sendspin support.")
             return None, None
 
         prefs_dir = state.preferences_path.parent
@@ -758,10 +751,7 @@ async def main() -> None:
     else:
         # Compare format-insensitively: older releases persisted the MAC
         # without colon separators.
-        same_mac = (
-            preferences.mac_address.replace(":", "").lower()
-            == mac_address.replace(":", "").lower()
-        )
+        same_mac = preferences.mac_address.replace(":", "").lower() == mac_address.replace(":", "").lower()
         if not same_mac:
             _LOGGER.info(
                 "Using persisted MAC %s (interface MAC %s differs)",
@@ -894,16 +884,10 @@ async def main() -> None:
         stop_word=stop_model,
         music_player=MpvMediaPlayer(device=args.music_output_device or args.audio_output_device),
         tts_player=MpvMediaPlayer(device=args.audio_output_device),
-        wakeup_sound=_resolve_sound_path(
-            _REPO_DIR, "wakeup_sound", preferences.selected_wakeup_sound, args.wakeup_sound
-        ),
+        wakeup_sound=_resolve_sound_path(_REPO_DIR, "wakeup_sound", preferences.selected_wakeup_sound, args.wakeup_sound),
         start_listening_sound=args.start_listening_sound,
-        timer_finished_sound=_resolve_sound_path(
-            _REPO_DIR, "timer_sound", preferences.selected_timer_sound, args.timer_finished_sound
-        ),
-        processing_sound=_resolve_sound_path(
-            _REPO_DIR, "thinking_sound", preferences.selected_thinking_sound, args.processing_sound
-        ),
+        timer_finished_sound=_resolve_sound_path(_REPO_DIR, "timer_sound", preferences.selected_timer_sound, args.timer_finished_sound),
+        processing_sound=_resolve_sound_path(_REPO_DIR, "thinking_sound", preferences.selected_thinking_sound, args.processing_sound),
         mute_sound=args.mute_sound,
         unmute_sound=args.unmute_sound,
         button_double_press_sound=args.button_double_press_sound,
@@ -924,15 +908,9 @@ async def main() -> None:
         audio_input_channels=args.audio_input_channels,
         timer_max_ring_seconds=args.timer_max_ring_seconds,
         listen_during_wake_sound=args.listen_during_wake_sound,
-        wake_volume=_resolve_wake_volume(
-            preferences, config.app.wake_volume if config else None
-        ),
-        event_sounds_enabled=_resolve_event_sounds_enabled(
-            preferences, config.app.event_sounds_enabled if config else None
-        ),
-        thinking_sound_loop=_resolve_thinking_sound_loop(
-            preferences, config.app.thinking_sound_loop if config else None
-        ),
+        wake_volume=_resolve_wake_volume(preferences, config.app.wake_volume if config else None),
+        event_sounds_enabled=_resolve_event_sounds_enabled(preferences, config.app.event_sounds_enabled if config else None),
+        thinking_sound_loop=_resolve_thinking_sound_loop(preferences, config.app.thinking_sound_loop if config else None),
         sound_options=_scan_sound_files(_REPO_DIR),
     )
 

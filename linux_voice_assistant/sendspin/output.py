@@ -17,13 +17,12 @@ from dataclasses import dataclass
 from enum import Enum, auto
 from typing import TYPE_CHECKING, Final, Protocol, cast
 
+import numpy as np
 import sounddevice
 from aiosendspin.client.time_sync import SendspinTimeFilter
 from sounddevice import CallbackFlags
 
 from .audio_devices import SOUNDDEVICE_DTYPE_MAP, AudioDevice
-
-import numpy as np
 
 _c_apply_volume = None  # LVA: no C extension; numpy volume path always
 
@@ -172,9 +171,7 @@ class AudioPlayer:
         self._stream: sounddevice.RawOutputStream | None = None
         self._closed = False
         self._stream_started = False
-        self._stream_executor = concurrent.futures.ThreadPoolExecutor(
-            max_workers=1, thread_name_prefix="sendspin-audio"
-        )
+        self._stream_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="sendspin-audio")
         self._first_real_chunk = True  # Flag to initialize timing from first chunk
 
         self._volume: int = 100  # 0-100 range
@@ -200,9 +197,7 @@ class AudioPlayer:
         self._queued_duration_us = 0
 
         # DAC timing for accurate playback position tracking
-        self._dac_loop_calibrations: collections.deque[tuple[int, int]] = collections.deque(
-            maxlen=100
-        )
+        self._dac_loop_calibrations: collections.deque[tuple[int, int]] = collections.deque(maxlen=100)
         # Recent [(dac_time_us, loop_time_us), ...] pairs for DAC-Loop mapping
         self._last_known_playback_position_us: int = 0
         # Current playback position in server timestamp space
@@ -456,12 +451,7 @@ class AudioPlayer:
 
         # Reanchor: snap read cursor to DAC-derived server time so the
         # cursor tracks actual playback position, not bytes-read position.
-        if (
-            self._playback_state == PlaybackState.PLAYING
-            and self._last_known_playback_position_us > 0
-            and self._server_ts_cursor_us > 0
-            and self._force_reanchor
-        ):
+        if self._playback_state == PlaybackState.PLAYING and self._last_known_playback_position_us > 0 and self._server_ts_cursor_us > 0 and self._force_reanchor:
             self._server_ts_cursor_us = self._last_known_playback_position_us
             self._server_ts_cursor_remainder = 0
             self._force_reanchor = False
@@ -477,9 +467,7 @@ class AudioPlayer:
         try:
             # Pre-start gating: fill silence until scheduled start time
             if self._playback_state == PlaybackState.WAITING_FOR_START:
-                bytes_written = self._handle_start_gating(
-                    output_buffer, bytes_written, frames, time
-                )
+                bytes_written = self._handle_start_gating(output_buffer, bytes_written, frames, time)
 
             # If still waiting after gating, fill remaining buffer with silence
             if self._playback_state == PlaybackState.WAITING_FOR_START:
@@ -518,25 +506,17 @@ class AudioPlayer:
 
                     while frames_remaining > 0:
                         # Calculate frames until next correction event
-                        frames_until_insert = (
-                            insert_counter if insert_every_n > 0 else frames_remaining + 1
-                        )
-                        frames_until_drop = (
-                            drop_counter if drop_every_n > 0 else frames_remaining + 1
-                        )
+                        frames_until_insert = insert_counter if insert_every_n > 0 else frames_remaining + 1
+                        frames_until_drop = drop_counter if drop_every_n > 0 else frames_remaining + 1
 
                         # Find next event and process segment before it
-                        next_event_in = min(
-                            frames_until_insert, frames_until_drop, frames_remaining
-                        )
+                        next_event_in = min(frames_until_insert, frames_until_drop, frames_remaining)
 
                         if next_event_in > 0:
                             # Bulk read segment of normal frames
                             segment_data = self._read_input_frames_bulk(next_event_in)
                             segment_bytes = len(segment_data)
-                            output_buffer[bytes_written : bytes_written + segment_bytes] = (
-                                segment_data
-                            )
+                            output_buffer[bytes_written : bytes_written + segment_bytes] = segment_data
                             bytes_written += segment_bytes
                             frames_remaining -= next_event_in
                             insert_counter -= next_event_in
@@ -554,9 +534,7 @@ class AudioPlayer:
                                     replacement_frame = self._last_output_frame
                                 drop_counter = drop_every_n
                                 self._frames_dropped_since_log += 1
-                                output_buffer[bytes_written : bytes_written + frame_size] = (
-                                    replacement_frame
-                                )
+                                output_buffer[bytes_written : bytes_written + frame_size] = replacement_frame
                                 self._last_output_frame = replacement_frame
                                 bytes_written += frame_size
                                 frames_remaining -= 1
@@ -566,9 +544,7 @@ class AudioPlayer:
                                 # This makes playback catch up to cursor (cursor doesn't advance)
                                 insert_counter = insert_every_n
                                 self._frames_inserted_since_log += 1
-                                output_buffer[bytes_written : bytes_written + frame_size] = (
-                                    self._last_output_frame
-                                )
+                                output_buffer[bytes_written : bytes_written + frame_size] = self._last_output_frame
                                 bytes_written += frame_size
                                 frames_remaining -= 1
                                 drop_counter -= 1
@@ -582,9 +558,7 @@ class AudioPlayer:
             # Fill rest with silence on error
             if bytes_written < bytes_needed:
                 silence_bytes = bytes_needed - bytes_written
-                output_buffer[bytes_written : bytes_written + silence_bytes] = (
-                    b"\x00" * silence_bytes
-                )
+                output_buffer[bytes_written : bytes_written + silence_bytes] = b"\x00" * silence_bytes
             # Reset partial chunk state on error
             self._current_chunk = None
             self._current_chunk_offset = 0
@@ -621,9 +595,7 @@ class AudioPlayer:
             # If we haven't set the DAC-anchored start yet, approximate it now
             if self._scheduled_start_dac_time_us is None and self._first_server_timestamp_us:
                 try:
-                    est_dac = self._estimate_dac_time_for_server_timestamp(
-                        self._first_server_timestamp_us
-                    )
+                    est_dac = self._estimate_dac_time_for_server_timestamp(self._first_server_timestamp_us)
                     if est_dac:
                         self._scheduled_start_dac_time_us = est_dac
                 except Exception:
@@ -721,9 +693,7 @@ class AudioPlayer:
             bytes_to_read = min(available_bytes, total_bytes_needed - bytes_written)
 
             # Bulk copy from chunk to result
-            result[bytes_written : bytes_written + bytes_to_read] = chunk_data[
-                self._current_chunk_offset : self._current_chunk_offset + bytes_to_read
-            ]
+            result[bytes_written : bytes_written + bytes_to_read] = chunk_data[self._current_chunk_offset : self._current_chunk_offset + bytes_to_read]
 
             # Update state
             self._current_chunk_offset += bytes_to_read
@@ -867,18 +837,10 @@ class AudioPlayer:
                 # frames (track advances slower). Reflect that in the speed metric.
                 if self._format is not None:
                     expected_frames = self._format.sample_rate
-                    track_frames = (
-                        expected_frames
-                        + self._frames_dropped_since_log
-                        - self._frames_inserted_since_log
-                    )
+                    track_frames = expected_frames + self._frames_dropped_since_log - self._frames_inserted_since_log
                     playback_speed_percent = (track_frames / expected_frames) * 100.0
                     # Distinct output frames rendered (for info):
-                    normal_frames = (
-                        expected_frames
-                        - self._frames_dropped_since_log
-                        + self._frames_inserted_since_log
-                    )
+                    normal_frames = expected_frames - self._frames_dropped_since_log + self._frames_inserted_since_log
                 else:
                     playback_speed_percent = 100.0
                     normal_frames = 0
@@ -887,8 +849,7 @@ class AudioPlayer:
                 avg_callback_us = self._callback_time_total_us / max(self._callback_count, 1)
 
                 logger.debug(
-                    "Sync error: %.1f ms, buffer: %.2f s, speed: %.2f%%, "
-                    "played: %d, inserted: %d, dropped: %d, callback: %.1f µs",
+                    "Sync error: %.1f ms, buffer: %.2f s, speed: %.2f%%, " "played: %d, inserted: %d, dropped: %d, callback: %.1f µs",
                     self._sync_error_filtered_us / 1000.0,
                     self._queued_duration_us / 1_000_000,
                     playback_speed_percent,
@@ -966,9 +927,7 @@ class AudioPlayer:
             scaled = np.clip(samples.astype(np.float64) * amplitude, clip_min, clip_max)
             output_buffer[:num_bytes] = scaled.astype(dtype_str).tobytes()
 
-    def _apply_volume_24bit(
-        self, output_buffer: memoryview, num_bytes: int, amplitude: float
-    ) -> None:
+    def _apply_volume_24bit(self, output_buffer: memoryview, num_bytes: int, amplitude: float) -> None:
         """Apply volume scaling to packed 24-bit audio data (numpy fallback)."""
 
         num_samples = num_bytes // 3
@@ -976,17 +935,9 @@ class AudioPlayer:
             return
 
         raw = np.frombuffer(output_buffer, dtype=np.uint8, count=num_bytes).reshape(-1, 3)
-        samples_i32 = (
-            raw[:, 0].astype(np.int32)
-            | (raw[:, 1].astype(np.int32) << 8)
-            | (raw[:, 2].astype(np.int32) << 16)
-        )
-        samples_i32 = np.where(
-            samples_i32 & 0x800000, samples_i32 | np.int32(-0x1000000), samples_i32
-        )
-        scaled = np.clip(samples_i32.astype(np.float64) * amplitude, -8388608, 8388607).astype(
-            np.int32
-        )
+        samples_i32 = raw[:, 0].astype(np.int32) | (raw[:, 1].astype(np.int32) << 8) | (raw[:, 2].astype(np.int32) << 16)
+        samples_i32 = np.where(samples_i32 & 0x800000, samples_i32 | np.int32(-0x1000000), samples_i32)
+        scaled = np.clip(samples_i32.astype(np.float64) * amplitude, -8388608, 8388607).astype(np.int32)
         result = np.empty((num_samples, 3), dtype=np.uint8)
         result[:, 0] = scaled & 0xFF
         result[:, 1] = (scaled >> 8) & 0xFF
@@ -1041,9 +992,7 @@ class AudioPlayer:
 
         if delta_us > 0:
             # Not yet time to start: fill with silence
-            frames_until_start = int(
-                (delta_us * self._format.sample_rate + 999_999) // self._MICROSECONDS_PER_SECOND
-            )
+            frames_until_start = int((delta_us * self._format.sample_rate + 999_999) // self._MICROSECONDS_PER_SECOND)
             frames_to_silence = min(frames_until_start, frames)
             silence_bytes = frames_to_silence * self._format.frame_size
             self._fill_silence(output_buffer, bytes_written, silence_bytes)
@@ -1051,10 +1000,7 @@ class AudioPlayer:
         elif delta_us < 0 and can_drop_frames:
             # Late: fast-forward by dropping input frames (DAC gating only)
             if not (self._early_start_suspect and not self._has_reanchored):
-                frames_to_drop = int(
-                    ((-delta_us) * self._format.sample_rate + 999_999)
-                    // self._MICROSECONDS_PER_SECOND
-                )
+                frames_to_drop = int(((-delta_us) * self._format.sample_rate + 999_999) // self._MICROSECONDS_PER_SECOND)
                 self._skip_input_frames(frames_to_drop)
                 self._set_playing()
 
@@ -1104,11 +1050,7 @@ class AudioPlayer:
 
         # Re-anchor if error is very large and cooldown has elapsed.
         now_loop_us = self._now_us()
-        if (
-            abs_err > self._REANCHOR_THRESHOLD_US
-            and self._playback_state == PlaybackState.PLAYING
-            and now_loop_us - self._last_reanchor_loop_time_us > self._REANCHOR_COOLDOWN_US
-        ):
+        if abs_err > self._REANCHOR_THRESHOLD_US and self._playback_state == PlaybackState.PLAYING and now_loop_us - self._last_reanchor_loop_time_us > self._REANCHOR_COOLDOWN_US:
             logger.info("Sync error %.1f ms too large; scheduling reanchor", abs_err / 1000.0)
             self._last_reanchor_loop_time_us = now_loop_us
             self._force_reanchor = True
@@ -1187,28 +1129,17 @@ class AudioPlayer:
             # suppress catch-up. Synced near-now is a real mid-stream join.
             # Cast: we just set this via _compute_and_set_loop_start so it's not None
             scheduled_start = cast("int", self._scheduled_start_loop_time_us)
-            if (
-                scheduled_start - now_us <= self._EARLY_START_THRESHOLD_US
-                and not self._is_clock_synced()
-            ):
+            if scheduled_start - now_us <= self._EARLY_START_THRESHOLD_US and not self._is_clock_synced():
                 self._early_start_suspect = True
 
         # While waiting to start, keep the scheduled loop start updated as time sync improves
-        elif (
-            self._playback_state == PlaybackState.WAITING_FOR_START
-            and self._first_server_timestamp_us is not None
-        ):
+        elif self._playback_state == PlaybackState.WAITING_FOR_START and self._first_server_timestamp_us is not None:
             try:
                 updated_loop_start = self._compute_client_time(self._first_server_timestamp_us)
                 # Only update if it moves significantly to avoid churn
-                if (
-                    abs(updated_loop_start - (self._scheduled_start_loop_time_us or 0))
-                    > self._START_TIME_UPDATE_THRESHOLD_US
-                ):
+                if abs(updated_loop_start - (self._scheduled_start_loop_time_us or 0)) > self._START_TIME_UPDATE_THRESHOLD_US:
                     self._scheduled_start_loop_time_us = updated_loop_start
-                    est_dac = self._estimate_dac_time_for_server_timestamp(
-                        self._first_server_timestamp_us
-                    )
+                    est_dac = self._estimate_dac_time_for_server_timestamp(self._first_server_timestamp_us)
                     self._scheduled_start_dac_time_us = est_dac if est_dac else None
             except Exception:
                 logger.exception("Failed to update start time")
@@ -1216,11 +1147,7 @@ class AudioPlayer:
         # After calibration, if we have both a DAC-derived playback position and a
         # server-timeline cursor, compute sync error and schedule micro-corrections.
         # Only compute sync error when actively playing (not during initial buffering)
-        if (
-            self._playback_state == PlaybackState.PLAYING
-            and self._last_known_playback_position_us > 0
-            and self._server_ts_cursor_us > 0
-        ):
+        if self._playback_state == PlaybackState.PLAYING and self._last_known_playback_position_us > 0 and self._server_ts_cursor_us > 0:
             sync_error_us = self._last_known_playback_position_us - self._server_ts_cursor_us
             self._update_correction_schedule(sync_error_us)
 
@@ -1288,14 +1215,7 @@ class AudioPlayer:
             self._expected_next_timestamp = server_timestamp_us + chunk_duration_us
 
         # Start stream once we have enough buffer to avoid immediate underflow
-        if (
-            not self._stream_started
-            and self._stream is not None
-            and (
-                self._queued_duration_us >= self._min_start_buffer_us
-                or self._queue.qsize() >= self._MIN_CHUNKS_TO_START
-            )
-        ):
+        if not self._stream_started and self._stream is not None and (self._queued_duration_us >= self._min_start_buffer_us or self._queue.qsize() >= self._MIN_CHUNKS_TO_START):
             self._stream_started = True
             self._stream_executor.submit(self._call_stream, self._stream.start)
             logger.info(

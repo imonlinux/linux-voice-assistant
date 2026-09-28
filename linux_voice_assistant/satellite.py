@@ -66,7 +66,8 @@ from .entity import (
     WakeWord1SensitivityNumberEntity,
     WakeWord2SensitivityNumberEntity,
 )
-from .led_light_entities import LED_STATES as _LED_STATES, LedStateLightEntity
+from .led_light_entities import LED_STATES as _LED_STATES
+from .led_light_entities import LedStateLightEntity
 from .models import AvailableWakeWord, ServerState, WakeWordType
 from .peripheral_api import LVAEvent
 from .util import call_all
@@ -436,9 +437,7 @@ class VoiceSatelliteProtocol(APIServer):
             self.state.entities.append(alarm_duration_entity)
 
         alarm_duration_entity.server = self
-        alarm_duration_entity.update_get_value(
-            lambda: float(getattr(self.state.preferences, "alarm_duration_seconds", 0) or 0)
-        )
+        alarm_duration_entity.update_get_value(lambda: float(getattr(self.state.preferences, "alarm_duration_seconds", 0) or 0))
         alarm_duration_entity.update_set_value(self._set_alarm_duration)
         alarm_duration_entity.sync_with_state()
 
@@ -462,7 +461,6 @@ class VoiceSatelliteProtocol(APIServer):
         wake_volume_entity.update_get_value(lambda: float(self.state.wake_volume))
         wake_volume_entity.update_set_value(self._set_wake_volume)
         wake_volume_entity.sync_with_state()
-
 
         # NOTE: ButtonEventSensorEntity is NOT created here unconditionally.
         # It is only materialised when a peripheral sends the register_button
@@ -934,9 +932,7 @@ class VoiceSatelliteProtocol(APIServer):
                 if duration > 0:
                     self._clear_timer_auto_stop()
                     _LOGGER.debug("Scheduling alarm auto-stop after %s seconds", duration)
-                    self._timer_auto_stop_handle = self.state.loop.call_later(
-                        duration, self._auto_stop_timer_alarm
-                    )
+                    self._timer_auto_stop_handle = self.state.loop.call_later(duration, self._auto_stop_timer_alarm)
 
     # ------------------------------------------------------------------
     # Message routing
@@ -1169,9 +1165,7 @@ class VoiceSatelliteProtocol(APIServer):
             # Fork: wakeup sound is gated by the Event Sounds master toggle;
             # its loudness follows the Wake Volume Override (0 = master volume)
             if self.state.event_sounds_enabled and self.state.wakeup_sound:
-                self.state.tts_player.play(
-                    self.state.wakeup_sound, volume_override=self._wake_volume_override()
-                )
+                self.state.tts_player.play(self.state.wakeup_sound, volume_override=self._wake_volume_override())
             self._start_audio_streaming(wake_word_phrase)
         else:
             if self.state.event_sounds_enabled and self.state.wakeup_sound:
@@ -1437,9 +1431,7 @@ class VoiceSatelliteProtocol(APIServer):
             if not self._pipeline_active:
                 self.unduck()
             return
-        self._timer_repeat_handle = self.state.loop.call_later(
-            1.0, self._play_timer_finished
-        )
+        self._timer_repeat_handle = self.state.loop.call_later(1.0, self._play_timer_finished)
 
     def connection_made(self, transport) -> None:
         super().connection_made(transport)

@@ -37,6 +37,7 @@ except Exception:  # ImportError, RuntimeError, etc.
 @dataclass
 class ButtonRuntimeConfig:
     """Runtime-safe config wrapper for the hardware button."""
+
     enabled: bool
     pin: int
     long_press_seconds: float
@@ -77,16 +78,12 @@ class ButtonController:
 
         # CRITICAL FIX: Default poll_interval_seconds to 0.05 instead of 0.01
         default_poll_interval = 0.05
-        
+
         self._cfg = ButtonRuntimeConfig(
             enabled=getattr(config, "enabled", False),
             pin=getattr(config, "pin", 17),
-            long_press_seconds=float(
-                getattr(config, "long_press_seconds", 1.0)
-            ),
-            poll_interval_seconds=float(
-                getattr(config, "poll_interval_seconds", default_poll_interval)
-            ),
+            long_press_seconds=float(getattr(config, "long_press_seconds", 1.0)),
+            poll_interval_seconds=float(getattr(config, "poll_interval_seconds", default_poll_interval)),
         )
 
         self._thread: threading.Thread | None = None
@@ -95,17 +92,12 @@ class ButtonController:
 
         # If disabled in config, do nothing.
         if not self._cfg.enabled:
-            _LOGGER.info(
-                "ButtonController disabled in config; not initializing GPIO"
-            )
+            _LOGGER.info("ButtonController disabled in config; not initializing GPIO")
             return
 
         # If RPi.GPIO is unavailable or not usable on this host, also do nothing.
         if GPIO is None:
-            _LOGGER.info(
-                "RPi.GPIO not available or not usable on this host; "
-                "hardware button support disabled"
-            )
+            _LOGGER.info("RPi.GPIO not available or not usable on this host; " "hardware button support disabled")
             return
 
         try:
@@ -114,16 +106,14 @@ class ButtonController:
             GPIO.setup(self._cfg.pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
             self._last_level = GPIO.input(self._cfg.pin)
             _LOGGER.info(
-                "ButtonController initialized on GPIO pin %s "
-                "(long_press_seconds=%.2f, poll_interval=%.3fs)",
+                "ButtonController initialized on GPIO pin %s " "(long_press_seconds=%.2f, poll_interval=%.3fs)",
                 self._cfg.pin,
                 self._cfg.long_press_seconds,
                 self._cfg.poll_interval_seconds,
             )
         except Exception:
             _LOGGER.exception(
-                "Failed to configure GPIO pin %s for button; "
-                "hardware button support disabled",
+                "Failed to configure GPIO pin %s for button; " "hardware button support disabled",
                 self._cfg.pin,
             )
             return
@@ -200,8 +190,7 @@ class ButtonController:
 
         if tts_playing or music_playing:
             _LOGGER.debug(
-                "Button short press while audio playing "
-                "(tts=%s, music=%s) -> stopping playback",
+                "Button short press while audio playing " "(tts=%s, music=%s) -> stopping playback",
                 tts_playing,
                 music_playing,
             )
@@ -213,9 +202,7 @@ class ButtonController:
             # Also stop any music playback controlled by the LVA.
             self.loop.call_soon_threadsafe(self.state.music_player.stop)
         else:
-            _LOGGER.debug(
-                "Button short press with no audio playing -> manual wakeup"
-            )
+            _LOGGER.debug("Button short press with no audio playing -> manual wakeup")
             if self.state.satellite is not None:
                 # start_listening is the button-press pipeline entry point
                 self.loop.call_soon_threadsafe(self.state.satellite.start_listening)
@@ -223,9 +210,7 @@ class ButtonController:
     def _handle_long_press(self) -> None:
         """Long press: toggle mic mute."""
         new_state = not self.state.muted
-        _LOGGER.debug(
-            "Button long press: toggling mic mute -> %s", new_state
-        )
+        _LOGGER.debug("Button long press: toggling mic mute -> %s", new_state)
 
         # Use the standard set_mic_mute event; the MicMuteBridge routes it
         # into the satellite's mute pipeline (state.muted + HA entity sync).

@@ -113,9 +113,7 @@ class LVASendspinClient:
         self._pairing_voice_speed = max(80, min(200, int(_cfg_get(pairing_cfg, "voice_speed", 120))))
         self._pin_speech_procs: list = []
         self._pin_speech_generation = 0
-        self._pin_speech_wav_path = (
-            Path(identity_path).parent / "piper_pin_announcement.wav"
-        )
+        self._pin_speech_wav_path = Path(identity_path).parent / "piper_pin_announcement.wav"
         # Matches script/setup's pre-download location (repo root)
         self._piper_voices_dir = Path(__file__).parent.parent.parent / "piper_voices"
         self._piper_model_name = _cfg_get(pairing_cfg, "piper_model", "en_US-lessac-medium") or "en_US-lessac-medium"
@@ -154,11 +152,7 @@ class LVASendspinClient:
         if host:
             return f"ws://{host}:{port}{path}"
         if not bool(_cfg_get(connection_cfg, "mdns", True)):
-            raise ValueError(
-                "sendspin.connection.server_host is not configured and mdns is "
-                "disabled; set server_host to the Music Assistant server "
-                "address or enable mdns in config.json"
-            )
+            raise ValueError("sendspin.connection.server_host is not configured and mdns is " "disabled; set server_host to the Music Assistant server " "address or enable mdns in config.json")
         return None
 
     async def _resolve_endpoint(self) -> str:
@@ -167,11 +161,7 @@ class LVASendspinClient:
             return self._server_url
         servers = await discover_sendspin_servers(timeout_s=_MDNS_TIMEOUT_S)
         if not servers:
-            raise ConnectionError(
-                "Sendspin: no server advertised via mDNS "
-                f"({SENDSPIN_SERVER_SERVICE}); set "
-                "sendspin.connection.server_host in config.json to skip discovery"
-            )
+            raise ConnectionError("Sendspin: no server advertised via mDNS " f"({SENDSPIN_SERVER_SERVICE}); set " "sendspin.connection.server_host in config.json to skip discovery")
         server = servers[0]
         if len(servers) > 1:
             _LOGGER.info(
@@ -288,8 +278,7 @@ class LVASendspinClient:
         else:
             client.open_pairing_window()
             _LOGGER.info(
-                "Sendspin: server not yet paired — pairing window open for %ss. "
-                "Select the player in Music Assistant to pair.",
+                "Sendspin: server not yet paired — pairing window open for %ss. " "Select the player in Music Assistant to pair.",
                 int(_UNPAIRED_PAIRING_WINDOW_S),
             )
 
@@ -529,9 +518,7 @@ class LVASendspinClient:
             timeout=300,
         )
         if result.returncode != 0:
-            _LOGGER.warning(
-                "Sendspin: piper voice download failed: %s", result.stderr[-500:] if result.stderr else "unknown"
-            )
+            _LOGGER.warning("Sendspin: piper voice download failed: %s", result.stderr[-500:] if result.stderr else "unknown")
             return None
 
         model_path = self._piper_voices_dir / f"{self._piper_model_name}.onnx"
@@ -612,10 +599,7 @@ class LVASendspinClient:
             # piper reads the text on stdin, writes WAV; mpv plays it.
             wav = self._pin_speech_wav_path
             pipeline = (
-                f"{shlex.quote(sys.executable)} -m piper -m "
-                f"{shlex.quote(str(cmd))} -f {shlex.quote(str(wav))} && "
-                f"mpv --no-video --really-quiet --audio-display=no "
-                f"{shlex.quote(str(wav))}"
+                f"{shlex.quote(sys.executable)} -m piper -m " f"{shlex.quote(str(cmd))} -f {shlex.quote(str(wav))} && " f"mpv --no-video --really-quiet --audio-display=no " f"{shlex.quote(str(wav))}"
             )
             text_file = Path(str(wav) + ".txt")
             text_file.parent.mkdir(parents=True, exist_ok=True)
@@ -637,18 +621,14 @@ class LVASendspinClient:
             return
 
         if engine == "espeak-ng":
-            voice = self._pairing_voice or next(
-                (lang.replace("_", "-") for lang in languages if lang), None
-            )
+            voice = self._pairing_voice or next((lang.replace("_", "-") for lang in languages if lang), None)
             cmd = list(cmd)
             cmd += ["-s", str(self._pairing_voice_speed)]
             if voice:
                 cmd += ["-v", voice]
             cmd.append(announcement)
             try:
-                espeak_proc = subprocess.Popen(
-                    cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
-                )
+                espeak_proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
                 mpv_proc = subprocess.Popen(
                     ["mpv", "--no-video", "--really-quiet", "--audio-display=no", "-"],
                     stdin=espeak_proc.stdout,
@@ -659,9 +639,7 @@ class LVASendspinClient:
                 self._pin_speech_procs = [espeak_proc, mpv_proc]
                 _LOGGER.info("Sendspin: speaking pairing PIN")
             except Exception:  # pylint: disable=broad-except
-                _LOGGER.warning(
-                    "Sendspin: failed to speak the pairing PIN", exc_info=True
-                )
+                _LOGGER.warning("Sendspin: failed to speak the pairing PIN", exc_info=True)
 
     async def _on_pairing_pin(self, pin: Optional[str]) -> None:
         """PinDisplay out-channel: the PIN goes to the daemon log."""

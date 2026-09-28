@@ -62,9 +62,7 @@ class TestPreferredAddress:
 
 class TestDiscoveredSendspinServer:
     def test_defaults(self):
-        server = DiscoveredSendspinServer(
-            instance_name="x._sendspin-server._tcp.local.", host="1.2.3.4", port=8927
-        )
+        server = DiscoveredSendspinServer(instance_name="x._sendspin-server._tcp.local.", host="1.2.3.4", port=8927)
         assert server.path == "/sendspin"
         assert server.properties == {}
 
@@ -161,9 +159,7 @@ class TestDiscoverSendspinServers:
             assert await discover_sendspin_servers(timeout_s=0.15) == []
 
     async def test_results_sorted_deterministically(self):
-        azc_p, browser_p, info_p = _discovery_patches(
-            names=("Zeta._sendspin-server._tcp.local.", "Alpha._sendspin-server._tcp.local.")
-        )
+        azc_p, browser_p, info_p = _discovery_patches(names=("Zeta._sendspin-server._tcp.local.", "Alpha._sendspin-server._tcp.local."))
         with azc_p, browser_p, info_p:
             servers = await discover_sendspin_servers(timeout_s=0.15)
         assert [s.instance_name.split(".")[0] for s in servers] == ["Alpha", "Zeta"]

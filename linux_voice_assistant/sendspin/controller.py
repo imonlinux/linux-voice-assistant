@@ -77,8 +77,6 @@ class SendspinControllerCommandHandler(EventHandler):
 
         # Fire and forget; avoid blocking the EventBus thread.
         try:
-            self._client._loop.create_task(
-                self._client.send_controller_command(str(cmd), volume=volume, mute=mute)
-            )
+            self._client._loop.create_task(self._client.send_controller_command(str(cmd), volume=volume, mute=mute))
         except Exception:
             _LOGGER.debug("Sendspin: failed to schedule controller command", exc_info=True)

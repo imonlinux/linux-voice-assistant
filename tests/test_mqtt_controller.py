@@ -1,12 +1,14 @@
 """Tests for MQTT Controller integration and Home Assistant communication."""
 
-import pytest
 import json
-from unittest.mock import Mock, MagicMock, patch
-from linux_voice_assistant.mqtt_controller import MqttController
+from unittest.mock import MagicMock, Mock, patch
+
+import pytest
+
 from linux_voice_assistant.config import MqttConfig
-from linux_voice_assistant.models import Preferences, SatelliteState
 from linux_voice_assistant.event_bus import EventBus
+from linux_voice_assistant.models import Preferences, SatelliteState
+from linux_voice_assistant.mqtt_controller import MqttController
 
 
 class TestMqttControllerInitialization:
@@ -16,6 +18,7 @@ class TestMqttControllerInitialization:
     def event_loop(self):
         """Create event loop for MQTT tests."""
         import asyncio
+
         loop = asyncio.new_event_loop()
         yield loop
         loop.close()
@@ -28,12 +31,7 @@ class TestMqttControllerInitialization:
     @pytest.fixture
     def mqtt_config(self):
         """Create MQTT configuration."""
-        return MqttConfig(
-            host="localhost",
-            port=1883,
-            username="test_user",
-            password="test_pass"
-        )
+        return MqttConfig(host="localhost", port=1883, username="test_user", password="test_pass")
 
     @pytest.fixture
     def preferences(self):
@@ -44,14 +42,7 @@ class TestMqttControllerInitialization:
 
     def test_mqtt_controller_initialization(self, event_loop, event_bus, mqtt_config, preferences):
         """Test MqttController can be initialized."""
-        controller = MqttController(
-            loop=event_loop,
-            event_bus=event_bus,
-            config=mqtt_config,
-            app_name="test_device",
-            mac_address="aa:bb:cc:dd:ee:ff",
-            preferences=preferences
-        )
+        controller = MqttController(loop=event_loop, event_bus=event_bus, config=mqtt_config, app_name="test_device", mac_address="aa:bb:cc:dd:ee:ff", preferences=preferences)
 
         assert controller.loop == event_loop
         assert controller.preferences == preferences
@@ -65,14 +56,7 @@ class TestMqttControllerInitialization:
 
     def test_mqtt_controller_topic_generation(self, event_loop, event_bus, mqtt_config, preferences):
         """Test MQTT topics are generated correctly."""
-        controller = MqttController(
-            loop=event_loop,
-            event_bus=event_bus,
-            config=mqtt_config,
-            app_name="test_device",
-            mac_address="aa:bb:cc:dd:ee:ff",
-            preferences=preferences
-        )
+        controller = MqttController(loop=event_loop, event_bus=event_bus, config=mqtt_config, app_name="test_device", mac_address="aa:bb:cc:dd:ee:ff", preferences=preferences)
 
         # Check topic prefix (slugify uses underscores, not hyphens)
         assert controller._topic_prefix == "lva/test_device"
@@ -97,14 +81,7 @@ class TestMqttControllerInitialization:
 
     def test_mqtt_controller_configurable_states(self, event_loop, event_bus, mqtt_config, preferences):
         """Test that all SatelliteStates are configurable."""
-        controller = MqttController(
-            loop=event_loop,
-            event_bus=event_bus,
-            config=mqtt_config,
-            app_name="test_device",
-            mac_address="aa:bb:cc:dd:ee:ff",
-            preferences=preferences
-        )
+        controller = MqttController(loop=event_loop, event_bus=event_bus, config=mqtt_config, app_name="test_device", mac_address="aa:bb:cc:dd:ee:ff", preferences=preferences)
 
         expected_states = [
             SatelliteState.IDLE.value,
@@ -124,6 +101,7 @@ class TestMqttControllerLifecycle:
     def event_loop(self):
         """Create event loop."""
         import asyncio
+
         loop = asyncio.new_event_loop()
         yield loop
         loop.close()
@@ -136,32 +114,20 @@ class TestMqttControllerLifecycle:
     @pytest.fixture
     def mqtt_config(self):
         """Create MQTT configuration."""
-        return MqttConfig(
-            host="localhost",
-            port=1883,
-            username=None,
-            password=None
-        )
+        return MqttConfig(host="localhost", port=1883, username=None, password=None)
 
     @pytest.fixture
     def preferences(self):
         """Create preferences."""
         return Preferences(num_leds=12)
 
-    @patch('linux_voice_assistant.mqtt_controller.mqtt.Client')
+    @patch("linux_voice_assistant.mqtt_controller.mqtt.Client")
     def test_mqtt_controller_start(self, mock_mqtt_client, event_loop, event_bus, mqtt_config, preferences):
         """Test MQTT controller starts connection."""
         mock_client_instance = MagicMock()
         mock_mqtt_client.return_value = mock_client_instance
 
-        controller = MqttController(
-            loop=event_loop,
-            event_bus=event_bus,
-            config=mqtt_config,
-            app_name="test_device",
-            mac_address="aa:bb:cc:dd:ee:ff",
-            preferences=preferences
-        )
+        controller = MqttController(loop=event_loop, event_bus=event_bus, config=mqtt_config, app_name="test_device", mac_address="aa:bb:cc:dd:ee:ff", preferences=preferences)
 
         controller.start()
 
@@ -170,20 +136,13 @@ class TestMqttControllerLifecycle:
         mock_client_instance.connect.assert_called_once_with("localhost", 1883, 60)
         mock_client_instance.loop_start.assert_called_once()
 
-    @patch('linux_voice_assistant.mqtt_controller.mqtt.Client')
+    @patch("linux_voice_assistant.mqtt_controller.mqtt.Client")
     def test_mqtt_controller_stop(self, mock_mqtt_client, event_loop, event_bus, mqtt_config, preferences):
         """Test MQTT controller stops connection."""
         mock_client_instance = MagicMock()
         mock_mqtt_client.return_value = mock_client_instance
 
-        controller = MqttController(
-            loop=event_loop,
-            event_bus=event_bus,
-            config=mqtt_config,
-            app_name="test_device",
-            mac_address="aa:bb:cc:dd:ee:ff",
-            preferences=preferences
-        )
+        controller = MqttController(loop=event_loop, event_bus=event_bus, config=mqtt_config, app_name="test_device", mac_address="aa:bb:cc:dd:ee:ff", preferences=preferences)
 
         controller._connected = True
 
@@ -204,6 +163,7 @@ class TestMqttControllerMessageHandling:
     def event_loop(self):
         """Create event loop."""
         import asyncio
+
         loop = asyncio.new_event_loop()
         yield loop
         loop.close()
@@ -234,12 +194,7 @@ class TestMqttControllerMessageHandling:
     @pytest.fixture
     def mqtt_config(self):
         """Create MQTT configuration."""
-        return MqttConfig(
-            host="localhost",
-            port=1883,
-            username=None,
-            password=None
-        )
+        return MqttConfig(host="localhost", port=1883, username=None, password=None)
 
     @pytest.fixture
     def preferences(self):
@@ -249,15 +204,8 @@ class TestMqttControllerMessageHandling:
     @pytest.fixture
     def controller(self, event_loop, event_bus, mqtt_config, preferences):
         """Create MQTT controller for testing."""
-        with patch('linux_voice_assistant.mqtt_controller.mqtt.Client'):
-            controller = MqttController(
-                loop=event_loop,
-                event_bus=event_bus,
-                config=mqtt_config,
-                app_name="test_device",
-                mac_address="aa:bb:cc:dd:ee:ff",
-                preferences=preferences
-            )
+        with patch("linux_voice_assistant.mqtt_controller.mqtt.Client"):
+            controller = MqttController(loop=event_loop, event_bus=event_bus, config=mqtt_config, app_name="test_device", mac_address="aa:bb:cc:dd:ee:ff", preferences=preferences)
             return controller
 
     def test_mqtt_handles_mute_command_on(self, controller, event_bus):
@@ -343,6 +291,7 @@ class TestMqttControllerDiscovery:
     def event_loop(self):
         """Create event loop."""
         import asyncio
+
         loop = asyncio.new_event_loop()
         yield loop
         loop.close()
@@ -355,32 +304,20 @@ class TestMqttControllerDiscovery:
     @pytest.fixture
     def mqtt_config(self):
         """Create MQTT configuration."""
-        return MqttConfig(
-            host="localhost",
-            port=1883,
-            username=None,
-            password=None
-        )
+        return MqttConfig(host="localhost", port=1883, username=None, password=None)
 
     @pytest.fixture
     def preferences(self):
         """Create preferences."""
         return Preferences(num_leds=12)
 
-    @patch('linux_voice_assistant.mqtt_controller.mqtt.Client')
+    @patch("linux_voice_assistant.mqtt_controller.mqtt.Client")
     def test_mqtt_publishes_discovery_configs(self, mock_mqtt_client, event_loop, event_bus, mqtt_config, preferences):
         """Test MQTT publishes Home Assistant discovery configs."""
         mock_client_instance = MagicMock()
         mock_mqtt_client.return_value = mock_client_instance
 
-        controller = MqttController(
-            loop=event_loop,
-            event_bus=event_bus,
-            config=mqtt_config,
-            app_name="test_device",
-            mac_address="aa:bb:cc:dd:ee:ff",
-            preferences=preferences
-        )
+        controller = MqttController(loop=event_loop, event_bus=event_bus, config=mqtt_config, app_name="test_device", mac_address="aa:bb:cc:dd:ee:ff", preferences=preferences)
 
         controller._publish_discovery_configs()
 
@@ -395,20 +332,13 @@ class TestMqttControllerDiscovery:
         assert any("idle_effect/config" in call for call in publish_calls)
         assert any("idle_color/config" in call for call in publish_calls)
 
-    @patch('linux_voice_assistant.mqtt_controller.mqtt.Client')
+    @patch("linux_voice_assistant.mqtt_controller.mqtt.Client")
     def test_mqtt_discovery_device_info(self, mock_mqtt_client, event_loop, event_bus, mqtt_config, preferences):
         """Test MQTT discovery includes proper device info."""
         mock_client_instance = MagicMock()
         mock_mqtt_client.return_value = mock_client_instance
 
-        controller = MqttController(
-            loop=event_loop,
-            event_bus=event_bus,
-            config=mqtt_config,
-            app_name="test_device",
-            mac_address="aa:bb:cc:dd:ee:ff",
-            preferences=preferences
-        )
+        controller = MqttController(loop=event_loop, event_bus=event_bus, config=mqtt_config, app_name="test_device", mac_address="aa:bb:cc:dd:ee:ff", preferences=preferences)
 
         controller._publish_discovery_configs()
 
@@ -436,6 +366,7 @@ class TestMqttControllerStatePublishing:
     def event_loop(self):
         """Create event loop."""
         import asyncio
+
         loop = asyncio.new_event_loop()
         yield loop
         loop.close()
@@ -448,32 +379,20 @@ class TestMqttControllerStatePublishing:
     @pytest.fixture
     def mqtt_config(self):
         """Create MQTT configuration."""
-        return MqttConfig(
-            host="localhost",
-            port=1883,
-            username=None,
-            password=None
-        )
+        return MqttConfig(host="localhost", port=1883, username=None, password=None)
 
     @pytest.fixture
     def preferences(self):
         """Create preferences."""
         return Preferences(num_leds=12)
 
-    @patch('linux_voice_assistant.mqtt_controller.mqtt.Client')
+    @patch("linux_voice_assistant.mqtt_controller.mqtt.Client")
     def test_mqtt_publishes_mute_state(self, mock_mqtt_client, event_loop, event_bus, mqtt_config, preferences):
         """Test MQTT publishes mute state."""
         mock_client_instance = MagicMock()
         mock_mqtt_client.return_value = mock_client_instance
 
-        controller = MqttController(
-            loop=event_loop,
-            event_bus=event_bus,
-            config=mqtt_config,
-            app_name="test_device",
-            mac_address="aa:bb:cc:dd:ee:ff",
-            preferences=preferences
-        )
+        controller = MqttController(loop=event_loop, event_bus=event_bus, config=mqtt_config, app_name="test_device", mac_address="aa:bb:cc:dd:ee:ff", preferences=preferences)
 
         controller.publish_mute_state(True)
 
@@ -489,20 +408,13 @@ class TestMqttControllerStatePublishing:
         assert payload == "ON"
         assert kwargs.get("retain") == True
 
-    @patch('linux_voice_assistant.mqtt_controller.mqtt.Client')
+    @patch("linux_voice_assistant.mqtt_controller.mqtt.Client")
     def test_mqtt_publishes_num_leds_state(self, mock_mqtt_client, event_loop, event_bus, mqtt_config, preferences):
         """Test MQTT publishes num_leds state."""
         mock_client_instance = MagicMock()
         mock_mqtt_client.return_value = mock_client_instance
 
-        controller = MqttController(
-            loop=event_loop,
-            event_bus=event_bus,
-            config=mqtt_config,
-            app_name="test_device",
-            mac_address="aa:bb:cc:dd:ee:ff",
-            preferences=preferences
-        )
+        controller = MqttController(loop=event_loop, event_bus=event_bus, config=mqtt_config, app_name="test_device", mac_address="aa:bb:cc:dd:ee:ff", preferences=preferences)
 
         controller.publish_num_leds_state(20)
 
@@ -515,28 +427,16 @@ class TestMqttControllerStatePublishing:
         assert payload == "20"
         assert kwargs.get("retain") == True
 
-    @patch('linux_voice_assistant.mqtt_controller.mqtt.Client')
+    @patch("linux_voice_assistant.mqtt_controller.mqtt.Client")
     def test_mqtt_publishes_led_state(self, mock_mqtt_client, event_loop, event_bus, mqtt_config, preferences):
         """Test MQTT publishes LED state to MQTT."""
         mock_client_instance = MagicMock()
         mock_mqtt_client.return_value = mock_client_instance
 
-        controller = MqttController(
-            loop=event_loop,
-            event_bus=event_bus,
-            config=mqtt_config,
-            app_name="test_device",
-            mac_address="aa:bb:cc:dd:ee:ff",
-            preferences=preferences
-        )
+        controller = MqttController(loop=event_loop, event_bus=event_bus, config=mqtt_config, app_name="test_device", mac_address="aa:bb:cc:dd:ee:ff", preferences=preferences)
 
         # Simulate publish_state_to_mqtt event handler
-        data = {
-            "state_name": "idle",
-            "effect": "slow_pulse",
-            "color": [0, 0, 255],
-            "brightness": 0.7
-        }
+        data = {"state_name": "idle", "effect": "slow_pulse", "color": [0, 0, 255], "brightness": 0.7}
 
         controller.publish_state_to_mqtt(data)
 
@@ -566,10 +466,8 @@ class TestMqttControllerStatePublishing:
         assert third_call_args[1] == "idle"
         assert third_call_kwargs.get("retain") is True
 
-    @patch('linux_voice_assistant.mqtt_controller.mqtt.Client')
-    def test_mqtt_publishes_consolidated_voice_state_each_transition(
-        self, mock_mqtt_client, event_loop, event_bus, mqtt_config, preferences
-    ):
+    @patch("linux_voice_assistant.mqtt_controller.mqtt.Client")
+    def test_mqtt_publishes_consolidated_voice_state_each_transition(self, mock_mqtt_client, event_loop, event_bus, mqtt_config, preferences):
         """Test the consolidated voice-state topic tracks every transition.
 
         Regression guard for the tray-client desync: consumers must be able
@@ -581,31 +479,23 @@ class TestMqttControllerStatePublishing:
         mock_client_instance = MagicMock()
         mock_mqtt_client.return_value = mock_client_instance
 
-        controller = MqttController(
-            loop=event_loop,
-            event_bus=event_bus,
-            config=mqtt_config,
-            app_name="test_device",
-            mac_address="aa:bb:cc:dd:ee:ff",
-            preferences=preferences
-        )
+        controller = MqttController(loop=event_loop, event_bus=event_bus, config=mqtt_config, app_name="test_device", mac_address="aa:bb:cc:dd:ee:ff", preferences=preferences)
 
         state_topic = controller.topics["voice_state"]["state"]
         transitions = ["listening", "thinking", "responding", "idle"]
 
         for state_name in transitions:
             mock_client_instance.publish.reset_mock()
-            controller.publish_state_to_mqtt({
-                "state_name": state_name,
-                "effect": "solid",
-                "color": [0, 0, 255],
-                "brightness": 0.5,
-            })
+            controller.publish_state_to_mqtt(
+                {
+                    "state_name": state_name,
+                    "effect": "solid",
+                    "color": [0, 0, 255],
+                    "brightness": 0.5,
+                }
+            )
 
-            consolidated_calls = [
-                call for call in mock_client_instance.publish.call_args_list
-                if call[0][0] == state_topic
-            ]
+            consolidated_calls = [call for call in mock_client_instance.publish.call_args_list if call[0][0] == state_topic]
             assert len(consolidated_calls) == 1
             assert consolidated_calls[0][0][1] == state_name
             assert consolidated_calls[0][1].get("retain") is True
@@ -618,6 +508,7 @@ class TestMqttControllerBootstrapLogic:
     def event_loop(self):
         """Create event loop."""
         import asyncio
+
         loop = asyncio.new_event_loop()
         yield loop
         loop.close()
@@ -630,12 +521,7 @@ class TestMqttControllerBootstrapLogic:
     @pytest.fixture
     def mqtt_config(self):
         """Create MQTT configuration."""
-        return MqttConfig(
-            host="localhost",
-            port=1883,
-            username=None,
-            password=None
-        )
+        return MqttConfig(host="localhost", port=1883, username=None, password=None)
 
     @pytest.fixture
     def preferences(self):
@@ -645,15 +531,8 @@ class TestMqttControllerBootstrapLogic:
     @pytest.fixture
     def controller(self, event_loop, event_bus, mqtt_config, preferences):
         """Create MQTT controller for testing."""
-        with patch('linux_voice_assistant.mqtt_controller.mqtt.Client'):
-            controller = MqttController(
-                loop=event_loop,
-                event_bus=event_bus,
-                config=mqtt_config,
-                app_name="test_device",
-                mac_address="aa:bb:cc:dd:ee:ff",
-                preferences=preferences
-            )
+        with patch("linux_voice_assistant.mqtt_controller.mqtt.Client"):
+            controller = MqttController(loop=event_loop, event_bus=event_bus, config=mqtt_config, app_name="test_device", mac_address="aa:bb:cc:dd:ee:ff", preferences=preferences)
             return controller
 
     def test_bootstrap_state_initialization(self, controller):
@@ -741,6 +620,7 @@ class TestMqttControllerErrorHandling:
     def event_loop(self):
         """Create event loop."""
         import asyncio
+
         loop = asyncio.new_event_loop()
         yield loop
         loop.close()
@@ -753,12 +633,7 @@ class TestMqttControllerErrorHandling:
     @pytest.fixture
     def mqtt_config(self):
         """Create MQTT configuration."""
-        return MqttConfig(
-            host="localhost",
-            port=1883,
-            username=None,
-            password=None
-        )
+        return MqttConfig(host="localhost", port=1883, username=None, password=None)
 
     @pytest.fixture
     def preferences(self):
@@ -768,15 +643,8 @@ class TestMqttControllerErrorHandling:
     @pytest.fixture
     def controller(self, event_loop, event_bus, mqtt_config, preferences):
         """Create MQTT controller for testing."""
-        with patch('linux_voice_assistant.mqtt_controller.mqtt.Client'):
-            controller = MqttController(
-                loop=event_loop,
-                event_bus=event_bus,
-                config=mqtt_config,
-                app_name="test_device",
-                mac_address="aa:bb:cc:dd:ee:ff",
-                preferences=preferences
-            )
+        with patch("linux_voice_assistant.mqtt_controller.mqtt.Client"):
+            controller = MqttController(loop=event_loop, event_bus=event_bus, config=mqtt_config, app_name="test_device", mac_address="aa:bb:cc:dd:ee:ff", preferences=preferences)
             return controller
 
     def test_mqtt_handles_invalid_num_leds(self, controller, event_bus):
@@ -817,19 +685,12 @@ class TestMqttControllerErrorHandling:
 
     def test_mqtt_handles_connection_failure(self, event_loop, event_bus, mqtt_config, preferences):
         """Test MQTT handles connection failure gracefully."""
-        with patch('linux_voice_assistant.mqtt_controller.mqtt.Client') as mock_client:
+        with patch("linux_voice_assistant.mqtt_controller.mqtt.Client") as mock_client:
             mock_client_instance = MagicMock()
             mock_client_instance.connect.side_effect = Exception("Connection failed")
             mock_client.return_value = mock_client_instance
 
-            controller = MqttController(
-                loop=event_loop,
-                event_bus=event_bus,
-                config=mqtt_config,
-                app_name="test_device",
-                mac_address="aa:bb:cc:dd:ee:ff",
-                preferences=preferences
-            )
+            controller = MqttController(loop=event_loop, event_bus=event_bus, config=mqtt_config, app_name="test_device", mac_address="aa:bb:cc:dd:ee:ff", preferences=preferences)
 
             # Should not raise exception
             controller.start()

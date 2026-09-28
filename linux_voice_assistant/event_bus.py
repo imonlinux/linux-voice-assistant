@@ -53,6 +53,7 @@ class EventBus:
 # Client helpers for subscriptions
 # -----------------------------------------------------------------------------
 
+
 def subscribe(func: Callable) -> Callable:
     """Decorator to mark a method for event bus subscription."""
     func._event_bus_subscribe = True
@@ -76,6 +77,6 @@ class EventHandler:
         for method_name in dir(self):
             method = getattr(self, method_name)
 
-            if hasattr(method, '_event_bus_subscribe'):
+            if hasattr(method, "_event_bus_subscribe"):
                 # The topic is the name of the method itself.
                 self.event_bus.subscribe(method_name, method)

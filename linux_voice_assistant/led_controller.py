@@ -11,11 +11,7 @@ try:
     import board  # type: ignore[import]
 except Exception:
     board = None  # type: ignore[assignment]
-    _LOGGER.warning(
-        "Adafruit 'board' module not available or unsupported on this platform; "
-        "DotStar/NeoPixel GPIO/SPI LED backends will be disabled. "
-        "XVF3800 USB LED backend is unaffected."
-    )
+    _LOGGER.warning("Adafruit 'board' module not available or unsupported on this platform; " "DotStar/NeoPixel GPIO/SPI LED backends will be disabled. " "XVF3800 USB LED backend is unaffected.")
 
 from .config import LedConfig
 from .event_bus import EventBus, EventHandler, subscribe
@@ -32,17 +28,19 @@ _PURPLE = (128, 0, 255)
 
 # Valid effect ids for per-state configs (the set the MQTT effect select
 # and the native HA light entities both offer).
-VALID_EFFECTS = frozenset({
-    "off",
-    "solid",
-    "slow_pulse",
-    "medium_pulse",
-    "fast_pulse",
-    "slow_blink",
-    "medium_blink",
-    "fast_blink",
-    "spin",
-})
+VALID_EFFECTS = frozenset(
+    {
+        "off",
+        "solid",
+        "slow_pulse",
+        "medium_pulse",
+        "fast_pulse",
+        "slow_blink",
+        "medium_blink",
+        "fast_blink",
+        "spin",
+    }
+)
 
 
 class LedController(EventHandler):
@@ -77,11 +75,11 @@ class LedController(EventHandler):
 
         # Configured LED behavior
         self.configs = {
-            "idle":       {"effect": "off",           "color": _PURPLE, "brightness": 0.5},
-            "listening":  {"effect": "medium_pulse",  "color": _BLUE,   "brightness": 0.5},
-            "thinking":   {"effect": "spin",          "color": _YELLOW, "brightness": 0.8},
-            "responding": {"effect": "medium_pulse",  "color": _GREEN,  "brightness": 0.5},
-            "error":      {"effect": "fast_blink",    "color": _ORANGE, "brightness": 1.0},
+            "idle": {"effect": "off", "color": _PURPLE, "brightness": 0.5},
+            "listening": {"effect": "medium_pulse", "color": _BLUE, "brightness": 0.5},
+            "thinking": {"effect": "spin", "color": _YELLOW, "brightness": 0.8},
+            "responding": {"effect": "medium_pulse", "color": _GREEN, "brightness": 0.5},
+            "error": {"effect": "fast_blink", "color": _ORANGE, "brightness": 1.0},
         }
 
         # Fork: overlay configs saved by a previous run. The MQTT era
@@ -100,14 +98,10 @@ class LedController(EventHandler):
             self._enabled = bool(config_enabled) and (board is not None)
 
         if not config_enabled:
-            _LOGGER.info(
-                "LEDs disabled in config (led.enabled = false); "
-                "LedController will run in no-op mode."
-            )
+            _LOGGER.info("LEDs disabled in config (led.enabled = false); " "LedController will run in no-op mode.")
         elif not self._enabled:
             _LOGGER.warning(
-                "LED hardware libraries not available on this platform for led_type=%s; "
-                "LedController will run in no-op mode.",
+                "LED hardware libraries not available on this platform for led_type=%s; " "LedController will run in no-op mode.",
                 config.led_type,
             )
 
@@ -131,7 +125,7 @@ class LedController(EventHandler):
                 self._is_ready = True
                 # XVF3800 ring has a fixed LED count (typically 12)
                 self.num_leds = int(getattr(self._xvf3800_backend, "ring_led_count", 12))
-                
+
                 # Disable firmware LED effects to give LVA full control
                 try:
                     self._xvf3800_backend.set_effect(0)  # 0 = off, disables firmware effects
@@ -148,9 +142,7 @@ class LedController(EventHandler):
                 self._is_ready = False
                 self._enabled = False
                 self._xvf3800_backend = None
-                _LOGGER.exception(
-                    "Failed to initialize XVF3800 LED backend. LEDs will be disabled."
-                )
+                _LOGGER.exception("Failed to initialize XVF3800 LED backend. LEDs will be disabled.")
             return
 
         # -------------------------------------------------------------------
@@ -162,13 +154,9 @@ class LedController(EventHandler):
                     import busio
                     import neopixel_spi
 
-                    _LOGGER.debug(
-                        "Initializing %d NeoPixel LEDs on hardware SPI", self.num_leds
-                    )
+                    _LOGGER.debug("Initializing %d NeoPixel LEDs on hardware SPI", self.num_leds)
                     spi = busio.SPI(board.SCLK, MOSI=board.MOSI)
-                    self.leds = neopixel_spi.NeoPixel_SPI(
-                        spi, self.num_leds, auto_write=False
-                    )
+                    self.leds = neopixel_spi.NeoPixel_SPI(spi, self.num_leds, auto_write=False)
                 else:  # GPIO
                     import neopixel
 
@@ -178,9 +166,7 @@ class LedController(EventHandler):
                         config.data_pin,
                     )
                     pin_object = getattr(board, f"D{config.data_pin}")
-                    self.leds = neopixel.NeoPixel(
-                        pin_object, self.num_leds, auto_write=False
-                    )
+                    self.leds = neopixel.NeoPixel(pin_object, self.num_leds, auto_write=False)
             else:  # dotstar
                 import adafruit_dotstar
 
@@ -193,16 +179,10 @@ class LedController(EventHandler):
                     )
                     data_pin_obj = getattr(board, f"D{config.data_pin}")
                     clock_pin_obj = getattr(board, f"D{config.clock_pin}")
-                    self.leds = adafruit_dotstar.DotStar(
-                        clock_pin_obj, data_pin_obj, self.num_leds, auto_write=False
-                    )
+                    self.leds = adafruit_dotstar.DotStar(clock_pin_obj, data_pin_obj, self.num_leds, auto_write=False)
                 else:  # SPI
-                    _LOGGER.debug(
-                        "Initializing %d DotStar LEDs on hardware SPI", self.num_leds
-                    )
-                    self.leds = adafruit_dotstar.DotStar(
-                        board.SCLK, board.MOSI, self.num_leds, auto_write=False
-                    )
+                    _LOGGER.debug("Initializing %d DotStar LEDs on hardware SPI", self.num_leds)
+                    self.leds = adafruit_dotstar.DotStar(board.SCLK, board.MOSI, self.num_leds, auto_write=False)
 
             self._backend_mode = "pixels"
             self._is_ready = True
@@ -217,9 +197,7 @@ class LedController(EventHandler):
             # Any hardware-related failure leaves us in no-op mode
             self._is_ready = False
             self.leds = None
-            _LOGGER.exception(
-                "Failed to initialize LED controller. LEDs will be disabled."
-            )
+            _LOGGER.exception("Failed to initialize LED controller. LEDs will be disabled.")
 
     # -----------------------------------------------------------------------
     # Internal helpers
@@ -255,9 +233,7 @@ class LedController(EventHandler):
             )
             self.run_action("solid", _DIM_RED, 1.0)
         else:
-            _LOGGER.debug(
-                "Applying effect for state '%s': %s", state_name, config["effect"]
-            )
+            _LOGGER.debug("Applying effect for state '%s': %s", state_name, config["effect"])
             self.run_action(config["effect"], config["color"], config["brightness"])
 
         if publish_state:
@@ -284,15 +260,15 @@ class LedController(EventHandler):
 
         # Effect mapping to XVF3800 legacy modes
         effect_map = {
-            "off": 0,           # LED_EFFECT = off
-            "solid": 3,         # single color
-            "slow_pulse": 1,    # breath
+            "off": 0,  # LED_EFFECT = off
+            "solid": 3,  # single color
+            "slow_pulse": 1,  # breath
             "medium_pulse": 1,  # breath
-            "fast_pulse": 1,    # breath
-            "slow_blink": 1,    # approximate with breath
+            "fast_pulse": 1,  # breath
+            "slow_blink": 1,  # approximate with breath
             "medium_blink": 1,  # approximate with breath
-            "fast_blink": 1,    # approximate with breath
-            "spin": 2,          # rainbow as a stand-in for "spin"
+            "fast_blink": 1,  # approximate with breath
+            "spin": 2,  # rainbow as a stand-in for "spin"
         }
 
         speed_map = {
@@ -319,9 +295,7 @@ class LedController(EventHandler):
             self._xvf3800_backend.set_speed(speed_id)
             self._xvf3800_backend.set_effect(effect_id)
         except Exception:
-            _LOGGER.exception(
-                "Error sending LED effect '%s' to XVF3800 backend", effect_name
-            )
+            _LOGGER.exception("Error sending LED effect '%s' to XVF3800 backend", effect_name)
 
         # Keep coroutine alive until cancelled so that a new effect
         # can cancel the previous one consistently.
@@ -334,7 +308,6 @@ class LedController(EventHandler):
     # -----------------------------------------------------------------------
     # LED effect coroutines
     # -----------------------------------------------------------------------
-
 
     # -----------------------------------------------------------------------
     # XVF3800 per-LED helpers (newer firmware)
@@ -415,7 +388,6 @@ class LedController(EventHandler):
             return
         self._apply_state_effect("idle", publish_state=False)
 
-
     async def off(self, color, brightness):
         if not (self._enabled and self._is_ready):
             return
@@ -434,7 +406,6 @@ class LedController(EventHandler):
 
         self.leds.fill(_OFF)
         self.leds.show()
-
 
     async def solid(self, color: Tuple[int, int, int], brightness: float):
         if not (self._enabled and self._is_ready):
@@ -457,7 +428,6 @@ class LedController(EventHandler):
 
     async def blink(self, color, brightness=1.0):
         await self.medium_blink(color, brightness)
-
 
     async def _base_pulse(
         self,
@@ -520,7 +490,6 @@ class LedController(EventHandler):
     async def fast_pulse(self, color, brightness):
         await self._base_pulse("fast_pulse", color, brightness, 0.008)
 
-
     async def _base_blink(
         self,
         effect_name: str,
@@ -581,10 +550,7 @@ class LedController(EventHandler):
     async def fast_blink(self, color, brightness):
         await self._base_blink("fast_blink", color, brightness, 0.1)
 
-
-    async def spin(
-        self, color: Tuple[int, int, int], brightness: float, speed: float = 0.1
-    ):
+    async def spin(self, color: Tuple[int, int, int], brightness: float, speed: float = 0.1):
         if not (self._enabled and self._is_ready):
             return
 
@@ -693,16 +659,12 @@ class LedController(EventHandler):
             color = data.get("color")
             if isinstance(color, (list, tuple)) and len(color) == 3:
                 try:
-                    config["color"] = tuple(
-                        max(0, min(255, int(channel))) for channel in color
-                    )
+                    config["color"] = tuple(max(0, min(255, int(channel))) for channel in color)
                 except (TypeError, ValueError):
                     pass
 
             brightness = data.get("brightness")
-            if isinstance(brightness, (int, float)) and not isinstance(
-                brightness, bool
-            ):
+            if isinstance(brightness, (int, float)) and not isinstance(brightness, bool):
                 config["brightness"] = max(0.0, min(1.0, float(brightness)))
 
     def _persist_state_config(self, state_name: str) -> None:
@@ -722,9 +684,7 @@ class LedController(EventHandler):
         try:
             self._persist()
         except Exception:  # pylint: disable=broad-except
-            _LOGGER.exception(
-                "Failed to persist LED config for state '%s'", state_name
-            )
+            _LOGGER.exception("Failed to persist LED config for state '%s'", state_name)
 
     # -----------------------------------------------------------------------
     # MQTT Config Subscriptions
@@ -770,9 +730,7 @@ class LedController(EventHandler):
                 if not self._mic_is_muted:
                     self._apply_state_effect("idle", publish_state=False)
                 else:
-                    _LOGGER.debug(
-                        "Retained idle config received, but mic is muted; skipping idle re-apply"
-                    )
+                    _LOGGER.debug("Retained idle config received, but mic is muted; skipping idle re-apply")
             return
 
         if changed:

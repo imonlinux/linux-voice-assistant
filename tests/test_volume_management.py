@@ -1,18 +1,20 @@
 """Tests for Volume Management and OS audio control integration."""
 
-import pytest
-import tempfile
 import json
+import tempfile
 from pathlib import Path
-from unittest.mock import Mock, MagicMock, patch, call
+from unittest.mock import MagicMock, Mock, call, patch
+
+import pytest
+
 from linux_voice_assistant.audio_volume import (
     ensure_output_volume,
+    get_audio_system_type,
     get_pulseaudio_sink_volume,
     get_wpctl_sink_volume,
-    set_wpctl_sink_volume,
-    set_pulseaudio_sink_volume,
     set_amixer_sink_volume,
-    get_audio_system_type
+    set_pulseaudio_sink_volume,
+    set_wpctl_sink_volume,
 )
 from linux_voice_assistant.models import Preferences
 
@@ -20,11 +22,14 @@ from linux_voice_assistant.models import Preferences
 class TestAudioSystemDetection:
     """Test audio system type detection."""
 
-    @pytest.mark.parametrize("command_output,expected_type", [
-        ("wpctl version", "wpctl"),
-        ("pactl info", "pulseaudio"),
-        ("amixer version", "alsa"),
-    ])
+    @pytest.mark.parametrize(
+        "command_output,expected_type",
+        [
+            ("wpctl version", "wpctl"),
+            ("pactl info", "pulseaudio"),
+            ("amixer version", "alsa"),
+        ],
+    )
     def test_get_audio_system_type_detection(self, command_output, expected_type):
         """Test audio system type detection from command output."""
         # This test documents the expected behavior
@@ -52,32 +57,23 @@ class TestVolumeManagementIntegration:
         """Create mock output device name."""
         return "alsa_output.pci-0000_00_1f.5.analog-stereo"
 
-    @patch('subprocess.run')
+    @patch("subprocess.run")
     @pytest.mark.asyncio
     async def test_ensure_output_volume_with_wpctl(self, mock_run, mock_preferences, mock_output_device):
         """Test volume setting with wpctl (PipeWire)."""
         # Mock wpctl available
-        mock_run.return_value = MagicMock(
-            stdout=b"Volume: 50%\n",
-            stderr=b"",
-            returncode=0
-        )
+        mock_run.return_value = MagicMock(stdout=b"Volume: 50%\n", stderr=b"", returncode=0)
 
-        result = await ensure_output_volume(
-            volume=mock_preferences.volume,
-            output_device=mock_output_device,
-            max_volume_percent=100,
-            attempts=3,
-            delay_seconds=0.1
-        )
+        result = await ensure_output_volume(volume=mock_preferences.volume, output_device=mock_output_device, max_volume_percent=100, attempts=3, delay_seconds=0.1)
 
         # Should successfully set volume
         assert result == True
 
-    @patch('subprocess.run')
+    @patch("subprocess.run")
     @pytest.mark.asyncio
     async def test_ensure_output_volume_with_pulseaudio(self, mock_run, mock_preferences):
         """Test volume setting with PulseAudio pactl."""
+
         # Mock pactl available, wpctl not available
         def side_effect(cmd, *args, **kwargs):
             if "wpctl" in str(cmd):
@@ -89,21 +85,16 @@ class TestVolumeManagementIntegration:
 
         mock_run.side_effect = side_effect
 
-        result = await ensure_output_volume(
-            volume=mock_preferences.volume,
-            output_device="alsa_output.pci-0000_00_1f.5.analog-stereo",
-            max_volume_percent=100,
-            attempts=3,
-            delay_seconds=0.1
-        )
+        result = await ensure_output_volume(volume=mock_preferences.volume, output_device="alsa_output.pci-0000_00_1f.5.analog-stereo", max_volume_percent=100, attempts=3, delay_seconds=0.1)
 
         # Should fallback to PulseAudio
         assert result == True
 
-    @patch('subprocess.run')
+    @patch("subprocess.run")
     @pytest.mark.asyncio
     async def test_ensure_output_volume_with_amixer(self, mock_run, mock_preferences):
         """Test volume setting with amixer (ALSA)."""
+
         # Mock both wpctl and pactl unavailable, amixer available
         def side_effect(cmd, *args, **kwargs):
             if "wpctl" in str(cmd) or "pactl" in str(cmd):
@@ -113,39 +104,24 @@ class TestVolumeManagementIntegration:
 
         mock_run.side_effect = side_effect
 
-        result = await ensure_output_volume(
-            volume=mock_preferences.volume,
-            output_device="default",
-            max_volume_percent=100,
-            attempts=3,
-            delay_seconds=0.1
-        )
+        result = await ensure_output_volume(volume=mock_preferences.volume, output_device="default", max_volume_percent=100, attempts=3, delay_seconds=0.1)
 
         # Should fallback to ALSA/amixer
         assert result == True
 
-    @patch('subprocess.run')
+    @patch("subprocess.run")
     @pytest.mark.asyncio
     async def test_ensure_output_volume_max_volume_clamping(self, mock_run, mock_preferences):
         """Test that volume is clamped to max_volume_percent."""
-        mock_run.return_value = MagicMock(
-            stdout=b"Volume: 80%\n",
-            returncode=0
-        )
+        mock_run.return_value = MagicMock(stdout=b"Volume: 80%\n", returncode=0)
 
-        result = await ensure_output_volume(
-            volume=90,  # Request 90%
-            output_device="test_device",
-            max_volume_percent=80,  # But max is 80%
-            attempts=1,
-            delay_seconds=0.1
-        )
+        result = await ensure_output_volume(volume=90, output_device="test_device", max_volume_percent=80, attempts=1, delay_seconds=0.1)  # Request 90%  # But max is 80%
 
         # Should clamp to max
         assert result == True
         # Verify that the volume set was 80%, not 90%
 
-    @patch('subprocess.run')
+    @patch("subprocess.run")
     @pytest.mark.asyncio
     async def test_ensure_output_volume_retries_on_failure(self, mock_run):
         """Test that volume setting retries on temporary failures."""
@@ -161,13 +137,7 @@ class TestVolumeManagementIntegration:
 
         mock_run.side_effect = side_effect
 
-        result = await ensure_output_volume(
-            volume=50,
-            output_device="test_device",
-            max_volume_percent=100,
-            attempts=3,
-            delay_seconds=0.01
-        )
+        result = await ensure_output_volume(volume=50, output_device="test_device", max_volume_percent=100, attempts=3, delay_seconds=0.01)
 
         # Should succeed after retries
         assert result == True
@@ -177,7 +147,7 @@ class TestVolumeManagementIntegration:
 class TestWpctlVolumeControl:
     """Test PipeWire wpctl volume control functions."""
 
-    @patch('subprocess.run')
+    @patch("subprocess.run")
     def test_get_wpctl_sink_volume_parsing(self, mock_run):
         """Test wpctl volume parsing from command output."""
         # Mock various wpctl output formats
@@ -194,7 +164,7 @@ class TestWpctlVolumeControl:
             volume = get_wpctl_sink_volume("test_device")
             assert volume == expected_volume
 
-    @patch('subprocess.run')
+    @patch("subprocess.run")
     def test_get_wpctl_sink_volume_device_not_found(self, mock_run):
         """Test wpctl volume when device not found."""
         mock_run.return_value = MagicMock(stdout=b"", returncode=1)
@@ -202,7 +172,7 @@ class TestWpctlVolumeControl:
         volume = get_wpctl_sink_volume("nonexistent_device")
         assert volume is None
 
-    @patch('subprocess.run')
+    @patch("subprocess.run")
     def test_set_wpctl_sink_volume_command(self, mock_run):
         """Test setting wpctl sink volume."""
         mock_run.return_value = MagicMock(returncode=0)
@@ -213,7 +183,7 @@ class TestWpctlVolumeControl:
         # Verify command was called with correct arguments
         mock_run.assert_called_once()
 
-    @patch('subprocess.run')
+    @patch("subprocess.run")
     def test_set_wpctl_sink_volume_invalid_device(self, mock_run):
         """Test setting wpctl volume on invalid device."""
         mock_run.return_value = MagicMock(returncode=1)
@@ -226,7 +196,7 @@ class TestWpctlVolumeControl:
 class TestPulseAudioVolumeControl:
     """Test PulseAudio pactl volume control functions."""
 
-    @patch('subprocess.run')
+    @patch("subprocess.run")
     def test_get_pulseaudio_sink_volume_parsing(self, mock_run):
         """Test pactl volume parsing from command output."""
         # Mock various pactl output formats
@@ -243,7 +213,7 @@ class TestPulseAudioVolumeControl:
             volume = get_pulseaudio_sink_volume("test_device")
             assert volume == expected_volume
 
-    @patch('subprocess.run')
+    @patch("subprocess.run")
     def test_set_pulseaudio_sink_volume_command(self, mock_run):
         """Test setting pactl sink volume."""
         mock_run.return_value = MagicMock(returncode=0)
@@ -258,7 +228,7 @@ class TestPulseAudioVolumeControl:
 class TestALSAAmixerVolumeControl:
     """Test ALSA amixer volume control functions."""
 
-    @patch('subprocess.run')
+    @patch("subprocess.run")
     def test_set_amixer_sink_volume_command(self, mock_run):
         """Test setting amixer sink volume."""
         mock_run.return_value = MagicMock(returncode=0)
@@ -291,14 +261,15 @@ class TestVolumePersistence:
 
         # Simulate serialization
         from dataclasses import asdict
+
         prefs_dict = asdict(prefs)
 
-        assert 'volume' in prefs_dict
-        assert prefs_dict['volume'] == 80
+        assert "volume" in prefs_dict
+        assert prefs_dict["volume"] == 80
 
     def test_volume_preferences_deserialization(self):
         """Test that volume preferences can be loaded."""
-        prefs_dict = {'volume': 65}
+        prefs_dict = {"volume": 65}
 
         prefs = Preferences(**prefs_dict)
 
@@ -308,16 +279,19 @@ class TestVolumePersistence:
 class TestVolumeValidation:
     """Test volume validation and edge cases."""
 
-    @pytest.mark.parametrize("volume,expected_valid", [
-        (0, True),       # Minimum
-        (50, True),      # Middle
-        (100, True),     # Maximum
-        (-1, False),     # Below minimum
-        (101, False),    # Above maximum
-        (50.5, True),    # Float values
-        (0.0, True),     # Edge case: minimum
-        (100.0, True),   # Edge case: maximum
-    ])
+    @pytest.mark.parametrize(
+        "volume,expected_valid",
+        [
+            (0, True),  # Minimum
+            (50, True),  # Middle
+            (100, True),  # Maximum
+            (-1, False),  # Below minimum
+            (101, False),  # Above maximum
+            (50.5, True),  # Float values
+            (0.0, True),  # Edge case: minimum
+            (100.0, True),  # Edge case: maximum
+        ],
+    )
     def test_volume_validation(self, volume, expected_valid):
         """Test volume value validation."""
         is_valid = 0 <= volume <= 100
@@ -327,9 +301,9 @@ class TestVolumeValidation:
         """Test that volumes are clamped to OS limits."""
         # Test values that might need clamping
         test_cases = [
-            (-10, 0),    # Clamp negative to 0
+            (-10, 0),  # Clamp negative to 0
             (150, 100),  # Clamp over 100 to 100
-            (50, 50),    # Valid value unchanged
+            (50, 50),  # Valid value unchanged
         ]
 
         for input_vol, expected_clamped in test_cases:
@@ -350,8 +324,8 @@ class TestVolumeHardwareAbstraction:
     # detection logic by patching the lower-level helpers (``shutil.which``
     # and ``subprocess.run``) that ``get_audio_system_type`` actually uses.
 
-    @patch('linux_voice_assistant.audio_volume._run_cmd')
-    @patch('linux_voice_assistant.audio_volume.shutil.which')
+    @patch("linux_voice_assistant.audio_volume._run_cmd")
+    @patch("linux_voice_assistant.audio_volume.shutil.which")
     def test_detects_wpctl_when_present(self, mock_which, mock_run_cmd):
         """``get_audio_system_type`` returns 'wpctl' when wpctl is available."""
         # All three commands resolve, all version probes succeed.
@@ -360,10 +334,11 @@ class TestVolumeHardwareAbstraction:
 
         assert get_audio_system_type() == "wpctl"
 
-    @patch('linux_voice_assistant.audio_volume._run_cmd')
-    @patch('linux_voice_assistant.audio_volume.shutil.which')
+    @patch("linux_voice_assistant.audio_volume._run_cmd")
+    @patch("linux_voice_assistant.audio_volume.shutil.which")
     def test_falls_back_to_pulseaudio_when_wpctl_missing(self, mock_which, mock_run_cmd):
         """When wpctl is absent, detection should fall through to pactl."""
+
         def which(name):
             return None if name == "wpctl" else f"/usr/bin/{name}"
 
@@ -372,10 +347,11 @@ class TestVolumeHardwareAbstraction:
 
         assert get_audio_system_type() == "pulseaudio"
 
-    @patch('linux_voice_assistant.audio_volume._run_cmd')
-    @patch('linux_voice_assistant.audio_volume.shutil.which')
+    @patch("linux_voice_assistant.audio_volume._run_cmd")
+    @patch("linux_voice_assistant.audio_volume.shutil.which")
     def test_falls_back_to_alsa_when_only_amixer_present(self, mock_which, mock_run_cmd):
         """When only amixer is on PATH, detection should return 'alsa'."""
+
         def which(name):
             return f"/usr/bin/{name}" if name == "amixer" else None
 
@@ -384,8 +360,8 @@ class TestVolumeHardwareAbstraction:
 
         assert get_audio_system_type() == "alsa"
 
-    @patch('linux_voice_assistant.audio_volume._run_cmd')
-    @patch('linux_voice_assistant.audio_volume.shutil.which')
+    @patch("linux_voice_assistant.audio_volume._run_cmd")
+    @patch("linux_voice_assistant.audio_volume.shutil.which")
     def test_returns_unknown_when_nothing_present(self, mock_which, mock_run_cmd):
         """With no audio tools on PATH, detection should return 'unknown'."""
         mock_which.return_value = None
@@ -393,8 +369,8 @@ class TestVolumeHardwareAbstraction:
 
         assert get_audio_system_type() == "unknown"
 
-    @patch('linux_voice_assistant.audio_volume._run_cmd')
-    @patch('linux_voice_assistant.audio_volume.shutil.which')
+    @patch("linux_voice_assistant.audio_volume._run_cmd")
+    @patch("linux_voice_assistant.audio_volume.shutil.which")
     def test_skips_wpctl_if_version_probe_fails(self, mock_which, mock_run_cmd):
         """If wpctl is on PATH but ``wpctl --version`` fails, fall through."""
         mock_which.side_effect = lambda name: f"/usr/bin/{name}"
@@ -408,7 +384,7 @@ class TestVolumeHardwareAbstraction:
 
         assert get_audio_system_type() == "pulseaudio"
 
-    @patch('subprocess.run')
+    @patch("subprocess.run")
     @pytest.mark.asyncio
     async def test_volume_manager_fallback_chain(self, mock_run):
         """Test volume manager fallback from wpctl -> pactl -> amixer."""
@@ -428,13 +404,7 @@ class TestVolumeHardwareAbstraction:
 
         mock_run.side_effect = side_effect
 
-        result = await ensure_output_volume(
-            volume=50,
-            output_device="test_device",
-            max_volume_percent=100,
-            attempts=1,
-            delay_seconds=0.1
-        )
+        result = await ensure_output_volume(volume=50, output_device="test_device", max_volume_percent=100, attempts=1, delay_seconds=0.1)
 
         # Should fall back to amixer
         assert result == True

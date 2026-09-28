@@ -1,16 +1,15 @@
 """Tests for Button Controller integration and hardware button handling."""
 
-import pytest
 import threading
-from queue import Queue
 import time
-from unittest.mock import Mock, MagicMock, patch
-from linux_voice_assistant.button_controller import (
-    ButtonController,
-    ButtonRuntimeConfig
-)
+from queue import Queue
+from unittest.mock import MagicMock, Mock, patch
+
+import pytest
+
+from linux_voice_assistant.button_controller import ButtonController, ButtonRuntimeConfig
 from linux_voice_assistant.event_bus import EventBus
-from linux_voice_assistant.models import ServerState, Preferences
+from linux_voice_assistant.models import Preferences, ServerState
 
 
 class TestButtonRuntimeConfig:
@@ -18,11 +17,7 @@ class TestButtonRuntimeConfig:
 
     def test_button_runtime_config_defaults(self):
         """Test ButtonRuntimeConfig default values."""
-        config = ButtonRuntimeConfig(
-            enabled=True,
-            pin=17,
-            long_press_seconds=1.0
-        )
+        config = ButtonRuntimeConfig(enabled=True, pin=17, long_press_seconds=1.0)
 
         assert config.enabled == True
         assert config.pin == 17
@@ -31,12 +26,7 @@ class TestButtonRuntimeConfig:
 
     def test_button_runtime_config_custom_poll_interval(self):
         """Test ButtonRuntimeConfig with custom poll interval."""
-        config = ButtonRuntimeConfig(
-            enabled=True,
-            pin=17,
-            long_press_seconds=1.0,
-            poll_interval_seconds=0.1  # 10Hz polling
-        )
+        config = ButtonRuntimeConfig(enabled=True, pin=17, long_press_seconds=1.0, poll_interval_seconds=0.1)  # 10Hz polling
 
         assert config.poll_interval_seconds == 0.1
 
@@ -94,21 +84,11 @@ class TestButtonControllerInitialization:
     @pytest.fixture
     def button_config(self):
         """Create button configuration."""
-        return ButtonRuntimeConfig(
-            enabled=True,
-            pin=17,
-            long_press_seconds=1.0,
-            poll_interval_seconds=0.05
-        )
+        return ButtonRuntimeConfig(enabled=True, pin=17, long_press_seconds=1.0, poll_interval_seconds=0.05)
 
     def test_button_controller_initialization(self, mock_state, button_config):
         """Test ButtonController can be initialized."""
-        controller = ButtonController(
-            loop=mock_state.loop,
-            event_bus=mock_state.event_bus,
-            state=mock_state,
-            config=button_config
-        )
+        controller = ButtonController(loop=mock_state.loop, event_bus=mock_state.event_bus, state=mock_state, config=button_config)
 
         assert controller.state == mock_state
         assert controller._cfg == button_config
@@ -116,18 +96,9 @@ class TestButtonControllerInitialization:
     def test_button_controller_with_disabled_gpio(self, mock_state):
         """Test ButtonController when GPIO is not available."""
         # Create config with GPIO disabled
-        config = ButtonRuntimeConfig(
-            enabled=False,
-            pin=17,
-            long_press_seconds=1.0
-        )
+        config = ButtonRuntimeConfig(enabled=False, pin=17, long_press_seconds=1.0)
 
-        controller = ButtonController(
-            loop=mock_state.loop,
-            event_bus=mock_state.event_bus,
-            state=mock_state,
-            config=config
-        )
+        controller = ButtonController(loop=mock_state.loop, event_bus=mock_state.event_bus, state=mock_state, config=config)
 
         # Should handle disabled GPIO gracefully
         assert controller is not None
@@ -178,7 +149,7 @@ class TestButtonControllerGPIOUnavailable:
             refractory_seconds=0.5,
             event_sounds_enabled=True,
             thinking_sound_loop=False,
-            listen_during_wake_sound=False
+            listen_during_wake_sound=False,
         )
         state.shutdown = False
         return state
@@ -186,11 +157,7 @@ class TestButtonControllerGPIOUnavailable:
     @pytest.fixture
     def button_config(self):
         """Create button configuration."""
-        return ButtonRuntimeConfig(
-            enabled=True,
-            pin=17,
-            long_press_seconds=1.0
-        )
+        return ButtonRuntimeConfig(enabled=True, pin=17, long_press_seconds=1.0)
 
     def test_button_controller_handles_missing_gpio(self, mock_state, button_config, monkeypatch):
         """Test that ButtonController handles missing GPIO module."""
@@ -199,12 +166,7 @@ class TestButtonControllerGPIOUnavailable:
 
         # Should not raise exception even with GPIO=None
         try:
-            controller = ButtonController(
-                loop=mock_state.loop,
-                event_bus=mock_state.event_bus,
-                state=mock_state,
-                config=button_config
-            )
+            controller = ButtonController(loop=mock_state.loop, event_bus=mock_state.event_bus, state=mock_state, config=button_config)
             # If GPIO is truly unavailable, controller should handle it gracefully
             assert controller is not None
         except Exception as e:
@@ -257,7 +219,7 @@ class TestButtonControllerPressTiming:
             refractory_seconds=0.5,
             event_sounds_enabled=True,
             thinking_sound_loop=False,
-            listen_during_wake_sound=False
+            listen_during_wake_sound=False,
         )
         state.shutdown = False
         return state
@@ -265,45 +227,25 @@ class TestButtonControllerPressTiming:
     @pytest.fixture
     def short_press_config(self):
         """Create config for short press testing."""
-        return ButtonRuntimeConfig(
-            enabled=True,
-            pin=17,
-            long_press_seconds=1.0,  # 1 second for long press
-            poll_interval_seconds=0.01  # Fast polling for testing
-        )
+        return ButtonRuntimeConfig(enabled=True, pin=17, long_press_seconds=1.0, poll_interval_seconds=0.01)  # 1 second for long press  # Fast polling for testing
 
     def test_button_short_press_detection(self, mock_state, short_press_config):
         """Test short press detection (press < long_press_seconds)."""
-        controller = ButtonController(
-            loop=mock_state.loop,
-            event_bus=mock_state.event_bus,
-            state=mock_state,
-            config=short_press_config
-        )
+        controller = ButtonController(loop=mock_state.loop, event_bus=mock_state.event_bus, state=mock_state, config=short_press_config)
 
         # Short press should be < 1 second
         assert short_press_config.long_press_seconds == 1.0
 
     def test_button_long_press_detection(self, mock_state, short_press_config):
         """Test long press detection (press >= long_press_seconds)."""
-        controller = ButtonController(
-            loop=mock_state.loop,
-            event_bus=mock_state.event_bus,
-            state=mock_state,
-            config=short_press_config
-        )
+        controller = ButtonController(loop=mock_state.loop, event_bus=mock_state.event_bus, state=mock_state, config=short_press_config)
 
         # Long press should be >= 1 second
         assert short_press_config.long_press_seconds == 1.0
 
     def test_button_poll_interval_respects_cpu_usage(self):
         """Test that poll interval balances responsiveness and CPU usage."""
-        config = ButtonRuntimeConfig(
-            enabled=True,
-            pin=17,
-            long_press_seconds=1.0,
-            poll_interval_seconds=0.05  # 20Hz = 50ms intervals
-        )
+        config = ButtonRuntimeConfig(enabled=True, pin=17, long_press_seconds=1.0, poll_interval_seconds=0.05)  # 20Hz = 50ms intervals
 
         # Calculate CPU usage: 20 polls per second
         polls_per_second = 1.0 / config.poll_interval_seconds
@@ -379,20 +321,11 @@ class TestButtonControllerEventBusIntegration:
     @pytest.fixture
     def button_config(self):
         """Create button configuration."""
-        return ButtonRuntimeConfig(
-            enabled=True,
-            pin=17,
-            long_press_seconds=1.0
-        )
+        return ButtonRuntimeConfig(enabled=True, pin=17, long_press_seconds=1.0)
 
     def test_button_controller_publishes_wake_word_event(self, event_bus, mock_state, button_config):
         """Test that button controller publishes wake word event on short press."""
-        controller = ButtonController(
-            loop=mock_state.loop,
-            event_bus=event_bus,
-            state=mock_state,
-            config=button_config
-        )
+        controller = ButtonController(loop=mock_state.loop, event_bus=event_bus, state=mock_state, config=button_config)
 
         # Simulate short press wake word event
         event_bus.publish("wake_word_detected", {"wake_word": "button_press"})
@@ -403,12 +336,7 @@ class TestButtonControllerEventBusIntegration:
 
     def test_button_controller_publishes_mute_event(self, event_bus, mock_state, button_config):
         """Test that button controller publishes mute event on long press."""
-        controller = ButtonController(
-            loop=mock_state.loop,
-            event_bus=event_bus,
-            state=mock_state,
-            config=button_config
-        )
+        controller = ButtonController(loop=mock_state.loop, event_bus=event_bus, state=mock_state, config=button_config)
 
         # Simulate long press mute event
         event_bus.publish("set_mic_mute", {"state": True})
@@ -463,7 +391,7 @@ class TestButtonControllerButtonLogic:
             refractory_seconds=0.5,
             event_sounds_enabled=True,
             thinking_sound_loop=False,
-            listen_during_wake_sound=False
+            listen_during_wake_sound=False,
         )
         state.shutdown = False
         return state
@@ -544,43 +472,25 @@ class TestButtonControllerErrorHandling:
             refractory_seconds=0.5,
             event_sounds_enabled=True,
             thinking_sound_loop=False,
-            listen_during_wake_sound=False
+            listen_during_wake_sound=False,
         )
         state.shutdown = False
         return state
 
     def test_button_controller_handles_zero_pin(self, mock_state):
         """Test ButtonController handles pin=0 gracefully."""
-        config = ButtonRuntimeConfig(
-            enabled=True,
-            pin=0,  # Invalid GPIO pin
-            long_press_seconds=1.0
-        )
+        config = ButtonRuntimeConfig(enabled=True, pin=0, long_press_seconds=1.0)  # Invalid GPIO pin
 
-        controller = ButtonController(
-            loop=mock_state.loop,
-            event_bus=mock_state.event_bus,
-            state=mock_state,
-            config=config
-        )
+        controller = ButtonController(loop=mock_state.loop, event_bus=mock_state.event_bus, state=mock_state, config=config)
 
         # Should handle gracefully or provide clear error
         assert controller._cfg.pin == 0
 
     def test_button_controller_handles_negative_long_press(self, mock_state):
         """Test ButtonController handles negative long press time."""
-        config = ButtonRuntimeConfig(
-            enabled=True,
-            pin=17,
-            long_press_seconds=-1.0  # Invalid
-        )
+        config = ButtonRuntimeConfig(enabled=True, pin=17, long_press_seconds=-1.0)  # Invalid
 
-        controller = ButtonController(
-            loop=mock_state.loop,
-            event_bus=mock_state.event_bus,
-            state=mock_state,
-            config=config
-        )
+        controller = ButtonController(loop=mock_state.loop, event_bus=mock_state.event_bus, state=mock_state, config=config)
 
         # Should handle gracefully or clamp to reasonable value
         assert controller._cfg.long_press_seconds == -1.0
