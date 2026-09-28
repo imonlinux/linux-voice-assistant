@@ -22,14 +22,13 @@ import shlex
 import shutil
 import subprocess
 import sys
-import threading
 from pathlib import Path
 from typing import Any, Optional, Union
 
 from aiosendspin.client import SendspinClient as _AioSendspinClient
 from aiosendspin.client.models import AudioFormat, PairingSupport
 from aiosendspin.models.player import ClientHelloPlayerSupport, SupportedAudioFormat
-from aiosendspin.models.types import AudioCodec, GoodbyeReason, PlayerCommand, Roles
+from aiosendspin.models.types import AudioCodec, PlayerCommand, Roles
 from aiosendspin.noise.trust_store import FileClientPairingStore
 
 from ..config import SendspinConfig

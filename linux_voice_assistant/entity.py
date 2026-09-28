@@ -39,6 +39,8 @@ from .api_server import APIServer
 from .mpv_player import MpvMediaPlayer
 from .util import call_all
 
+_LOGGER = logging.getLogger(__name__)
+
 SUPPORTED_MEDIA_PLAYER_FEATURES = (
     MediaPlayerEntityFeature.PLAY
     | MediaPlayerEntityFeature.PAUSE

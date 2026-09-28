@@ -45,7 +45,7 @@ class TestLedControllerInitialization:
         assert controller.loop == event_loop
         assert controller.num_leds == 12
         assert controller.current_task is None
-        assert controller._is_ready == False
+        assert not controller._is_ready
         assert controller.leds is None
 
     def test_led_controller_with_different_led_counts(self, event_loop, event_bus, led_config):
@@ -99,7 +99,6 @@ class TestLedControllerEventHandler:
         """Test that LedController subscribes to relevant events."""
         # Note: LedController doesn't call _subscribe_all_methods() in __init__
         # So we need to check if it has @subscribe decorated methods
-        from linux_voice_assistant.event_bus import subscribe
 
         # Check if LedController has any @subscribe methods
         has_subscribe = False
@@ -269,7 +268,7 @@ class TestLedControllerStateTransitions:
     def test_led_controller_ready_state(self, minimal_controller):
         """Test LED controller ready state management."""
         # Initially not ready
-        assert minimal_controller._is_ready == False
+        assert not minimal_controller._is_ready
 
         # Ready state should be managed by the controller
         # This test documents the expected behavior
@@ -451,7 +450,7 @@ class TestLedConfigPersistence:
         """A set_<state>_effect command writes through to preferences."""
         prefs = Preferences(num_leds=12)
         save = Mock()
-        controller = self.make_controller(event_loop, event_bus, led_config, prefs, persist=save)
+        self.make_controller(event_loop, event_bus, led_config, prefs, persist=save)
 
         event_bus.publish("set_listening_effect", {"effect": "slow_pulse"})
 
@@ -493,7 +492,7 @@ class TestLedConfigPersistence:
         """Replays matching the current config must not write preferences."""
         prefs = Preferences(num_leds=12)
         save = Mock()
-        controller = self.make_controller(event_loop, event_bus, led_config, prefs, persist=save)
+        self.make_controller(event_loop, event_bus, led_config, prefs, persist=save)
 
         event_bus.publish(
             "set_thinking_color",

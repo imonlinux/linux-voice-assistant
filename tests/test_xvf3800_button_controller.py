@@ -1,8 +1,7 @@
 """Tests for XVF3800 Button Controller hardware integration."""
 
-import threading
 import time
-from unittest.mock import AsyncMock, MagicMock, Mock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -122,7 +121,7 @@ class TestXVF3800USBClient:
         client = XVF3800USBClient()
         result = client.set_gpo_pin(30, True)
 
-        assert result == True
+        assert result
         mock_device.ctrl_transfer.assert_called_once()
 
         # Verify the call was made (checking ctrl_transfer was called)
@@ -140,7 +139,7 @@ class TestXVF3800USBClient:
         client = XVF3800USBClient()
         result = client.set_gpo_pin(30, True)
 
-        assert result == False
+        assert not result
 
     @patch("linux_voice_assistant.xvf3800_button_controller.usb.core.find")
     def test_get_mute_gpo(self, mock_usb_find):
@@ -154,7 +153,7 @@ class TestXVF3800USBClient:
         client = XVF3800USBClient()
         mute_state = client.get_mute_gpo()
 
-        assert mute_state == True
+        assert mute_state
 
     @patch("linux_voice_assistant.xvf3800_button_controller.usb.core.find")
     def test_get_mute_gpo_unmuted(self, mock_usb_find):
@@ -166,7 +165,7 @@ class TestXVF3800USBClient:
         client = XVF3800USBClient()
         mute_state = client.get_mute_gpo()
 
-        assert mute_state == False
+        assert not mute_state
 
     @patch("linux_voice_assistant.xvf3800_button_controller.usb.core.find")
     def test_get_mute_gpo_error(self, mock_usb_find):
@@ -203,7 +202,7 @@ class TestXVF3800USBClient:
         client = XVF3800USBClient()
         result = client.set_mute_gpo(True)
 
-        assert result == True
+        assert result
         mock_device.ctrl_transfer.assert_called_once()
 
 
@@ -266,7 +265,7 @@ class TestXVF3800ButtonController:
         assert controller.loop == event_loop
         assert controller.state == mock_state
         assert controller._cfg.poll_interval_seconds == 0.05
-        assert controller._shutdown_flag.is_set() == False
+        assert not controller._shutdown_flag.is_set()
         assert controller._thread is not None
 
         # Give thread time to start, then stop
@@ -317,7 +316,7 @@ class TestXVF3800ButtonController:
 
         # Check target state was set
         target_state = controller._take_target_mute_state()
-        assert target_state == True
+        assert target_state
 
         controller.stop()
 
@@ -334,7 +333,7 @@ class TestXVF3800ButtonController:
 
         # Check target state was set
         target_state = controller._take_target_mute_state()
-        assert target_state == False
+        assert not target_state
 
         controller.stop()
 
@@ -519,7 +518,6 @@ class TestXVF3800ButtonControllerErrorHandling:
     @patch("linux_voice_assistant.xvf3800_button_controller.XVF3800USBClient")
     def test_usb_write_error_handling(self, mock_usb_client_class, event_loop, event_bus, mock_state, button_config):
         """Test handling of USB write errors."""
-        import usb.core
 
         mock_usb_client = MagicMock()
         mock_usb_client.read_gpo_values.return_value = [0, 0, 1, 0, 0]

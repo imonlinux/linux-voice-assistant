@@ -434,7 +434,7 @@ def main(argv=None) -> int:
     app.setQuitOnLastWindowClosed(False)
 
     try:
-        _tray = LvaTrayClient(app, config)
+        _tray = LvaTrayClient(app, config)  # noqa: F841 -- keep-alive reference so Qt does not GC the tray icon
     except Exception:
         _LOGGER.exception("Failed to start tray client")
         return 2

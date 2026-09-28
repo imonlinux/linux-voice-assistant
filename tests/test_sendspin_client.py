@@ -1,5 +1,8 @@
 """Tests for the aiosendspin-based LVA Sendspin client wrapper."""
 
+# flake8: noqa: E402 -- imports are intentionally split around pytest.importorskip
+# gating and the mid-file library-contract section; both orderings are deliberate.
+
 import pytest
 
 pytest.importorskip("aiosendspin", reason="sendspin extra not installed")
@@ -9,7 +12,6 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-from aiosendspin.client import client as aio_client_mod
 
 from linux_voice_assistant.config import SendspinConfig
 from linux_voice_assistant.event_bus import EventBus
@@ -119,7 +121,6 @@ async def test_resolve_endpoint_static_host_bypasses_discovery(
 ) -> None:
     """If you set server_host, discovery is bypassed (pre-2.0 semantics)."""
     from linux_voice_assistant.config import SendspinConnectionConfig
-    from linux_voice_assistant.sendspin.discovery import DiscoveredSendspinServer
 
     sendspin = SendspinConfig(
         enabled=True,
@@ -315,7 +316,7 @@ def test_handler_matches_library_callback_contract(tmp_path: Path, add_method: s
 
 def test_every_library_listener_we_register_exists(tmp_path: Path) -> None:
     """Guard against aiosendspin renames: all add_* methods we call must exist."""
-    client = make_client(tmp_path, make_config(), EventBus())
+    make_client(tmp_path, make_config(), EventBus())
     for add_method, _, _ in _CALLBACK_CONTRACTS:
         assert hasattr(aio_client_mod.SendspinClient, add_method), f"library lost {add_method}?"
 
@@ -324,7 +325,7 @@ def test_state_supported_commands_declares_static_delay(tmp_path: Path) -> None:
     """Match the reference client: SET_STATIC_DELAY echo support is declared."""
     from aiosendspin.models.types import PlayerCommand
 
-    client = make_client(tmp_path, make_config(), EventBus())
+    make_client(tmp_path, make_config(), EventBus())
     # Verified indirectly: the constructor is called with this list in
     # _connect_once; assert the enum members we rely on exist.
     assert PlayerCommand.SET_STATIC_DELAY
@@ -515,7 +516,6 @@ def test_config_voice_overrides_server_languages(tmp_path: Path) -> None:
     from unittest.mock import patch
 
     client = make_speaker_client(tmp_path, voice="de", voice_engine="espeak-ng")
-    captured = {}
 
     commands = []
 

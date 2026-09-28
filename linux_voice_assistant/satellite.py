@@ -70,7 +70,6 @@ from .led_light_entities import LED_STATES as _LED_STATES
 from .led_light_entities import LedStateLightEntity
 from .models import AvailableWakeWord, ServerState, WakeWordType
 from .peripheral_api import LVAEvent
-from .util import call_all
 
 _LOGGER = logging.getLogger(__name__)
 

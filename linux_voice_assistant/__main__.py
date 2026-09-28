@@ -11,7 +11,7 @@ import time
 from dataclasses import fields as dataclass_fields
 from pathlib import Path
 from queue import Queue
-from typing import Any, Dict, List, Optional, Union
+from typing import Dict, List, Optional, Union
 
 import numpy as np
 import soundcard as sc
@@ -251,7 +251,6 @@ def _start_sendspin(
             return None, None
 
         prefs_dir = state.preferences_path.parent
-        client_id = f"lva-{state.mac_address}"
 
         client = LVASendspinClient(
             loop=loop,

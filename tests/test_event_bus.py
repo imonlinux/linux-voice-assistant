@@ -1,7 +1,5 @@
 """Tests for EventBus system."""
 
-from unittest.mock import Mock, patch
-
 import pytest
 
 from linux_voice_assistant.event_bus import EventBus, EventHandler, subscribe
@@ -65,7 +63,7 @@ class TestEventBus:
             def decorated_method(self, data):
                 received.append(data)
 
-        handler = TestHandler(bus)
+        TestHandler(bus)
         bus.publish("decorated_method", {"decorated": True})
 
         assert len(received) == 1
@@ -92,7 +90,7 @@ class TestEventBus:
             def not_subscribed(self, data):
                 call_log.append(("not_subscribed", data))
 
-        handler = MultiHandler(bus)
+        MultiHandler(bus)
 
         # Only subscribed methods should be called
         bus.publish("method1", {"event": "1"})
@@ -160,8 +158,8 @@ class TestEventBus:
 
         # Both handlers should see the modifications
         assert len(received) == 2
-        assert received[0]["modified"] == True
-        assert received[1]["modified"] == True
+        assert received[0]["modified"]
+        assert received[1]["modified"]
 
     def test_nonexistent_event_publish(self):
         """Test publishing to event with no subscribers."""
@@ -210,7 +208,7 @@ class TestEventHandlerIntegration:
                 events_received.append(data)
 
         handler = LifecycleHandler(bus)
-        assert handler.initialized == True
+        assert handler.initialized
 
         bus.publish("on_test", {"lifecycle": "test"})
         assert len(events_received) == 1
@@ -239,8 +237,8 @@ class TestEventHandlerIntegration:
             def on_event(self, data):
                 handler2_calls.append(("handler2", data))
 
-        handler1 = Handler1(bus)
-        handler2 = Handler2(bus)
+        Handler1(bus)
+        Handler2(bus)
 
         bus.publish("on_event", {"test": "data"})
 

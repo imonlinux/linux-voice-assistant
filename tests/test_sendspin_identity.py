@@ -6,7 +6,7 @@ import pytest
 
 pytest.importorskip("aiosendspin", reason="sendspin extra not installed")
 
-from linux_voice_assistant.sendspin.identity import load_or_create_identity
+from linux_voice_assistant.sendspin.identity import load_or_create_identity  # noqa: E402 -- gated by importorskip above
 
 
 def test_identity_is_stable_across_loads(tmp_path: Path) -> None:

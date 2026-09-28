@@ -7,9 +7,12 @@ translate LVA events into Sendspin client actions.
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from ..event_bus import EventBus, EventHandler, subscribe
+
+if TYPE_CHECKING:
+    from aiosendspin.client import SendspinClient
 
 _LOGGER = logging.getLogger(__name__)
 

@@ -10,7 +10,6 @@ from unittest.mock import MagicMock
 from aioesphomeapi.api_pb2 import (  # type: ignore[attr-defined]
     LightCommandRequest,
     ListEntitiesRequest,
-    SubscribeHomeAssistantStatesRequest,
 )
 
 from linux_voice_assistant.event_bus import EventBus

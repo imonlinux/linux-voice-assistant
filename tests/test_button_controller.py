@@ -1,9 +1,7 @@
 """Tests for Button Controller integration and hardware button handling."""
 
-import threading
-import time
 from queue import Queue
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -19,7 +17,7 @@ class TestButtonRuntimeConfig:
         """Test ButtonRuntimeConfig default values."""
         config = ButtonRuntimeConfig(enabled=True, pin=17, long_press_seconds=1.0)
 
-        assert config.enabled == True
+        assert config.enabled
         assert config.pin == 17
         assert config.long_press_seconds == 1.0
         assert config.poll_interval_seconds == 0.05  # Default 20Hz polling
@@ -231,14 +229,14 @@ class TestButtonControllerPressTiming:
 
     def test_button_short_press_detection(self, mock_state, short_press_config):
         """Test short press detection (press < long_press_seconds)."""
-        controller = ButtonController(loop=mock_state.loop, event_bus=mock_state.event_bus, state=mock_state, config=short_press_config)
+        ButtonController(loop=mock_state.loop, event_bus=mock_state.event_bus, state=mock_state, config=short_press_config)
 
         # Short press should be < 1 second
         assert short_press_config.long_press_seconds == 1.0
 
     def test_button_long_press_detection(self, mock_state, short_press_config):
         """Test long press detection (press >= long_press_seconds)."""
-        controller = ButtonController(loop=mock_state.loop, event_bus=mock_state.event_bus, state=mock_state, config=short_press_config)
+        ButtonController(loop=mock_state.loop, event_bus=mock_state.event_bus, state=mock_state, config=short_press_config)
 
         # Long press should be >= 1 second
         assert short_press_config.long_press_seconds == 1.0
@@ -325,7 +323,7 @@ class TestButtonControllerEventBusIntegration:
 
     def test_button_controller_publishes_wake_word_event(self, event_bus, mock_state, button_config):
         """Test that button controller publishes wake word event on short press."""
-        controller = ButtonController(loop=mock_state.loop, event_bus=event_bus, state=mock_state, config=button_config)
+        ButtonController(loop=mock_state.loop, event_bus=event_bus, state=mock_state, config=button_config)
 
         # Simulate short press wake word event
         event_bus.publish("wake_word_detected", {"wake_word": "button_press"})
@@ -336,7 +334,7 @@ class TestButtonControllerEventBusIntegration:
 
     def test_button_controller_publishes_mute_event(self, event_bus, mock_state, button_config):
         """Test that button controller publishes mute event on long press."""
-        controller = ButtonController(loop=mock_state.loop, event_bus=event_bus, state=mock_state, config=button_config)
+        ButtonController(loop=mock_state.loop, event_bus=event_bus, state=mock_state, config=button_config)
 
         # Simulate long press mute event
         event_bus.publish("set_mic_mute", {"state": True})
@@ -418,7 +416,7 @@ class TestButtonControllerButtonLogic:
     def test_long_press_toggles_mute(self, mock_state):
         """Test that long press toggles microphone mute."""
         # Initial state: unmuted
-        assert mock_state.muted == False
+        assert not mock_state.muted
 
         # Long press should toggle mute
         mock_state.event_bus.publish("set_mic_mute", {"state": True})

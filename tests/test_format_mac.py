@@ -5,7 +5,7 @@ import sys
 
 sys.path.insert(0, "/home/pi/linux-voice-assistant")
 
-from linux_voice_assistant.util import format_mac
+from linux_voice_assistant.util import format_mac  # noqa: E402 -- must follow the sys.path setup above
 
 # Test cases
 test_cases = [

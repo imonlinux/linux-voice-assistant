@@ -1,9 +1,6 @@
 """Tests for Volume Management and OS audio control integration."""
 
-import json
-import tempfile
-from pathlib import Path
-from unittest.mock import MagicMock, Mock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -67,7 +64,7 @@ class TestVolumeManagementIntegration:
         result = await ensure_output_volume(volume=mock_preferences.volume, output_device=mock_output_device, max_volume_percent=100, attempts=3, delay_seconds=0.1)
 
         # Should successfully set volume
-        assert result == True
+        assert result
 
     @patch("subprocess.run")
     @pytest.mark.asyncio
@@ -88,7 +85,7 @@ class TestVolumeManagementIntegration:
         result = await ensure_output_volume(volume=mock_preferences.volume, output_device="alsa_output.pci-0000_00_1f.5.analog-stereo", max_volume_percent=100, attempts=3, delay_seconds=0.1)
 
         # Should fallback to PulseAudio
-        assert result == True
+        assert result
 
     @patch("subprocess.run")
     @pytest.mark.asyncio
@@ -107,7 +104,7 @@ class TestVolumeManagementIntegration:
         result = await ensure_output_volume(volume=mock_preferences.volume, output_device="default", max_volume_percent=100, attempts=3, delay_seconds=0.1)
 
         # Should fallback to ALSA/amixer
-        assert result == True
+        assert result
 
     @patch("subprocess.run")
     @pytest.mark.asyncio
@@ -118,7 +115,7 @@ class TestVolumeManagementIntegration:
         result = await ensure_output_volume(volume=90, output_device="test_device", max_volume_percent=80, attempts=1, delay_seconds=0.1)  # Request 90%  # But max is 80%
 
         # Should clamp to max
-        assert result == True
+        assert result
         # Verify that the volume set was 80%, not 90%
 
     @patch("subprocess.run")
@@ -140,7 +137,7 @@ class TestVolumeManagementIntegration:
         result = await ensure_output_volume(volume=50, output_device="test_device", max_volume_percent=100, attempts=3, delay_seconds=0.01)
 
         # Should succeed after retries
-        assert result == True
+        assert result
         assert attempt_count[0] == 3
 
 
@@ -179,7 +176,7 @@ class TestWpctlVolumeControl:
 
         result = set_wpctl_sink_volume("test_device", 75)
 
-        assert result == True
+        assert result
         # Verify command was called with correct arguments
         mock_run.assert_called_once()
 
@@ -190,7 +187,7 @@ class TestWpctlVolumeControl:
 
         result = set_wpctl_sink_volume("invalid_device", 50)
 
-        assert result == False
+        assert not result
 
 
 class TestPulseAudioVolumeControl:
@@ -220,7 +217,7 @@ class TestPulseAudioVolumeControl:
 
         result = set_pulseaudio_sink_volume("test_device", 60)
 
-        assert result == True
+        assert result
         # Verify command was called
         mock_run.assert_called_once()
 
@@ -235,7 +232,7 @@ class TestALSAAmixerVolumeControl:
 
         result = set_amixer_sink_volume("default", 55)
 
-        assert result == True
+        assert result
         # Verify command was called
         mock_run.assert_called_once()
 
@@ -407,7 +404,7 @@ class TestVolumeHardwareAbstraction:
         result = await ensure_output_volume(volume=50, output_device="test_device", max_volume_percent=100, attempts=1, delay_seconds=0.1)
 
         # Should fall back to amixer
-        assert result == True
+        assert result
         assert call_count[0] == 3  # Tried all three
 
 

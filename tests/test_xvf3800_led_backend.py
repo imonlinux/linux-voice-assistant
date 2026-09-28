@@ -1,8 +1,7 @@
 """Tests for XVF3800 LED Backend hardware integration."""
 
 import struct
-import time
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 import usb.util  # noqa: F401  # imported so the patched constants resolve correctly

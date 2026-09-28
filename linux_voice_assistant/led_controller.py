@@ -2,6 +2,10 @@ import asyncio
 import logging
 from typing import Any, Callable, Optional, Tuple
 
+from .config import LedConfig
+from .event_bus import EventBus, EventHandler, subscribe
+from .models import Preferences
+
 _LOGGER = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -12,10 +16,6 @@ try:
 except Exception:
     board = None  # type: ignore[assignment]
     _LOGGER.warning("Adafruit 'board' module not available or unsupported on this platform; " "DotStar/NeoPixel GPIO/SPI LED backends will be disabled. " "XVF3800 USB LED backend is unaffected.")
-
-from .config import LedConfig
-from .event_bus import EventBus, EventHandler, subscribe
-from .models import Preferences
 
 # Default Colors
 _OFF = (0, 0, 0)

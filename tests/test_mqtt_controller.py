@@ -1,7 +1,7 @@
 """Tests for MQTT Controller integration and Home Assistant communication."""
 
 import json
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -52,7 +52,7 @@ class TestMqttControllerInitialization:
         assert controller._password == "test_pass"
         assert controller._device_name == "test_device"
         assert controller._mac_address == "aa:bb:cc:dd:ee:ff"
-        assert controller._connected == False
+        assert not controller._connected
 
     def test_mqtt_controller_topic_generation(self, event_loop, event_bus, mqtt_config, preferences):
         """Test MQTT topics are generated correctly."""
@@ -153,7 +153,7 @@ class TestMqttControllerLifecycle:
         event_loop.run_until_complete(test_stop())
 
         # Verify cleanup
-        assert controller._connected == False
+        assert not controller._connected
 
 
 class TestMqttControllerMessageHandling:
@@ -215,7 +215,7 @@ class TestMqttControllerMessageHandling:
 
         assert len(event_bus.events_received) == 1
         assert event_bus.events_received[0][0] == "set_mic_mute"
-        assert event_bus.events_received[0][1]["state"] == True
+        assert event_bus.events_received[0][1]["state"]
 
     def test_mqtt_handles_mute_command_off(self, controller, event_bus):
         """Test MQTT handles mute OFF command."""
@@ -224,7 +224,7 @@ class TestMqttControllerMessageHandling:
 
         assert len(event_bus.events_received) == 1
         assert event_bus.events_received[0][0] == "set_mic_mute"
-        assert event_bus.events_received[0][1]["state"] == False
+        assert not event_bus.events_received[0][1]["state"]
 
     def test_mqtt_handles_num_leds_command(self, controller, event_bus):
         """Test MQTT handles num_leds command."""
@@ -406,7 +406,7 @@ class TestMqttControllerStatePublishing:
 
         assert topic == controller.topics["mute"]["state"]
         assert payload == "ON"
-        assert kwargs.get("retain") == True
+        assert kwargs.get("retain")
 
     @patch("linux_voice_assistant.mqtt_controller.mqtt.Client")
     def test_mqtt_publishes_num_leds_state(self, mock_mqtt_client, event_loop, event_bus, mqtt_config, preferences):
@@ -425,7 +425,7 @@ class TestMqttControllerStatePublishing:
 
         assert topic == controller.topics["num_leds"]["state"]
         assert payload == "20"
-        assert kwargs.get("retain") == True
+        assert kwargs.get("retain")
 
     @patch("linux_voice_assistant.mqtt_controller.mqtt.Client")
     def test_mqtt_publishes_led_state(self, mock_mqtt_client, event_loop, event_bus, mqtt_config, preferences):
@@ -537,8 +537,8 @@ class TestMqttControllerBootstrapLogic:
 
     def test_bootstrap_state_initialization(self, controller):
         """Test bootstrap state is initialized correctly."""
-        assert controller._bootstrap_state_sync == True
-        assert controller._bootstrap_ends_at == None
+        assert controller._bootstrap_state_sync
+        assert controller._bootstrap_ends_at is None
 
     def test_bootstrap_activated_on_connect(self, controller):
         """Test bootstrap is activated on connection (via loop-marshaled impl)."""
@@ -550,7 +550,7 @@ class TestMqttControllerBootstrapLogic:
         # callbacks so the marshaled _on_connect_impl actually runs.
         controller.loop.run_until_complete(asyncio.sleep(0))
 
-        assert controller._bootstrap_state_sync == True
+        assert controller._bootstrap_state_sync
         assert controller._bootstrap_ends_at is not None
         assert controller._bootstrap_end_handle is not None
         # Subscriptions moved into the marshaled impl as well.
@@ -565,13 +565,13 @@ class TestMqttControllerBootstrapLogic:
         # Simulate connection (setup runs on the loop; flush it)
         controller._on_connect(mock_client, None, {}, 0)
         controller.loop.run_until_complete(asyncio.sleep(0))
-        assert controller._bootstrap_state_sync == True
+        assert controller._bootstrap_state_sync
 
         # Simulate bootstrap end
         controller._end_bootstrap_state_sync()
 
-        assert controller._bootstrap_state_sync == False
-        assert controller._bootstrap_end_handle == None
+        assert not controller._bootstrap_state_sync
+        assert controller._bootstrap_end_handle is None
 
     def test_bootstrap_retained_message_handling(self, controller, event_bus):
         """Test that retained messages are handled during bootstrap."""
@@ -696,7 +696,7 @@ class TestMqttControllerErrorHandling:
             controller.start()
 
             # Connection should be failed
-            assert controller._connected == False
+            assert not controller._connected
 
 
 if __name__ == "__main__":

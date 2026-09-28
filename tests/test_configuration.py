@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from linux_voice_assistant.config import Config, load_config_from_json
+from linux_voice_assistant.config import load_config_from_json
 
 
 class TestConfigLoading:
@@ -49,7 +49,7 @@ class TestConfigLoading:
             config = load_config_from_json(temp_path)
 
             assert config.app.name == "test_device"
-            assert config.app.debug == False
+            assert not config.app.debug
             assert config.audio.input_block_size == 1280
             assert config.wake_word.model == "ok_nabu"
             assert config.esphome.host == "0.0.0.0"
@@ -290,12 +290,12 @@ class TestConfigIntegration:
         try:
             config = load_config_from_json(temp_path)
 
-            assert config.mqtt.enabled == True
+            assert config.mqtt.enabled
             assert config.mqtt.host == "localhost"
             assert config.mqtt.port == 1883
             assert config.mqtt.username == "user"
             # discovery_prefix is no longer a supported config field
-            assert hasattr(config.mqtt, "discovery_prefix") == False
+            assert not hasattr(config.mqtt, "discovery_prefix")
 
         finally:
             temp_path.unlink(missing_ok=True)
@@ -321,7 +321,7 @@ class TestConfigIntegration:
 
         try:
             config = load_config_from_json(temp_path)
-            assert config.mqtt.enabled == False
+            assert not config.mqtt.enabled
             assert config.mqtt.host == "localhost"
         finally:
             temp_path.unlink(missing_ok=True)
@@ -342,7 +342,7 @@ class TestConfigIntegration:
 
         try:
             config = load_config_from_json(temp_path)
-            assert config.mqtt.enabled == True
+            assert config.mqtt.enabled
         finally:
             temp_path.unlink(missing_ok=True)
 
@@ -356,7 +356,7 @@ class TestConfigIntegration:
 
         try:
             config = load_config_from_json(temp_path)
-            assert config.mqtt.enabled == False
+            assert not config.mqtt.enabled
         finally:
             temp_path.unlink(missing_ok=True)
 
@@ -371,13 +371,13 @@ class TestConfigIntegration:
         try:
             config = load_config_from_json(temp_path)
 
-            assert config.button.enabled == True
+            assert config.button.enabled
             assert config.button.mode == "gpio"
             assert config.button.pin == 17
             # press_time_ms and long_press_time_ms are no longer supported config fields
             # Button now uses internal defaults for timing
-            assert hasattr(config.button, "press_time_ms") == False
-            assert hasattr(config.button, "long_press_time_ms") == False
+            assert not hasattr(config.button, "press_time_ms")
+            assert not hasattr(config.button, "long_press_time_ms")
 
         finally:
             temp_path.unlink(missing_ok=True)
@@ -393,7 +393,7 @@ class TestConfigIntegration:
         try:
             config = load_config_from_json(temp_path)
 
-            assert config.button.enabled == True
+            assert config.button.enabled
             assert config.button.mode == "xvf3800"
 
         finally:

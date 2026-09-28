@@ -1,7 +1,7 @@
 import asyncio
 import json
 import logging
-from typing import TYPE_CHECKING, List, Optional
+from typing import List, Optional
 
 import paho.mqtt.client as mqtt
 
@@ -9,9 +9,6 @@ from .config import MqttConfig
 from .event_bus import EventBus, EventHandler, subscribe
 from .models import Preferences, SatelliteState
 from .util import slugify_device_id
-
-if TYPE_CHECKING:
-    from .models import ServerState
 
 _LOGGER = logging.getLogger(__name__)
 

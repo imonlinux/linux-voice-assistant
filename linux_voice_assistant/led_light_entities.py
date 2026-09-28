@@ -22,13 +22,10 @@ commanded.
 """
 
 import logging
-from typing import TYPE_CHECKING, Any, Dict, Iterable, Optional
+from typing import Any, Dict, Iterable, Optional
 
 from .entity import LEDLightEntity, LightCommandRequest, LightStateResponse
 from .event_bus import EventBus
-
-if TYPE_CHECKING:  # pragma: no cover
-    from .models import ServerState
 
 _LOGGER = logging.getLogger(__name__)
 
