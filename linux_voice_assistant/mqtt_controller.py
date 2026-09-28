@@ -368,14 +368,16 @@ class MqttController(EventHandler):
             effect_name = data.get("effect", "off").replace("_", " ").title()
             self._client.publish(state_topics["effect_state"], effect_name, retain=True)
 
+            color = data.get("color")
+            assert color is not None  # every state publish carries the state color
             light_state = {
                 "state": "ON" if data.get("effect") != "off" else "OFF",
                 "color_mode": "rgb",
                 "brightness": int(data.get("brightness", 0.5) * 255),
                 "color": {
-                    "r": data.get("color")[0],
-                    "g": data.get("color")[1],
-                    "b": data.get("color")[2],
+                    "r": color[0],
+                    "g": color[1],
+                    "b": color[2],
                 },
             }
             self._client.publish(state_topics["light_state"], json.dumps(light_state), retain=True)

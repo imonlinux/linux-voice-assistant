@@ -1,6 +1,7 @@
 """Tests for XVF3800 LED Backend hardware integration."""
 
 import struct
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -34,6 +35,7 @@ def _make_init_mock(supports_per_led: bool = True):
     reset and reconfigure the mock (see ``_finish_init``).
     """
     mock = MagicMock()
+    ring_response: Any
     if supports_per_led:
         ring_response = [255, 255, 255]
     else:

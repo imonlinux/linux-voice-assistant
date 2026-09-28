@@ -203,9 +203,10 @@ class XVF3800USBDevice:
     """
 
     def __init__(self, vid: int = _ReSpeaker.VID, pid: int = _ReSpeaker.PID):
-        self._rsp = _find_device(vid=vid, pid=pid)
-        if self._rsp is None:
+        rsp = _find_device(vid=vid, pid=pid)
+        if rsp is None:
             raise RuntimeError(f"XVF3800 USB device not found (vid=0x{vid:04x}, pid=0x{pid:04x})")
+        self._rsp = rsp
 
     def close(self) -> None:
         if self._rsp is not None:

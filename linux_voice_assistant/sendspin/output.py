@@ -659,7 +659,7 @@ class AudioPlayer:
         # Ensure full frame size by padding nulls if needed (shouldn't occur normally)
         if len(frame) < frame_size:
             frame = frame + b"\x00" * (frame_size - len(frame))
-        return frame
+        return bytes(frame)
 
     def _read_input_frames_bulk(self, n_frames: int) -> bytes:
         """Read N frames efficiently in bulk, handling chunk boundaries.

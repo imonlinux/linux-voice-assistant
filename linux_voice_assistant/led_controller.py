@@ -1,6 +1,7 @@
 import asyncio
+import concurrent.futures
 import logging
-from typing import Any, Callable, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple
 
 from .config import LedConfig
 from .event_bus import EventBus, EventHandler, subscribe
@@ -56,9 +57,9 @@ class LedController(EventHandler):
         self.loop = loop
         self.preferences = preferences
         self.num_leds = preferences.num_leds  # Get num_leds from preferences
-        self.current_task: Optional[asyncio.Future] = None
+        self.current_task: Optional[concurrent.futures.Future] = None
         self._is_ready = False
-        self.leds = None
+        self.leds: Optional[Any] = None
 
         # Fork: persistence hook for per-state configs (saves preferences).
         # Optional so tests/standalone use can skip disk writes.
@@ -71,10 +72,12 @@ class LedController(EventHandler):
         #   "pixels"  -> DotStar / NeoPixel via Adafruit drivers
         #   "xvf3800" -> XVF3800 USB LED ring backend
         self._backend_mode: str = "pixels"
-        self._xvf3800_backend = None
+        # XVF3800LedBackend instance; typed Any because the real class is
+        # imported lazily (board-safe try/except) inside the setup method.
+        self._xvf3800_backend: Optional[Any] = None
 
         # Configured LED behavior
-        self.configs = {
+        self.configs: Dict[str, Dict[str, Any]] = {
             "idle": {"effect": "off", "color": _PURPLE, "brightness": 0.5},
             "listening": {"effect": "medium_pulse", "color": _BLUE, "brightness": 0.5},
             "thinking": {"effect": "spin", "color": _YELLOW, "brightness": 0.8},
@@ -404,6 +407,7 @@ class LedController(EventHandler):
             await self._xvf3800_apply_effect("off", _OFF, 0.0)
             return
 
+        assert self.leds is not None
         self.leds.fill(_OFF)
         self.leds.show()
 
@@ -422,6 +426,7 @@ class LedController(EventHandler):
             await self._xvf3800_apply_effect("solid", color, brightness)
             return
 
+        assert self.leds is not None
         r, g, b = color
         self.leds.fill((int(r * brightness), int(g * brightness), int(b * brightness)))
         self.leds.show()
@@ -441,6 +446,7 @@ class LedController(EventHandler):
 
         if self._backend_mode == "xvf3800":
             if self._xvf3800_has_per_led():
+                assert self._xvf3800_backend is not None
                 try:
                     r, g, b = self._xvf3800_rgb_clamp(color)
                     # Pulse by scaling the per-LED RGB values (some firmwares don't apply LED_BRIGHTNESS to LED_RING_COLOR).
@@ -463,6 +469,7 @@ class LedController(EventHandler):
             await self._xvf3800_apply_effect(effect_name, color, brightness)
             return
 
+        assert self.leds is not None
         try:
             r, g, b = color
             while True:
@@ -502,6 +509,7 @@ class LedController(EventHandler):
 
         if self._backend_mode == "xvf3800":
             if self._xvf3800_has_per_led():
+                assert self._xvf3800_backend is not None
                 try:
                     r, g, b = self._xvf3800_rgb_clamp(color)
                     self._xvf3800_backend.set_effect(0)
@@ -526,6 +534,7 @@ class LedController(EventHandler):
             await self._xvf3800_apply_effect(effect_name, color, brightness)
             return
 
+        assert self.leds is not None
         try:
             r, g, b = color
             bright_color = (int(r * brightness), int(g * brightness), int(b * brightness))
@@ -556,6 +565,7 @@ class LedController(EventHandler):
 
         if self._backend_mode == "xvf3800":
             if self._xvf3800_has_per_led():
+                assert self._xvf3800_backend is not None
                 try:
                     r, g, b = self._xvf3800_rgb_clamp(color)
                     ring_n = self._xvf3800_ring_count()
@@ -582,6 +592,7 @@ class LedController(EventHandler):
             await self._xvf3800_apply_effect("spin", color, brightness)
             return
 
+        assert self.leds is not None
         try:
             i = 0
             bright_color = (

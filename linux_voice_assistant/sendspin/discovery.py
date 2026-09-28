@@ -37,7 +37,7 @@ class DiscoveredSendspinServer:
     properties: Dict[str, str] = field(default_factory=dict)
 
 
-def _decode_properties(props: Optional[Dict[bytes, bytes]]) -> Dict[str, str]:
+def _decode_properties(props: Optional[Dict[bytes, Optional[bytes]]]) -> Dict[str, str]:
     out: Dict[str, str] = {}
     if not props:
         return out
@@ -113,9 +113,9 @@ async def discover_sendspin_servers(
         await asyncio.sleep(timeout_s)
     finally:
         try:
-            browser.cancel()
+            await browser.async_cancel()
         except Exception:  # pylint: disable=broad-except
-            pass
+            _LOGGER.debug("Sendspin discovery: browser cancel failed", exc_info=True)
         await azc.async_close()
 
     servers = list(found.values())

@@ -50,7 +50,7 @@ LED_EFFECTS = (
 
 # Initial entity state when no LED controller config is available
 # (LED controller failed to init). Matches LedController's idle defaults.
-_FALLBACK_INITIAL = {
+_FALLBACK_INITIAL: Dict[str, Any] = {
     "effect": "off",
     "color": (128, 0, 255),
     "brightness": 0.5,

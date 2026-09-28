@@ -405,8 +405,8 @@ class VoiceSatelliteProtocol(APIServer):
                     icon=meta["icon"],
                     instance_id=instance_id,
                     options=options,
-                    get_selection=lambda iid=instance_id: self._get_sound_selection(iid),
-                    set_selection=lambda value, iid=instance_id: self._set_sound_selection(iid, value),
+                    get_selection=partial(self._get_sound_selection, instance_id),
+                    set_selection=partial(self._set_sound_selection, instance_id),
                 )
                 self.state.entities.append(entity)
                 self.state.sound_select_entities[instance_id] = entity
@@ -414,8 +414,8 @@ class VoiceSatelliteProtocol(APIServer):
                 self.state.entities.append(entity)
 
             entity.server = self
-            entity.update_get_selection(lambda iid=instance_id: self._get_sound_selection(iid))
-            entity.update_set_selection(lambda value, iid=instance_id: self._set_sound_selection(iid, value))
+            entity.update_get_selection(partial(self._get_sound_selection, instance_id))
+            entity.update_set_selection(partial(self._set_sound_selection, instance_id))
             entity.options = options
             entity.sync_with_state()
 
@@ -931,6 +931,7 @@ class VoiceSatelliteProtocol(APIServer):
                 if duration > 0:
                     self._clear_timer_auto_stop()
                     _LOGGER.debug("Scheduling alarm auto-stop after %s seconds", duration)
+                    assert self.state.loop is not None  # the protocol loop is live while handling messages
                     self._timer_auto_stop_handle = self.state.loop.call_later(duration, self._auto_stop_timer_alarm)
 
     # ------------------------------------------------------------------
@@ -1430,6 +1431,7 @@ class VoiceSatelliteProtocol(APIServer):
             if not self._pipeline_active:
                 self.unduck()
             return
+        assert self.state.loop is not None  # the protocol loop is live while handling messages
         self._timer_repeat_handle = self.state.loop.call_later(1.0, self._play_timer_finished)
 
     def connection_made(self, transport) -> None:

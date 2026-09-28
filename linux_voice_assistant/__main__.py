@@ -11,7 +11,7 @@ import time
 from dataclasses import fields as dataclass_fields
 from pathlib import Path
 from queue import Queue
-from typing import Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 import numpy as np
 import soundcard as sc
@@ -69,7 +69,7 @@ _PREFERENCE_ALIASES = {
 SOUND_EXTENSIONS = {".flac", ".wav", ".mp3"}
 
 # category key -> (scan_subdir, pref_field, allow_none)
-SOUND_CATEGORIES = {
+SOUND_CATEGORIES: Dict[str, Dict[str, Any]] = {
     "wakeup_sound": {
         "scan_dir": "sounds/wakeup",
         "pref_field": "selected_wakeup_sound",

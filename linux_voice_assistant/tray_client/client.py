@@ -382,7 +382,7 @@ class LvaTrayClient(QtWidgets.QSystemTrayIcon):
     def _make_circle_icon(self, color: QtGui.QColor) -> QtGui.QIcon:
         size = 20
         pixmap = QtGui.QPixmap(size, size)
-        pixmap.fill(QtCore.Qt.transparent)
+        pixmap.fill(QtCore.Qt.GlobalColor.transparent)
 
         painter = QtGui.QPainter(pixmap)
         painter.setRenderHint(QtGui.QPainter.Antialiasing, True)

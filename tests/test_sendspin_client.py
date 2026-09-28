@@ -179,7 +179,7 @@ def test_server_volume_command_applies_and_publishes(tmp_path: Path) -> None:
 
     output = MagicMock()
     client._output = output
-    echo_tasks = []
+    echo_tasks: list = []
     client.loop = MagicMock()
     client.loop.is_running.return_value = True
     client.loop.create_task = echo_tasks.append
@@ -207,7 +207,7 @@ def test_server_mute_command_applies(tmp_path: Path) -> None:
 
     output = MagicMock()
     client._output = output
-    echo_tasks = []
+    echo_tasks: list = []
     client.loop = MagicMock()
     client.loop.is_running.return_value = True
     client.loop.create_task = echo_tasks.append

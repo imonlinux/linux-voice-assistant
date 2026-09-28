@@ -253,7 +253,7 @@ class LVASendspinClient:
             client.compute_play_time,
             client.compute_server_time,
             now_us=client.clock.now_us,
-            is_clock_synced=lambda: client.is_time_synchronized,
+            is_clock_synced=lambda: client.is_time_synchronized(),
             # Begin playback only once the server's send-ahead target has
             # arrived; starting at a bare 200 ms caused immediate underflow.
             min_start_buffer_ms=max(200.0, self._min_buffer_ms),
@@ -526,7 +526,7 @@ class LVASendspinClient:
             return model_path
         return None
 
-    def _resolve_pin_tts(self) -> tuple[Optional[str], Optional[list]]:
+    def _resolve_pin_tts(self) -> tuple[Optional[str], Optional[Union[str, list]]]:
         """Resolve which TTS engine speaks the pairing PIN.
 
         Returns (engine_name, command_prefix) or (None, None) when nothing
@@ -621,7 +621,7 @@ class LVASendspinClient:
 
         if engine == "espeak-ng":
             voice = self._pairing_voice or next((lang.replace("_", "-") for lang in languages if lang), None)
-            cmd = list(cmd)
+            cmd = list(cmd if isinstance(cmd, list) else [])
             cmd += ["-s", str(self._pairing_voice_speed)]
             if voice:
                 cmd += ["-v", voice]
@@ -634,7 +634,8 @@ class LVASendspinClient:
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                 )
-                espeak_proc.stdout.close()
+                if espeak_proc.stdout is not None:
+                    espeak_proc.stdout.close()
                 self._pin_speech_procs = [espeak_proc, mpv_proc]
                 _LOGGER.info("Sendspin: speaking pairing PIN")
             except Exception:  # pylint: disable=broad-except

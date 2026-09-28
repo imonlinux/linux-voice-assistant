@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Optional
 from ..event_bus import EventBus, EventHandler, subscribe
 
 if TYPE_CHECKING:
-    from aiosendspin.client import SendspinClient
+    from .client import LVASendspinClient
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -20,7 +20,7 @@ _LOGGER = logging.getLogger(__name__)
 class SendspinDuckingHandler(EventHandler):
     """Listen to LVA voice lifecycle events and request duck/unduck."""
 
-    def __init__(self, event_bus: EventBus, client: "SendspinClient") -> None:
+    def __init__(self, event_bus: EventBus, client: "LVASendspinClient") -> None:
         super().__init__(event_bus)
         self._client = client
         self._subscribe_all_methods()
@@ -61,7 +61,7 @@ class SendspinControllerCommandHandler(EventHandler):
       {"command": "mute", "mute": True}
     """
 
-    def __init__(self, event_bus: EventBus, client: "SendspinClient") -> None:
+    def __init__(self, event_bus: EventBus, client: "LVASendspinClient") -> None:
         super().__init__(event_bus)
         self._client = client
         self._subscribe_all_methods()
@@ -80,6 +80,6 @@ class SendspinControllerCommandHandler(EventHandler):
 
         # Fire and forget; avoid blocking the EventBus thread.
         try:
-            self._client._loop.create_task(self._client.send_controller_command(str(cmd), volume=volume, mute=mute))
+            self._client.loop.create_task(self._client.send_controller_command(str(cmd), volume=volume, mute=mute))
         except Exception:
             _LOGGER.debug("Sendspin: failed to schedule controller command", exc_info=True)

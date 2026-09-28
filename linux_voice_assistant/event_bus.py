@@ -56,7 +56,7 @@ class EventBus:
 
 def subscribe(func: Callable) -> Callable:
     """Decorator to mark a method for event bus subscription."""
-    func._event_bus_subscribe = True
+    setattr(func, "_event_bus_subscribe", True)
     return func
 
 

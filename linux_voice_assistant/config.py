@@ -63,7 +63,8 @@ def _load_json_with_comments(path: Path) -> dict:
     # Strip /* block comments */
     content = re.sub(r"/\*.*?\*/", "", content, flags=re.DOTALL)
 
-    return json.loads(content)
+    loaded: Dict[Any, Any] = json.loads(content)
+    return loaded
 
 
 def _clamp_0_1(name: str, value: float) -> float:
@@ -135,7 +136,7 @@ def _dataclass_from_dict(cls: Type[T], raw: Any, *, context: str) -> T:
     if not isinstance(raw, dict):
         raw = {}
 
-    allowed = {f.name for f in fields(cls)}
+    allowed = {f.name for f in fields(cls)}  # type: ignore[arg-type]
     filtered = {k: v for k, v in raw.items() if k in allowed}
     unknown = sorted({k for k in raw.keys() if k not in allowed})
     if unknown:
