@@ -76,9 +76,8 @@ class TestVolumeManagementIntegration:
             if "wpctl" in str(cmd):
                 # wpctl not available
                 return MagicMock(stdout=b"", returncode=1)
-            else:
-                # pactl available
-                return MagicMock(stdout=b"50%", returncode=0)
+            # pactl available
+            return MagicMock(stdout=b"50%", returncode=0)
 
         mock_run.side_effect = side_effect
 
@@ -96,8 +95,7 @@ class TestVolumeManagementIntegration:
         def side_effect(cmd, *args, **kwargs):
             if "wpctl" in str(cmd) or "pactl" in str(cmd):
                 return MagicMock(stdout=b"", returncode=1)
-            else:
-                return MagicMock(stdout=b"50%", returncode=0)
+            return MagicMock(stdout=b"50%", returncode=0)
 
         mock_run.side_effect = side_effect
 
@@ -129,8 +127,7 @@ class TestVolumeManagementIntegration:
             attempt_count[0] += 1
             if attempt_count[0] < 3:
                 return MagicMock(stdout=b"", returncode=1)
-            else:
-                return MagicMock(stdout=b"50%", returncode=0)
+            return MagicMock(stdout=b"50%", returncode=0)
 
         mock_run.side_effect = side_effect
 
@@ -393,11 +390,10 @@ class TestVolumeHardwareAbstraction:
             if "wpctl" in str(cmd):
                 return MagicMock(stdout=b"", returncode=1)
             # pactl fails
-            elif "pactl" in str(cmd):
+            if "pactl" in str(cmd):
                 return MagicMock(stdout=b"", returncode=1)
             # amixer succeeds
-            else:
-                return MagicMock(stdout=b"50%", returncode=0)
+            return MagicMock(stdout=b"50%", returncode=0)
 
         mock_run.side_effect = side_effect
 

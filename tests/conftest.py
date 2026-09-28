@@ -138,39 +138,6 @@ def minimal_config(temp_config_file):
 
 
 @pytest.fixture
-def minimal_state(event_loop, event_bus, temp_preferences_file):
-    """Create minimal ServerState for testing."""
-    from linux_voice_assistant.models import Preferences, ServerState
-
-    prefs = Preferences()
-
-    return ServerState(
-        name="test_device",
-        mac_address="aa:bb:cc:dd:ee:ff",
-        event_bus=event_bus,
-        loop=event_loop,
-        entities=[],
-        music_player=None,
-        tts_player=None,
-        available_wake_words={},
-        wake_words={},
-        active_wake_words=set(),
-        stop_word=None,
-        wake_word_sensitivity="Slightly sensitive",
-        wakeup_sound="",
-        thinking_sound="",
-        timer_finished_sound="",
-        preferences=prefs,
-        preferences_path=temp_preferences_file,
-        download_dir=Path("/tmp/test_download"),
-        refractory_seconds=0.5,
-        event_sounds_enabled=True,
-        thinking_sound_loop=False,
-        listen_during_wake_sound=False,
-    )
-
-
-@pytest.fixture
 def mock_state(event_loop, event_bus):
     """Create mock ServerState for end-to-end workflow tests."""
     from linux_voice_assistant.models import Preferences, ServerState

@@ -54,7 +54,7 @@ def main():
         try:
             selected = sc.get_microphone(args.device)
         except Exception as err:
-            raise SystemExit(f"Device {args.device!r} not found by exact name or substring; " f"pick one from the list above ({err})")
+            raise SystemExit(f"Device {args.device!r} not found by exact name or substring; " f"pick one from the list above ({err})") from err
 
     print(f"\n=== Opening recorder: {selected.name} ===")
     num_frames = int(args.seconds * args.samplerate)
@@ -73,7 +73,7 @@ def main():
     print(f"Sample min/max (int16): {pcm16.min()} / {pcm16.max()}")
     peak = np.max(np.abs(pcm16))
     if peak < 100:
-        print("-> WARNING: capture is essentially silent (peak < 100). " "Check the device is the XVF3800 and its input gain/mute state.")
+        print("-> WARNING: capture is essentially silent (peak < 100). Check the device is the XVF3800 and its input gain/mute state.")
 
 
 if __name__ == "__main__":

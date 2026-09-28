@@ -63,10 +63,10 @@ def main():
             frames.append(pcm16.tobytes())
 
     with wave.open(out_path, "wb") as wf:
-        wf.setnchannels(out_ch)
-        wf.setsampwidth(2)
-        wf.setframerate(SR)
-        wf.writeframes(b"".join(frames))
+        wf.setnchannels(out_ch)  # pylint: disable=no-member
+        wf.setsampwidth(2)  # pylint: disable=no-member
+        wf.setframerate(SR)  # pylint: disable=no-member
+        wf.writeframes(b"".join(frames))  # pylint: disable=no-member
 
     print("Wrote:", out_path)
 

@@ -24,4 +24,13 @@ disable=
     too-many-return-statements,
     missing-module-docstring,
     too-few-public-methods,
-    too-many-instance-attributes
+    too-many-instance-attributes,
+    unused-argument,
+    broad-exception-caught,
+    duplicate-code,
+    c-extension-no-member,
+    import-error,
+    too-many-arguments,
+    too-many-positional-arguments,
+    too-many-locals,
+    too-many-public-methods
