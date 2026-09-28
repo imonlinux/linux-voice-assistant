@@ -30,6 +30,7 @@ if TYPE_CHECKING:
         StopWordSensitivityNumberEntity,
         ThinkingSoundEntity,
         ThinkingSoundLoopSwitchEntity,
+        WakeVolumeNumberEntity,
         WakeWord1SensitivityNumberEntity,
         WakeWord2SensitivityNumberEntity,
     )
@@ -139,6 +140,9 @@ class Preferences:
     wake_word_sensitivity: str = "Slightly sensitive"
     # Persisted listen-during-wake-sound selection (fork default True).
     listen_during_wake_sound: bool = True
+    # Wake chime volume override (fork). None = use config default;
+    # 0 = follow the master volume; 1-100 = fixed level.
+    wake_volume: Optional[int] = None
     # Fork: per-state LED light configs (effect/color/brightness) chosen
     # from HA (native light entities or MQTT), restored on boot. Maps
     # state name ("idle", "listening", ...) to
@@ -254,6 +258,9 @@ class ServerState:
     # Master toggle for event sounds (wakeup + thinking). Timer alarm
     # always plays regardless.
     event_sounds_enabled: bool = True
+    # Wake chime volume override: 0 = follow the master volume,
+    # 1-100 = fixed level. Resolved in __main__ (preference > config).
+    wake_volume: int = 100
     # When True the thinking sound repeats until the pipeline leaves the
     # thinking phase.
     thinking_sound_loop: bool = False
@@ -264,6 +271,7 @@ class ServerState:
     thinking_sound_loop_entity: "Optional[ThinkingSoundLoopSwitchEntity]" = None
     sound_select_entities: "Dict[str, SoundSelectEntity]" = field(default_factory=dict)
     alarm_duration_entity: "Optional[AlarmDurationNumberEntity]" = None
+    wake_volume_entity: "Optional[WakeVolumeNumberEntity]" = None
 
     def broadcast(self, msgs: "Iterable[message.Message]") -> None:
         """Send messages to every connected API client.

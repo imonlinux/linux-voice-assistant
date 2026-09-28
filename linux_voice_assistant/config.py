@@ -167,6 +167,10 @@ class AppConfig:
     # the wakeup sound bleeding into the microphone (poor AEC setup).
     listen_during_wake_sound: bool = True
 
+    # Wake chime volume override (fork). 0 = follow the master (media
+    # player) volume; 1-100 = play the wake sound at this fixed level.
+    wake_volume: int = 100
+
     # Delay in seconds before reopening the mic after TTS finishes when
     # continue_conversation is enabled. This prevents the TTS tail from being
     # captured as new audio. Default is 0.5s to match upstream behavior.
@@ -727,6 +731,7 @@ def apply_config_defaults(parser: "argparse.ArgumentParser", config: Config) -> 
     if config.app.preferences_file:
         defaults["preferences_file"] = _resolve_repo_path(config.app.preferences_file)
     defaults["listen_during_wake_sound"] = config.app.listen_during_wake_sound
+    defaults["wake_volume"] = config.app.wake_volume
     if config.app.continue_conversation_delay is not None:
         defaults["continue_conversation_delay"] = config.app.continue_conversation_delay
 

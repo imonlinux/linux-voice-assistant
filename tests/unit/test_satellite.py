@@ -397,3 +397,96 @@ class TestConnectionLost:
         sat = make_satellite(tmp_path)
         sat.connection_lost(None)
         sat.state.tts_player.stop.assert_called()
+
+
+# ---------------------------------------------------------------------------
+# wake volume override
+# ---------------------------------------------------------------------------
+
+
+class TestWakeVolumeOverride:
+    def test_default_is_full_volume(self, tmp_path):
+        sat = make_satellite(tmp_path)
+        assert sat._wake_volume_override() == 100.0
+
+    def test_zero_follows_master(self, tmp_path):
+        sat = make_satellite(tmp_path)
+        sat.state.wake_volume = 0
+        assert sat._wake_volume_override() is None
+
+    def test_fixed_level_passthrough(self, tmp_path):
+        sat = make_satellite(tmp_path)
+        sat.state.wake_volume = 40
+        assert sat._wake_volume_override() == 40.0
+
+    def test_clamps_above_100(self, tmp_path):
+        sat = make_satellite(tmp_path)
+        sat.state.wake_volume = 250
+        assert sat._wake_volume_override() == 100.0
+
+
+class TestSetWakeVolume:
+    def test_set_updates_state_and_persists(self, tmp_path):
+        sat = make_satellite(tmp_path)
+        sat._set_wake_volume(35.0)
+        assert sat.state.wake_volume == 35
+        assert sat.state.preferences.wake_volume == 35
+        assert sat.state.preferences_path.exists()
+
+    def test_set_clamps_high(self, tmp_path):
+        sat = make_satellite(tmp_path)
+        sat._set_wake_volume(140.0)
+        assert sat.state.wake_volume == 100
+
+    def test_set_clamps_low(self, tmp_path):
+        sat = make_satellite(tmp_path)
+        sat._set_wake_volume(-5.0)
+        assert sat.state.wake_volume == 0
+
+    def test_zero_after_set_follows_master(self, tmp_path):
+        sat = make_satellite(tmp_path)
+        sat._set_wake_volume(0.0)
+        assert sat._wake_volume_override() is None
+
+
+class TestWakeupWakeVolume:
+    def _make_ready(self, tmp_path):
+        sat = make_satellite(tmp_path)
+        sat.state.muted = False
+        sat._pipeline_active = False
+        sat._timer_finished = False
+        sat.state.event_sounds_enabled = True
+        wake_word = MagicMock()
+        wake_word.wake_word = "okay nabu"
+        return sat, wake_word
+
+    def test_wakeup_plays_with_fixed_override(self, tmp_path):
+        sat, wake_word = self._make_ready(tmp_path)
+        sat.state.listen_during_wake_sound = True
+        sat.state.wake_volume = 45
+        sat.wakeup(wake_word)
+        kwargs = sat.state.tts_player.play.call_args.kwargs
+        assert kwargs["volume_override"] == 45.0
+
+    def test_wakeup_zero_volume_plays_without_override(self, tmp_path):
+        sat, wake_word = self._make_ready(tmp_path)
+        sat.state.listen_during_wake_sound = True
+        sat.state.wake_volume = 0
+        sat.wakeup(wake_word)
+        kwargs = sat.state.tts_player.play.call_args.kwargs
+        assert kwargs["volume_override"] is None
+
+    def test_wakeup_wait_mode_carries_override(self, tmp_path):
+        sat, wake_word = self._make_ready(tmp_path)
+        sat.state.listen_during_wake_sound = False
+        sat.state.wake_volume = 30
+        sat.wakeup(wake_word)
+        kwargs = sat.state.tts_player.play.call_args.kwargs
+        assert kwargs["volume_override"] == 30.0
+
+    def test_wakeup_default_volume_is_full(self, tmp_path):
+        sat, wake_word = self._make_ready(tmp_path)
+        sat.state.listen_during_wake_sound = True
+        sat.wakeup(wake_word)
+        kwargs = sat.state.tts_player.play.call_args.kwargs
+        assert kwargs["volume_override"] == 100.0

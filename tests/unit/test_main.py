@@ -233,3 +233,50 @@ class TestPreferencesFromArgs:
         if enable_thinking_sound:
             prefs.thinking_sound = 1
         assert prefs.thinking_sound == 1
+
+
+# ---------------------------------------------------------------------------
+# _resolve_wake_volume
+# ---------------------------------------------------------------------------
+
+
+class TestResolveWakeVolume:
+    def _resolve(self, pref_value, config_value):
+        """Import __main__ with soundcard mocked (no audio hardware here).
+
+        The mock is assigned directly (not via patch.dict) because
+        patch.dict evicts every module imported inside the block from
+        sys.modules on exit, and re-importing util.py would re-initialize
+        the netifaces PyO3 module, which is init-once per process.
+        """
+        import sys
+        from unittest.mock import MagicMock
+
+        from linux_voice_assistant.models import Preferences
+
+        prefs = Preferences()
+        if pref_value is not None:
+            prefs.wake_volume = pref_value
+        if "linux_voice_assistant.__main__" not in sys.modules:
+            sys.modules["soundcard"] = MagicMock()
+        from linux_voice_assistant.__main__ import _resolve_wake_volume
+
+        return _resolve_wake_volume(prefs, config_value)
+
+    def test_preference_wins_over_config(self):
+        assert self._resolve(30, 100) == 30
+
+    def test_config_used_when_no_preference(self):
+        assert self._resolve(None, 40) == 40
+
+    def test_default_100_when_neither(self):
+        assert self._resolve(None, None) == 100
+
+    def test_zero_is_preserved(self):
+        assert self._resolve(0, None) == 0
+
+    def test_preference_clamped_high(self):
+        assert self._resolve(250, None) == 100
+
+    def test_config_clamped_low(self):
+        assert self._resolve(None, -10) == 0

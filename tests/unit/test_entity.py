@@ -460,3 +460,85 @@ class TestMicSettingEntitySelect:
         msgs = list(entity.handle_message(SubscribeHomeAssistantStatesRequest()))
         select_msg = next(m for m in msgs if isinstance(m, SelectStateResponse))
         assert isinstance(select_msg.state, str)
+
+
+# ---------------------------------------------------------------------------
+# WakeVolumeNumberEntity
+# ---------------------------------------------------------------------------
+
+
+def make_wake_volume(server=None, key=6, value=100.0):
+    from linux_voice_assistant.entity import WakeVolumeNumberEntity
+
+    server = server or make_server()
+    get_value = MagicMock(return_value=value)
+    set_value = MagicMock()
+    entity = WakeVolumeNumberEntity(
+        server=server,
+        key=key,
+        name="Wake Volume Override",
+        object_id="wake_volume_override",
+        get_value=get_value,
+        set_value=set_value,
+    )
+    entity._get_value_mock = get_value
+    entity._set_value_mock = set_value
+    return entity
+
+
+class TestWakeVolumeNumberEntityInit:
+    def test_range_is_0_to_100(self):
+        entity = make_wake_volume()
+        assert entity.min_value == 0.0
+        assert entity.max_value == 100.0
+        assert entity.step == 1.0
+
+    def test_volume_icon_and_percent_unit(self):
+        entity = make_wake_volume()
+        assert entity.icon == "mdi:volume-high"
+        assert entity.unit_of_measurement == "%"
+
+    def test_initial_value_from_getter(self):
+        entity = make_wake_volume(value=40.0)
+        assert entity._state == 40.0
+
+
+class TestWakeVolumeNumberEntityListEntities:
+    def test_list_entities_advertises_overrides(self):
+        entity = make_wake_volume(key=6)
+        msgs = list(entity.handle_message(ListEntitiesRequest()))
+        number_msg = next(m for m in msgs if isinstance(m, ListEntitiesNumberResponse))
+        assert number_msg.min_value == 0.0
+        assert number_msg.max_value == 100.0
+        assert number_msg.icon == "mdi:volume-high"
+        assert number_msg.unit_of_measurement == "%"
+
+
+class TestWakeVolumeNumberEntityCommands:
+    def test_command_clamps_above_100(self):
+        entity = make_wake_volume(key=6)
+        msgs = list(entity.handle_message(NumberCommandRequest(key=6, state=140.0)))
+        entity._set_value_mock.assert_called_once_with(100.0)
+        state_msg = next(m for m in msgs if isinstance(m, NumberStateResponse))
+        assert state_msg.state == 100.0
+
+    def test_command_clamps_below_0(self):
+        entity = make_wake_volume(key=6)
+        list(entity.handle_message(NumberCommandRequest(key=6, state=-5.0)))
+        entity._set_value_mock.assert_called_once_with(0.0)
+
+    def test_command_passes_fixed_level(self):
+        entity = make_wake_volume(key=6)
+        list(entity.handle_message(NumberCommandRequest(key=6, state=35.0)))
+        entity._set_value_mock.assert_called_once_with(35.0)
+
+    def test_command_wrong_key_ignored(self):
+        entity = make_wake_volume(key=6)
+        list(entity.handle_message(NumberCommandRequest(key=99, state=50.0)))
+        entity._set_value_mock.assert_not_called()
+
+    def test_subscribe_states_yields_number_state_response(self):
+        entity = make_wake_volume(key=6, value=0.0)
+        msgs = list(entity.handle_message(SubscribeHomeAssistantStatesRequest()))
+        state_msg = next(m for m in msgs if isinstance(m, NumberStateResponse))
+        assert state_msg.state == 0.0

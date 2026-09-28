@@ -1011,6 +1011,8 @@ class AlarmDurationNumberEntity(ESPHomeEntity):
         min_value: float = 0.0,
         max_value: float = 3600.0,
         step: float = 1.0,
+        icon: str = "mdi:timer",
+        unit_of_measurement: str = "s",
     ) -> None:
         ESPHomeEntity.__init__(self, server)
 
@@ -1022,6 +1024,8 @@ class AlarmDurationNumberEntity(ESPHomeEntity):
         self.min_value = min_value
         self.max_value = max_value
         self.step = step
+        self.icon = icon
+        self.unit_of_measurement = unit_of_measurement
         self._state = self._get_value()
 
     def update_get_value(self, get_value: Callable[[], float]) -> None:
@@ -1043,16 +1047,47 @@ class AlarmDurationNumberEntity(ESPHomeEntity):
                 object_id=self.object_id,
                 key=self.key,
                 name=self.name,
-                icon="mdi:timer",
+                icon=self.icon,
                 entity_category=EntityCategory.CONFIG,
                 min_value=self.min_value,
                 max_value=self.max_value,
                 step=self.step,
-                unit_of_measurement="s",
+                unit_of_measurement=self.unit_of_measurement,
             )
         elif isinstance(msg, SubscribeHomeAssistantStatesRequest):
             self.sync_with_state()
             yield NumberStateResponse(key=self.key, state=self._state, missing_state=False)
+
+
+class WakeVolumeNumberEntity(AlarmDurationNumberEntity):
+    """ESPHome number for the wake chime volume override (fork).
+
+    Semantics: 0 = follow the master (media player) volume;
+    1-100 = play the wake sound at this fixed level.
+    """
+
+    def __init__(
+        self,
+        server: APIServer,
+        key: int,
+        name: str,
+        object_id: str,
+        get_value: Callable[[], float],
+        set_value: Callable[[float], None],
+    ) -> None:
+        super().__init__(
+            server,
+            key,
+            name,
+            object_id,
+            get_value,
+            set_value,
+            min_value=0.0,
+            max_value=100.0,
+            step=1.0,
+            icon="mdi:volume-high",
+            unit_of_measurement="%",
+        )
 
 
 # Backward compatibility export aliases
@@ -1070,6 +1105,7 @@ __all__ = [
     "ThinkingSoundLoopSwitchEntity",
     "SoundSelectEntity",
     "AlarmDurationNumberEntity",
+    "WakeVolumeNumberEntity",
     # Old class names for backward compatibility
     "WakeWordSensitivityNumberEntity",
     "SecondWakeWordSensitivityNumberEntity",

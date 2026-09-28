@@ -164,6 +164,17 @@ def _resolve_thinking_sound_loop(preferences: Preferences, config_value: Optiona
     return False
 
 
+def _resolve_wake_volume(preferences: Preferences, config_value: Optional[int]) -> int:
+    """Wake volume precedence: preference > config.json > default (100).
+
+    0 = follow the master volume; 1-100 = fixed level (clamped).
+    """
+    value = preferences.wake_volume if preferences.wake_volume is not None else config_value
+    if value is None:
+        return 100
+    return max(0, min(100, int(value)))
+
+
 # -----------------------------------------------------------------------------
 # Fork: hardware controller wiring
 # -----------------------------------------------------------------------------
@@ -637,6 +648,12 @@ async def main() -> None:
         help="Start listening immediately after wake word detection, without waiting for the wake sound to finish",
     )
     parser.add_argument(
+        "--wake-volume",
+        type=int,
+        default=100,
+        help="Wake chime volume override: 0 follows the master volume, 1-100 is a fixed level (default: 100)",
+    )
+    parser.add_argument(
         "--debug",
         action="store_true",
         help="Add this to enable debug logging",
@@ -907,6 +924,9 @@ async def main() -> None:
         audio_input_channels=args.audio_input_channels,
         timer_max_ring_seconds=args.timer_max_ring_seconds,
         listen_during_wake_sound=args.listen_during_wake_sound,
+        wake_volume=_resolve_wake_volume(
+            preferences, config.app.wake_volume if config else None
+        ),
         event_sounds_enabled=_resolve_event_sounds_enabled(
             preferences, config.app.event_sounds_enabled if config else None
         ),

@@ -62,6 +62,7 @@ from .entity import (
     StopWordSensitivityNumberEntity,
     ThinkingSoundEntity,
     ThinkingSoundLoopSwitchEntity,
+    WakeVolumeNumberEntity,
     WakeWord1SensitivityNumberEntity,
     WakeWord2SensitivityNumberEntity,
 )
@@ -441,6 +442,27 @@ class VoiceSatelliteProtocol(APIServer):
         alarm_duration_entity.update_set_value(self._set_alarm_duration)
         alarm_duration_entity.sync_with_state()
 
+        # Wake Volume Override — 0 = follow the master volume, 1-100 = fixed.
+        wake_volume_entity = self.state.wake_volume_entity
+        if wake_volume_entity is None:
+            wake_volume_entity = WakeVolumeNumberEntity(
+                server=self,
+                key=len(self.state.entities),
+                name="Wake Volume Override",
+                object_id="wake_volume_override",
+                get_value=lambda: float(self.state.wake_volume),
+                set_value=self._set_wake_volume,
+            )
+            self.state.entities.append(wake_volume_entity)
+            self.state.wake_volume_entity = wake_volume_entity
+        elif wake_volume_entity not in self.state.entities:
+            self.state.entities.append(wake_volume_entity)
+
+        wake_volume_entity.server = self
+        wake_volume_entity.update_get_value(lambda: float(self.state.wake_volume))
+        wake_volume_entity.update_set_value(self._set_wake_volume)
+        wake_volume_entity.sync_with_state()
+
 
         # NOTE: ButtonEventSensorEntity is NOT created here unconditionally.
         # It is only materialised when a peripheral sends the register_button
@@ -772,6 +794,28 @@ class VoiceSatelliteProtocol(APIServer):
         self.state.preferences.alarm_duration_seconds = duration
         self.state.save_preferences()
         _LOGGER.info("Alarm duration set to: %d seconds", duration)
+
+    def _set_wake_volume(self, value: float) -> None:
+        """WakeVolumeNumberEntity callback — update and persist.
+
+        0 = follow the master (media player) volume.
+        """
+        volume = max(0, min(100, int(value)))
+        self.state.preferences.wake_volume = volume
+        self.state.wake_volume = volume
+        self.state.save_preferences()
+        _LOGGER.info("Wake volume override set to: %d", volume)
+
+    def _wake_volume_override(self) -> Optional[float]:
+        """Resolved volume_override for the wake chime.
+
+        0 (or below) = no override (follow the master volume); otherwise a
+        fixed level clamped to 1-100.
+        """
+        volume = self.state.wake_volume
+        if volume <= 0:
+            return None
+        return float(min(volume, 100))
 
     # ------------------------------------------------------------------
     # Voice pipeline event handler
@@ -1122,16 +1166,18 @@ class VoiceSatelliteProtocol(APIServer):
         self.duck()
         if self.state.listen_during_wake_sound:
             _LOGGER.debug("Starting audio streaming immediately (listen_during_wake_sound enabled)")
-            # Fork: wakeup sound is gated by the Event Sounds master toggle
-            # and always plays at full volume (fork volume_override behavior)
+            # Fork: wakeup sound is gated by the Event Sounds master toggle;
+            # its loudness follows the Wake Volume Override (0 = master volume)
             if self.state.event_sounds_enabled and self.state.wakeup_sound:
-                self.state.tts_player.play(self.state.wakeup_sound, volume_override=100)
+                self.state.tts_player.play(
+                    self.state.wakeup_sound, volume_override=self._wake_volume_override()
+                )
             self._start_audio_streaming(wake_word_phrase)
         else:
             if self.state.event_sounds_enabled and self.state.wakeup_sound:
                 self.state.tts_player.play(
                     self.state.wakeup_sound,
-                    volume_override=100,
+                    volume_override=self._wake_volume_override(),
                     done_callback=lambda: self._on_wakeup_sound_finished(wake_word_phrase),
                 )
             else:

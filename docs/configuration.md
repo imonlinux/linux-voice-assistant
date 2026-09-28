@@ -42,6 +42,17 @@ Both share a single volume control — there is no separate volume for the pipel
 
 ![Media player entity](images/media_player.png)
 
+## Wake Volume Override
+
+By default the wake word chime always plays at full volume, regardless of where the Media Player volume is set. The **Wake Volume Override** number lets you change that:
+
+- **0** — no override: the chime follows the Media Player volume like every other sound
+- **1–100** — the chime plays at this fixed level, regardless of the Media Player volume
+
+The default of `100` preserves the historical behavior (full-volume chime). The value is persisted to `preferences.json` and survives restarts; a `wake_volume` key in `config.json` (or the `--wake-volume` CLI flag) sets the default applied until the first change from Home Assistant.
+
+Note that this only governs how loud the chime plays — the **Event Sounds** switch still controls whether the chime plays at all, and the timer alarm is unaffected.
+
 ## Microphone Settings
 
 ### Volume

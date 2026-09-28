@@ -284,6 +284,43 @@ class TestConfigIntegration:
         finally:
             temp_path.unlink(missing_ok=True)
 
+    def test_config_with_wake_volume(self):
+        """Test wake_volume config default (0 = follow master, 1-100 = fixed)."""
+        config_data = {
+            "app": {
+                "name": "test_device",
+                "wake_volume": 35
+            }
+        }
+
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            temp_path = Path(f.name)
+            json.dump(config_data, f)
+
+        try:
+            config = load_config_from_json(temp_path)
+
+            assert config.app.wake_volume == 35
+
+        finally:
+            temp_path.unlink(missing_ok=True)
+
+    def test_wake_volume_defaults_to_100(self):
+        """Wake volume default preserves the historical full-volume chime."""
+        config_data = {"app": {"name": "test_device"}}
+
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            temp_path = Path(f.name)
+            json.dump(config_data, f)
+
+        try:
+            config = load_config_from_json(temp_path)
+
+            assert config.app.wake_volume == 100
+
+        finally:
+            temp_path.unlink(missing_ok=True)
+
     def test_config_with_mqtt_enabled(self):
         """Test configuration with MQTT enabled."""
         config_data = {
