@@ -64,8 +64,7 @@ def query_devices() -> list[AudioDevice]:
     default_output = int(sounddevice.default.device[1])
 
     result: list[AudioDevice] = []
-    for i in range(len(devices)):
-        dev = devices[i]
+    for i, dev in enumerate(devices):
         if dev["max_output_channels"] > 0:
             result.append(
                 AudioDevice(
@@ -226,6 +225,7 @@ def list_alsa_devices() -> list[tuple[str, str]]:
             capture_output=True,
             text=True,
             timeout=5,
+            check=False,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return []

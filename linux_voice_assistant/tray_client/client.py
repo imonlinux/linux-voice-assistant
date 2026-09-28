@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Dict, Optional
 
 import paho.mqtt.client as mqtt
-from PyQt5 import QtCore, QtGui, QtWidgets
+from PyQt5 import QtGui, QtWidgets
 
 from linux_voice_assistant.config import Config, load_config_from_json
 from linux_voice_assistant.models import SatelliteState
@@ -382,7 +382,7 @@ class LvaTrayClient(QtWidgets.QSystemTrayIcon):
     def _make_circle_icon(self, color: QtGui.QColor) -> QtGui.QIcon:
         size = 20
         pixmap = QtGui.QPixmap(size, size)
-        pixmap.fill(QtCore.Qt.GlobalColor.transparent)
+        pixmap.fill(QtGui.QColor(0, 0, 0, 0))
 
         painter = QtGui.QPainter(pixmap)
         painter.setRenderHint(QtGui.QPainter.Antialiasing, True)

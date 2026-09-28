@@ -233,7 +233,6 @@ class ESPHomeConfig:
 class LedConfig:
     """LED controller configuration."""
 
-    """Settings for LEDs."""
     enabled: bool = True
 
     # Fork (retire_mqtt groundwork): expose the in-daemon LED states to

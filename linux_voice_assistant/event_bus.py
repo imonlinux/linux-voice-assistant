@@ -19,7 +19,7 @@ class EventBus:
         if topic not in self.topics:
             self.topics[topic] = []
         self.topics[topic].append(listener)
-        _LOGGER.debug(f"Subscribed listener to topic '{topic}'")
+        _LOGGER.debug("Subscribed listener to topic '%s'", topic)
 
     def publish(self, topic: str, data: Optional[Dict[str, Any]] = None) -> None:
         """
@@ -37,7 +37,7 @@ class EventBus:
             self.events_received.append((topic, data.copy()))
 
         listeners = self.topics.get(topic, [])
-        _LOGGER.debug(f"Publishing event to {len(listeners)} listeners on topic '{topic}'")
+        _LOGGER.debug("Publishing event to %d listeners on topic '%s'", len(listeners), topic)
         for listener in listeners:
             try:
                 listener(data)

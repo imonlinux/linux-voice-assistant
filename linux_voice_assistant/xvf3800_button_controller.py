@@ -259,7 +259,7 @@ class XVF3800ButtonController(EventHandler):
                 poll_interval = float(button_config.poll_interval_seconds)
             except Exception:
                 _LOGGER.warning(
-                    "Invalid poll_interval_seconds in button config; " "defaulting to %.3fs",
+                    "Invalid poll_interval_seconds in button config; defaulting to %.3fs",
                     poll_interval,
                 )
 
@@ -336,7 +336,7 @@ class XVF3800ButtonController(EventHandler):
             self._usb_client = XVF3800USBClient()
             _LOGGER.info("Connected to ReSpeaker XVF3800 for mute control")
         except Exception:
-            _LOGGER.exception("Failed to initialize XVF3800 USB client; " "mute button integration will be disabled")
+            _LOGGER.exception("Failed to initialize XVF3800 USB client; mute button integration will be disabled")
             self._usb_client = None
         return self._usb_client
 
@@ -397,7 +397,7 @@ class XVF3800ButtonController(EventHandler):
                     )
                 elif hw_muted != self._last_hw_muted:
                     _LOGGER.info(
-                        "Detected XVF3800 mute state change from %s to %s; " "publishing set_mic_mute event",
+                        "Detected XVF3800 mute state change from %s to %s; publishing set_mic_mute event",
                         self._last_hw_muted,
                         hw_muted,
                     )

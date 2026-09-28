@@ -16,7 +16,7 @@ try:
     import board  # type: ignore[import]
 except Exception:
     board = None  # type: ignore[assignment]
-    _LOGGER.warning("Adafruit 'board' module not available or unsupported on this platform; " "DotStar/NeoPixel GPIO/SPI LED backends will be disabled. " "XVF3800 USB LED backend is unaffected.")
+    _LOGGER.warning("Adafruit 'board' module not available or unsupported on this platform; DotStar/NeoPixel GPIO/SPI LED backends will be disabled. XVF3800 USB LED backend is unaffected.")
 
 # Default Colors
 _OFF = (0, 0, 0)
@@ -101,10 +101,10 @@ class LedController(EventHandler):
             self._enabled = bool(config_enabled) and (board is not None)
 
         if not config_enabled:
-            _LOGGER.info("LEDs disabled in config (led.enabled = false); " "LedController will run in no-op mode.")
+            _LOGGER.info("LEDs disabled in config (led.enabled = false); LedController will run in no-op mode.")
         elif not self._enabled:
             _LOGGER.warning(
-                "LED hardware libraries not available on this platform for led_type=%s; " "LedController will run in no-op mode.",
+                "LED hardware libraries not available on this platform for led_type=%s; LedController will run in no-op mode.",
                 config.led_type,
             )
 

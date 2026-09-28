@@ -118,6 +118,11 @@ include_trailing_comma = true
 force_grid_wrap = 0
 use_parentheses = true
 
+[tool.pylint.main]
+# PyQt5 is a compiled extension; without this pylint cannot introspect its
+# members and every QtWidgets/QtGui attribute access fires c-extension-no-member.
+extension-pkg-allow-list = ["PyQt5"]
+
 [tool.pylint."MESSAGES CONTROL"]
 disable = [
   "abstract-method",

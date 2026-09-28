@@ -198,9 +198,9 @@ class MicMuteBridge(EventHandler):
             _LOGGER.debug("MicMuteBridge: satellite/loop not ready; dropping mute request")
             return
         if loop.is_running():
-            loop.call_soon_threadsafe(satellite._set_muted, target)
+            loop.call_soon_threadsafe(satellite._set_muted, target)  # pylint: disable=protected-access
         else:
-            satellite._set_muted(target)
+            satellite._set_muted(target)  # pylint: disable=protected-access
 
 
 class SendspinPreferencesHandler(EventHandler):
@@ -247,7 +247,7 @@ def _start_sendspin(
             return None, None
 
         if LVASendspinClient is None:
-            _LOGGER.warning("Sendspin enabled in config but the sendspin extra is not installed. " "Run 'pip install -e .[sendspin]' to enable Sendspin support.")
+            _LOGGER.warning("Sendspin enabled in config but the sendspin extra is not installed. Run 'pip install -e .[sendspin]' to enable Sendspin support.")
             return None, None
 
         prefs_dir = state.preferences_path.parent

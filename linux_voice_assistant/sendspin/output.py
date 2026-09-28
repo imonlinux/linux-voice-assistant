@@ -417,7 +417,7 @@ class AudioPlayer:
         self,
         outdata: memoryview,
         frames: int,
-        time: AudioTimeInfo,
+        time_info: AudioTimeInfo,
         status: CallbackFlags,
     ) -> None:
         """
@@ -426,7 +426,7 @@ class AudioPlayer:
         Args:
             outdata: Output buffer to fill with audio data.
             frames: Number of frames requested.
-            time: CFFI cdata structure with timing info (outputBufferDacTime, etc).
+            time_info: CFFI cdata structure with timing info (outputBufferDacTime, etc).
             status: Status flags (underrun, overflow, etc.).
         """
         callback_start_us = self._now_us()
@@ -447,7 +447,7 @@ class AudioPlayer:
             logger.debug("Audio callback status: %s", status)
 
         # Capture exact DAC output time and update playback position
-        self._update_playback_position_from_dac(time)
+        self._update_playback_position_from_dac(time_info)
 
         # Reanchor: snap read cursor to DAC-derived server time so the
         # cursor tracks actual playback position, not bytes-read position.
@@ -467,7 +467,7 @@ class AudioPlayer:
         try:
             # Pre-start gating: fill silence until scheduled start time
             if self._playback_state == PlaybackState.WAITING_FOR_START:
-                bytes_written = self._handle_start_gating(output_buffer, bytes_written, frames, time)
+                bytes_written = self._handle_start_gating(output_buffer, bytes_written, frames, time_info)
 
             # If still waiting after gating, fill remaining buffer with silence
             if self._playback_state == PlaybackState.WAITING_FOR_START:
@@ -492,9 +492,9 @@ class AudioPlayer:
                 else:
                     # Slow path: sync corrections active - process in optimized segments
                     # Reset cadence counters if needed
-                    if self._frames_until_next_insert <= 0 and insert_every_n > 0:
+                    if self._frames_until_next_insert <= 0 < insert_every_n:
                         self._frames_until_next_insert = insert_every_n
-                    if self._frames_until_next_drop <= 0 and drop_every_n > 0:
+                    if self._frames_until_next_drop <= 0 < drop_every_n:
                         self._frames_until_next_drop = drop_every_n
 
                     if not self._last_output_frame:
@@ -524,7 +524,7 @@ class AudioPlayer:
 
                         # Handle correction event if at boundary
                         if frames_remaining > 0:
-                            if drop_counter <= 0 and drop_every_n > 0:
+                            if drop_counter <= 0 < drop_every_n:
                                 # Drop one input frame, then output the following frame. This
                                 # advances the source cursor by two frames while rendering one,
                                 # avoiding the old duplicate-then-skip artifact.
@@ -539,7 +539,7 @@ class AudioPlayer:
                                 bytes_written += frame_size
                                 frames_remaining -= 1
                                 insert_counter -= 1
-                            elif insert_counter <= 0 and insert_every_n > 0:
+                            elif insert_counter <= 0 < insert_every_n:
                                 # Insert frame: output duplicate WITHOUT reading
                                 # This makes playback catch up to cursor (cursor doesn't advance)
                                 insert_counter = insert_every_n
@@ -571,10 +571,10 @@ class AudioPlayer:
         self._callback_time_total_us += callback_end_us - callback_start_us
         self._callback_count += 1
 
-    def _update_playback_position_from_dac(self, time: AudioTimeInfo) -> None:
+    def _update_playback_position_from_dac(self, time_info: AudioTimeInfo) -> None:
         """Capture DAC and loop time simultaneously, update playback position."""
         try:
-            dac_time_us = int(time.outputBufferDacTime * 1_000_000)
+            dac_time_us = int(time_info.outputBufferDacTime * 1_000_000)
             loop_time_us = self._now_us()
 
             # Store complete calibration pair atomically
@@ -849,7 +849,7 @@ class AudioPlayer:
                 avg_callback_us = self._callback_time_total_us / max(self._callback_count, 1)
 
                 logger.debug(
-                    "Sync error: %.1f ms, buffer: %.2f s, speed: %.2f%%, " "played: %d, inserted: %d, dropped: %d, callback: %.1f µs",
+                    "Sync error: %.1f ms, buffer: %.2f s, speed: %.2f%%, played: %d, inserted: %d, dropped: %d, callback: %.1f µs",
                     self._sync_error_filtered_us / 1000.0,
                     self._queued_duration_us / 1_000_000,
                     playback_speed_percent,
@@ -957,7 +957,7 @@ class AudioPlayer:
         output_buffer: memoryview,
         bytes_written: int,
         frames: int,
-        time: AudioTimeInfo | None = None,
+        time_info: AudioTimeInfo | None = None,
     ) -> int:
         """Handle pre-start gating using DAC or loop time. Returns bytes written."""
         assert self._format is not None
@@ -965,9 +965,9 @@ class AudioPlayer:
         # Try DAC-based gating first if time info available
         use_dac_gating = False
         dac_now_us = 0
-        if time is not None and self._scheduled_start_dac_time_us is not None:
+        if time_info is not None and self._scheduled_start_dac_time_us is not None:
             try:
-                dac_now_us = int(time.outputBufferDacTime * self._MICROSECONDS_PER_SECOND)
+                dac_now_us = int(time_info.outputBufferDacTime * self._MICROSECONDS_PER_SECOND)
                 if dac_now_us > 0:
                     use_dac_gating = True
             except (AttributeError, TypeError):

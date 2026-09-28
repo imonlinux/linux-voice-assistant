@@ -29,7 +29,7 @@ _LOGGER = logging.getLogger(__name__)
 # On non-RPi hosts, RPi.GPIO may be installed but will raise RuntimeError
 # at import time ("This module can only be run on a Raspberry Pi!").
 try:  # pragma: no cover - behavior depends on host platform
-    import RPi.GPIO as GPIO  # type: ignore[import]
+    import RPi.GPIO as GPIO  # type: ignore[import]  # pylint: disable=consider-using-from-import
 except Exception:  # ImportError, RuntimeError, etc.
     GPIO = None  # type: ignore[assignment]
 
@@ -97,23 +97,23 @@ class ButtonController:
 
         # If RPi.GPIO is unavailable or not usable on this host, also do nothing.
         if GPIO is None:
-            _LOGGER.info("RPi.GPIO not available or not usable on this host; " "hardware button support disabled")
+            _LOGGER.info("RPi.GPIO not available or not usable on this host; hardware button support disabled")
             return
 
         try:
-            GPIO.setmode(GPIO.BCM)
+            GPIO.setmode(GPIO.BCM)  # pylint: disable=no-member
             # Assume button wired as active-low with internal pull-up (common for HATs)
-            GPIO.setup(self._cfg.pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-            self._last_level = GPIO.input(self._cfg.pin)
+            GPIO.setup(self._cfg.pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)  # pylint: disable=no-member
+            self._last_level = GPIO.input(self._cfg.pin)  # pylint: disable=no-member
             _LOGGER.info(
-                "ButtonController initialized on GPIO pin %s " "(long_press_seconds=%.2f, poll_interval=%.3fs)",
+                "ButtonController initialized on GPIO pin %s (long_press_seconds=%.2f, poll_interval=%.3fs)",
                 self._cfg.pin,
                 self._cfg.long_press_seconds,
                 self._cfg.poll_interval_seconds,
             )
         except Exception:
             _LOGGER.exception(
-                "Failed to configure GPIO pin %s for button; " "hardware button support disabled",
+                "Failed to configure GPIO pin %s for button; hardware button support disabled",
                 self._cfg.pin,
             )
             return
@@ -136,7 +136,7 @@ class ButtonController:
 
         while not getattr(self.state, "shutdown", False):
             try:
-                level = GPIO.input(self._cfg.pin)  # type: ignore[call-arg]
+                level = GPIO.input(self._cfg.pin)  # type: ignore[call-arg]  # pylint: disable=no-member
             except Exception:
                 _LOGGER.exception("Error reading GPIO pin %s", self._cfg.pin)
                 break
@@ -190,7 +190,7 @@ class ButtonController:
 
         if tts_playing or music_playing:
             _LOGGER.debug(
-                "Button short press while audio playing " "(tts=%s, music=%s) -> stopping playback",
+                "Button short press while audio playing (tts=%s, music=%s) -> stopping playback",
                 tts_playing,
                 music_playing,
             )

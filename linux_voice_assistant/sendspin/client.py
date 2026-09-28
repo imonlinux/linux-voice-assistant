@@ -151,7 +151,7 @@ class LVASendspinClient:
         if host:
             return f"ws://{host}:{port}{path}"
         if not bool(_cfg_get(connection_cfg, "mdns", True)):
-            raise ValueError("sendspin.connection.server_host is not configured and mdns is " "disabled; set server_host to the Music Assistant server " "address or enable mdns in config.json")
+            raise ValueError("sendspin.connection.server_host is not configured and mdns is disabled; set server_host to the Music Assistant server address or enable mdns in config.json")
         return None
 
     async def _resolve_endpoint(self) -> str:
@@ -188,8 +188,6 @@ class LVASendspinClient:
             try:
                 await self._connect_once()
                 backoff = _RECONNECT_MIN_S
-            except asyncio.CancelledError:
-                raise
             except Exception:  # pylint: disable=broad-except
                 if self._stopping:
                     return
@@ -253,7 +251,7 @@ class LVASendspinClient:
             client.compute_play_time,
             client.compute_server_time,
             now_us=client.clock.now_us,
-            is_clock_synced=lambda: client.is_time_synchronized(),
+            is_clock_synced=client.is_time_synchronized,
             # Begin playback only once the server's send-ahead target has
             # arrived; starting at a bare 200 ms caused immediate underflow.
             min_start_buffer_ms=max(200.0, self._min_buffer_ms),
@@ -277,7 +275,7 @@ class LVASendspinClient:
         else:
             client.open_pairing_window()
             _LOGGER.info(
-                "Sendspin: server not yet paired — pairing window open for %ss. " "Select the player in Music Assistant to pair.",
+                "Sendspin: server not yet paired — pairing window open for %ss. Select the player in Music Assistant to pair.",
                 int(_UNPAIRED_PAIRING_WINDOW_S),
             )
 
@@ -514,6 +512,7 @@ class LVASendspinClient:
             cwd=str(self._piper_voices_dir),
             capture_output=True,
             text=True,
+            check=False,
             timeout=300,
         )
         if result.returncode != 0:
