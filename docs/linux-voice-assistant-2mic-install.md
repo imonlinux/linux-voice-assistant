@@ -69,7 +69,7 @@ DKMS module if one is present.
 
 | File | Purpose |
 | --- | --- |
-| `install-respeaker-drivers.sh` | The installer (run with `sudo`). POSIX-safe — works under `sh` and `bash`. Auto-detects v1/v2. |
+| `install-respeaker-drivers.sh` | The installer (run with `sudo`). POSIX-safe — works under `sh` and `bash`. Auto-detects v1/v2. `--uninstall` removes it again. |
 | `seeed-2mic-voicecard-overlay.dts` | v1 overlay source: `simple-audio-card` + `wm8960` glue using only mainline drivers, compiled with `dtc` at install time. |
 | `seeed-2mic-v2-voicecard-overlay.dts` | v2 overlay source: `simple-audio-card` + `tlv320aic3104` glue (2.5 V micbias for the onboard mics). |
 | `asound_2mic.conf` | ALSA dmix/dsnoop defaults, installed as `/etc/asound.conf`. Shared by both revisions. |
@@ -97,6 +97,37 @@ DKMS module if one is present.
 
 After this, kernel upgrades are a no-op for audio: there is no out-of-tree
 module to rebuild and no per-kernel driver branch to wait for.
+
+### Uninstall
+
+```bash
+sudo ~/linux-voice-assistant/respeaker2mic/install-respeaker-drivers.sh --uninstall
+```
+
+Returns the system to the state of a fresh Raspberry Pi OS install, minus
+the packages (those are kept). Every config change is reverted:
+
+- `config.txt`: the `dtoverlay=seeed-2mic-*` entries (both revisions, with
+  or without parameters), `dtoverlay=i2s-mmap`, and the uncommented
+  `dtparam=i2c_arm=on` / `dtparam=i2s=on` / `dtparam=spi=on` lines. Stock
+  Raspberry Pi OS ships those three dtparams commented out, so removing the
+  uncommented forms restores the stock file; the commented stock lines are
+  never touched.
+- `/etc/modules`: the `i2c-dev` entry.
+- The compiled `.dtbo` files from the boot partition's `overlays/` directory.
+- `/etc/voicecard` and the `/etc/asound.conf` symlink.
+- The v1 `wm8960` mixer-state symlink; the pre-install mixer-state backup
+  the installer made is restored.
+- Any legacy `seeed-voicecard` DKMS driver, so this also uninstalls the old
+  Seeed installer's setup.
+
+Running it on a device with nothing installed reports "Nothing to
+uninstall" and exits cleanly.
+
+If the card was live when you uninstalled, the script tries to unregister
+it from the running device tree; if it is still listed after that
+(`aplay -l | grep seeed2micvoicec`), one reboot finishes the removal and
+clears any residual runtime state (loaded modules).
 
 ### Verify
 

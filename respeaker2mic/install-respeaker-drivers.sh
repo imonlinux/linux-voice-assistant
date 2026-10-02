@@ -26,6 +26,14 @@
 # mainline driver. They still need Seeed's DKMS installer and are NOT
 # handled by this script.
 #
+# Uninstall: run with --uninstall to return the system to the state of a
+# fresh Raspberry Pi OS install (same packages). Every config change this
+# installer makes is reverted: the dtparam/i2s-mmap lines it uncommented or
+# added in config.txt, the i2c-dev entry in /etc/modules, both HAT overlays,
+# /etc/voicecard with the ALSA config, the mixer-state symlink (pre-install
+# backup restored), and any legacy DKMS driver. Installed packages are left
+# in place.
+#
 # Must be run with sudo.
 # Requires: alsa-utils, i2c-tools, device-tree-compiler (installed below).
 
@@ -40,6 +48,32 @@ fi
 # and under sh its failure silently degrades script_dir to the CWD.
 script_dir="$(cd "$(dirname "$0")" && pwd)"
 
+usage() {
+  cat <<EOF
+Usage: sudo ${0##*/} [--uninstall]
+
+  (no args)    Detect the ReSpeaker 2-Mic HAT revision and install the
+               matching mainline driver overlay (v1 WM8960, v2 AIC3104).
+  --uninstall  Return the system to the state of a fresh Raspberry Pi OS
+               install (installed packages are kept): remove the device tree
+               overlays (both revisions) and every config.txt line this
+               installer added or uncommented (dtparam=i2c_arm=on / i2s=on /
+               spi=on, dtoverlay=i2s-mmap, the HAT overlay entries), the
+               i2c-dev entry in /etc/modules, /etc/voicecard with the
+               asound.conf symlink, and the wm8960 mixer-state symlink
+               (pre-install backup restored). Any legacy seeed-voicecard
+               DKMS driver is removed too.
+EOF
+}
+
+mode="install"
+case "${1:-}" in
+  "") ;;
+  --uninstall) mode="uninstall" ;;
+  -h|--help) usage; exit 0 ;;
+  *) echo "Unknown option: $1" >&2; usage >&2; exit 1 ;;
+esac
+
 # Locate the boot partition (bookworm moved config/overlays to /boot/firmware)
 if [ -d /boot/firmware/overlays ]; then
   boot_dir=/boot/firmware
@@ -48,6 +82,117 @@ else
 fi
 config="${boot_dir}/config.txt"
 overlays_dir="${boot_dir}/overlays"
+
+# --- uninstall ----------------------------------------------------------------
+
+# Reverses this installer as narrowly as possible. Everything below mirrors
+# an install step; nothing else is touched.
+do_uninstall() {
+  removed=0
+
+  # legacy DKMS driver from the old Seeed installer (same cleanup as install)
+  if command -v dkms >/dev/null 2>&1 && dkms status 2>/dev/null | grep -q "^seeed-voicecard/"; then
+    echo "Removing legacy seeed-voicecard DKMS module..."
+    modprobe -r seeed-voicecard 2>/dev/null || true
+    dkms remove -m seeed-voicecard -v 0.3 --all || true
+    rm -rf /usr/src/seeed-voicecard-0.3 /var/lib/dkms/seeed-voicecard
+    removed=1
+  fi
+  if [ -f /lib/systemd/system/seeed-voicecard.service ]; then
+    systemctl disable --now seeed-voicecard.service 2>/dev/null || true
+    rm -f /lib/systemd/system/seeed-voicecard.service
+    systemctl daemon-reload 2>/dev/null || true
+    removed=1
+  fi
+  rm -f /usr/bin/seeed-voicecard
+  # i2c-dev: added by this installer; snd-soc-ac108: legacy DKMS leftover
+  sed -i -e '/^i2c-dev$/d' -e '/^snd-soc-ac108$/d' /etc/modules 2>/dev/null || true
+
+  # config.txt: revert to the stock state. Stock Raspberry Pi OS ships the
+  # three interface dtparams COMMENTED OUT, so removing the uncommented lines
+  # restores exactly what a fresh image has (commented forms are untouched).
+  # End anchor omitted from the seeed patterns so entries with extra
+  # parameters are caught too.
+  if [ -f "${config}" ]; then
+    sed -i \
+      -e '/^dtparam=i2c_arm=on$/d' \
+      -e '/^dtparam=i2s=on$/d' \
+      -e '/^dtparam=spi=on$/d' \
+      -e '/^dtoverlay=seeed-2mic-voicecard/d' \
+      -e '/^dtoverlay=seeed-2mic-v2-voicecard/d' \
+      -e '/^dtoverlay=i2s-mmap/d' \
+      "${config}"
+  fi
+
+  # compiled overlays from the boot partition
+  for overlay_file in \
+    "${overlays_dir}/seeed-2mic-voicecard.dtbo" \
+    "${overlays_dir}/seeed-2mic-v2-voicecard.dtbo"
+  do
+    if [ -f "${overlay_file}" ]; then
+      rm -f "${overlay_file}"
+      echo "Removed ${overlay_file}"
+      removed=1
+    fi
+  done
+
+  # remove the overlays from the live device tree (best effort); any residual
+  # runtime state (loaded modules) clears on reboot
+  if command -v dtoverlay >/dev/null 2>&1; then
+    dtoverlay -r seeed-2mic-voicecard 2>/dev/null || true
+    dtoverlay -r seeed-2mic-v2-voicecard 2>/dev/null || true
+    dtoverlay -r i2s-mmap 2>/dev/null || true
+  fi
+
+  # ALSA configuration
+  if [ -L /etc/asound.conf ] && \
+     [ "$(readlink /etc/asound.conf)" = "/etc/voicecard/asound_2mic.conf" ]; then
+    rm -f /etc/asound.conf
+    echo "Removed /etc/asound.conf symlink."
+    removed=1
+  fi
+  if [ -d /etc/voicecard ]; then
+    rm -rf /etc/voicecard
+    echo "Removed /etc/voicecard."
+    removed=1
+  fi
+
+  # mixer state: drop our wm8960 symlink; restore the pre-install backup this
+  # installer left, if one exists and no real state file has replaced it
+  if [ -L /var/lib/alsa/asound.state ] && \
+     readlink /var/lib/alsa/asound.state | grep -q wm8960_asound.state; then
+    rm -f /var/lib/alsa/asound.state
+    echo "Removed /var/lib/alsa/asound.state symlink."
+    removed=1
+    if [ ! -e /var/lib/alsa/asound.state ]; then
+      backup="$(find /var/lib/alsa -maxdepth 1 -name 'asound.state.bak.*' 2>/dev/null | sort | tail -1)"
+      if [ -n "${backup}" ]; then
+        mv "${backup}" /var/lib/alsa/asound.state
+        echo "Restored pre-install mixer state from ${backup}."
+      fi
+    fi
+  fi
+
+  echo
+  if [ "${removed}" -eq 0 ]; then
+    echo "Nothing to uninstall: no ReSpeaker 2-Mic driver state found."
+  else
+    if command -v aplay >/dev/null 2>&1 && aplay -l 2>/dev/null | grep -q seeed2micvoicec; then
+      echo "Done. The card is still registered; reboot to finish removal."
+    else
+      echo "Done. ReSpeaker 2-Mic driver support removed."
+    fi
+    echo
+    echo "Config files are back to their fresh-install state. The packages"
+    echo "installed alongside the driver (alsa-utils, i2c-tools,"
+    echo "device-tree-compiler) were left in place."
+  fi
+}
+
+if [ "${mode}" = "uninstall" ]; then
+  do_uninstall
+  exit 0
+fi
 
 # --- sanity checks -----------------------------------------------------------
 
