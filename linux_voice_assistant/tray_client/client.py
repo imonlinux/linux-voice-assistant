@@ -127,10 +127,14 @@ class LvaTrayClient(QtWidgets.QSystemTrayIcon):
 
         _LOGGER.debug("MQTT connecting to %s:%s", self._mqtt_host, self._mqtt_port)
         try:
-            self._client.connect(self._mqtt_host, self._mqtt_port, 60)
+            # Async connect + network loop: at login the tray can start before
+            # the network is up, so the loop must keep retrying the connection
+            # (with backoff) until the broker is reachable.
+            self._client.reconnect_delay_set(min_delay=1, max_delay=30)
+            self._client.connect_async(self._mqtt_host, self._mqtt_port, 60)
             self._client.loop_start()
         except Exception:  # noqa: BLE001
-            _LOGGER.exception("Failed to connect to MQTT broker")
+            _LOGGER.exception("Failed to start MQTT loop")
 
         # Show tray icon
         self.setVisible(True)
@@ -179,26 +183,36 @@ class LvaTrayClient(QtWidgets.QSystemTrayIcon):
 
         self.setContextMenu(menu)
 
-    def _start_lva(self) -> None:
-        _LOGGER.info("Running: systemctl --user start %s", self._systemd_service_name)
-        subprocess.run(
-            ["systemctl", "--user", "start", self._systemd_service_name],
+    def _run_systemctl(self, action: str) -> None:
+        """Run a systemctl --user action on the LVA service, logging failures.
+
+        Failures were previously swallowed (check=False, no output), which made
+        tray-initiated starts undiagnosable from the journal.
+        """
+        _LOGGER.info("Running: systemctl --user %s %s", action, self._systemd_service_name)
+        result = subprocess.run(
+            ["systemctl", "--user", action, self._systemd_service_name],
             check=False,
+            capture_output=True,
+            text=True,
         )
+        if result.returncode != 0:
+            _LOGGER.error(
+                "systemctl --user %s failed (rc=%d): %s %s",
+                action,
+                result.returncode,
+                result.stdout.strip(),
+                result.stderr.strip(),
+            )
+
+    def _start_lva(self) -> None:
+        self._run_systemctl("start")
 
     def _stop_lva(self) -> None:
-        _LOGGER.info("Running: systemctl --user stop %s", self._systemd_service_name)
-        subprocess.run(
-            ["systemctl", "--user", "stop", self._systemd_service_name],
-            check=False,
-        )
+        self._run_systemctl("stop")
 
     def _restart_lva(self) -> None:
-        _LOGGER.info("Running: systemctl --user restart %s", self._systemd_service_name)
-        subprocess.run(
-            ["systemctl", "--user", "restart", self._systemd_service_name],
-            check=False,
-        )
+        self._run_systemctl("restart")
 
     def _toggle_mute(self, checked: bool) -> None:
         self._mute_action.setChecked(checked)
