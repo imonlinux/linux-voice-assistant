@@ -62,6 +62,7 @@ from .entity import (
     StopWordSensitivityNumberEntity,
     ThinkingSoundEntity,
     ThinkingSoundLoopSwitchEntity,
+    WakeArbitrationSwitchEntity,
     WakeVolumeNumberEntity,
     WakeWord1SensitivityNumberEntity,
     WakeWord2SensitivityNumberEntity,
@@ -70,6 +71,7 @@ from .led_light_entities import LED_STATES as _LED_STATES
 from .led_light_entities import LedStateLightEntity
 from .models import AvailableWakeWord, ServerState, WakeWordType
 from .peripheral_api import LVAEvent
+from .wake_arbitration import WakeArbiter, round_energy
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -461,6 +463,79 @@ class VoiceSatelliteProtocol(APIServer):
         wake_volume_entity.update_set_value(self._set_wake_volume)
         wake_volume_entity.sync_with_state()
 
+        # Wake word arbitration — enable switch plus its window and offset.
+        # All three are configuration-category; the switch starts/stops the
+        # arbiter at runtime.
+        wake_arbitration_entity = self.state.wake_arbitration_entity
+        if wake_arbitration_entity is None:
+            wake_arbitration_entity = WakeArbitrationSwitchEntity(
+                server=self,
+                key=len(self.state.entities),
+                name="Wake Arbitration",
+                object_id="wake_arbitration",
+                get_enabled=lambda: self.state.preferences.wake_arbitration_enabled,
+                set_enabled=self._set_wake_arbitration_enabled,
+            )
+            self.state.entities.append(wake_arbitration_entity)
+            self.state.wake_arbitration_entity = wake_arbitration_entity
+        elif wake_arbitration_entity not in self.state.entities:
+            self.state.entities.append(wake_arbitration_entity)
+
+        wake_arbitration_entity.server = self
+        wake_arbitration_entity.update_get_enabled(lambda: self.state.preferences.wake_arbitration_enabled)
+        wake_arbitration_entity.update_set_enabled(self._set_wake_arbitration_enabled)
+        wake_arbitration_entity.sync_with_state()
+
+        wake_arbitration_window_entity = self.state.wake_arbitration_window_entity
+        if wake_arbitration_window_entity is None:
+            wake_arbitration_window_entity = AlarmDurationNumberEntity(
+                server=self,
+                key=len(self.state.entities),
+                name="Arbitration Window",
+                object_id="wake_arbitration_window",
+                get_value=lambda: float(self.state.preferences.wake_arbitration_window_ms),
+                set_value=self._set_wake_arbitration_window,
+                min_value=100.0,
+                max_value=500.0,
+                step=10.0,
+                icon="mdi:timer-outline",
+                unit_of_measurement="ms",
+            )
+            self.state.entities.append(wake_arbitration_window_entity)
+            self.state.wake_arbitration_window_entity = wake_arbitration_window_entity
+        elif wake_arbitration_window_entity not in self.state.entities:
+            self.state.entities.append(wake_arbitration_window_entity)
+
+        wake_arbitration_window_entity.server = self
+        wake_arbitration_window_entity.update_get_value(lambda: float(self.state.preferences.wake_arbitration_window_ms))
+        wake_arbitration_window_entity.update_set_value(self._set_wake_arbitration_window)
+        wake_arbitration_window_entity.sync_with_state()
+
+        wake_arbitration_offset_entity = self.state.wake_arbitration_offset_entity
+        if wake_arbitration_offset_entity is None:
+            wake_arbitration_offset_entity = AlarmDurationNumberEntity(
+                server=self,
+                key=len(self.state.entities),
+                name="Arbitration Offset",
+                object_id="wake_arbitration_offset_db",
+                get_value=lambda: float(self.state.preferences.wake_arbitration_offset_db),
+                set_value=self._set_wake_arbitration_offset,
+                min_value=-30.0,
+                max_value=30.0,
+                step=1.0,
+                icon="mdi:tune",
+                unit_of_measurement="dB",
+            )
+            self.state.entities.append(wake_arbitration_offset_entity)
+            self.state.wake_arbitration_offset_entity = wake_arbitration_offset_entity
+        elif wake_arbitration_offset_entity not in self.state.entities:
+            self.state.entities.append(wake_arbitration_offset_entity)
+
+        wake_arbitration_offset_entity.server = self
+        wake_arbitration_offset_entity.update_get_value(lambda: float(self.state.preferences.wake_arbitration_offset_db))
+        wake_arbitration_offset_entity.update_set_value(self._set_wake_arbitration_offset)
+        wake_arbitration_offset_entity.sync_with_state()
+
         # NOTE: ButtonEventSensorEntity is NOT created here unconditionally.
         # It is only materialised when a peripheral sends the register_button
         # command (see register_pending_button below), mirroring the same
@@ -495,6 +570,10 @@ class VoiceSatelliteProtocol(APIServer):
         self._thinking_sound_active = False
         self._processing = False
         self._pipeline_active = False
+        # Fork: wake word arbitration — True once a late louder claim ended
+        # the turn that just started, so pending chime/streaming callbacks
+        # stay quiet until the next wake.
+        self._arbitration_stand_down = False
         self._external_wake_words: Dict[str, VoiceAssistantExternalWakeWord] = {}
         self._disconnect_event = asyncio.Event()
 
@@ -745,6 +824,54 @@ class VoiceSatelliteProtocol(APIServer):
         self.state.preferences.event_sounds_enabled = bool(enabled)
         self.state.save_preferences()
         _LOGGER.info("Event sounds set to: %s", enabled)
+
+    def _set_wake_arbitration_enabled(self, enabled: bool) -> None:
+        """WakeArbitrationSwitchEntity callback — persist and (re)start."""
+        enabled = bool(enabled)
+        self.state.preferences.wake_arbitration_enabled = enabled
+        self.state.save_preferences()
+        arbiter = self.state.wake_arbiter
+        if enabled:
+            if arbiter is None:
+                arbiter = WakeArbiter()
+                self.state.wake_arbiter = arbiter
+            if not arbiter.running:
+                arbiter.start()
+            if not arbiter.running:
+                # Transport failed to open (e.g. port in use); report the
+                # switch back off so HA does not show a lie.
+                self.state.preferences.wake_arbitration_enabled = False
+                self.state.save_preferences()
+                _LOGGER.warning("Wake arbitration could not start; switch left off")
+                return
+            _LOGGER.info("Wake arbitration enabled (window %d ms, offset %+.1f dB)", self._arbitration_window_ms(), self.state.preferences.wake_arbitration_offset_db)
+        else:
+            if arbiter is not None and arbiter.running:
+                arbiter.stop()
+            _LOGGER.info("Wake arbitration disabled")
+
+    def _arbitration_window_ms(self) -> int:
+        """Preference window clamped to the protocol range (100-500 ms)."""
+        raw = getattr(self.state.preferences, "wake_arbitration_window_ms", 400)
+        try:
+            raw = int(raw)
+        except (TypeError, ValueError):
+            raw = 400
+        return max(100, min(500, raw))
+
+    def _set_wake_arbitration_window(self, value: float) -> None:
+        """Arbitration window number callback — clamp to 100-500 ms."""
+        window = max(100, min(500, int(round(value))))
+        self.state.preferences.wake_arbitration_window_ms = window
+        self.state.save_preferences()
+        _LOGGER.info("Wake arbitration window set to: %d ms", window)
+
+    def _set_wake_arbitration_offset(self, value: float) -> None:
+        """Arbitration offset number callback — clamp to -30..+30 dB."""
+        offset = max(-30.0, min(30.0, float(value)))
+        self.state.preferences.wake_arbitration_offset_db = offset
+        self.state.save_preferences()
+        _LOGGER.info("Wake arbitration offset set to: %+.1f dB", offset)
 
     def _set_thinking_sound_loop(self, enabled: bool) -> None:
         """ThinkingSoundLoopSwitchEntity callback — update state and persist."""
@@ -1149,6 +1276,16 @@ class VoiceSatelliteProtocol(APIServer):
             _LOGGER.debug("Ignoring wake word - pipeline already active")
             return
 
+        # Fork: wake word arbitration — settle with the other satellites that
+        # heard the same wake word before answering. A loser goes back to
+        # listening silently; a winner proceeds (and watches for a louder
+        # late claim). Never runs when muted (muted devices answer nothing,
+        # so they must not win for the others either).
+        result = self._arbitrate(wake_word)
+        if result is not None and not result.won:
+            return
+        self._arbitration_stand_down = False
+
         wake_word_phrase = wake_word.wake_word  # type: ignore[union-attr]
         _LOGGER.debug("Detected wake word: %s", wake_word_phrase)
 
@@ -1177,8 +1314,76 @@ class VoiceSatelliteProtocol(APIServer):
             else:
                 self._on_wakeup_sound_finished(wake_word_phrase)
 
+    # ------------------------------------------------------------------
+    # Fork: wake word arbitration
+    # ------------------------------------------------------------------
+
+    def _arbitration_window(self) -> float:
+        """Settle window in seconds, clamped to the protocol's 100-500 ms."""
+        return min(0.5, max(0.1, self.state.preferences.wake_arbitration_window_ms / 1000.0))
+
+    def _arbitrate(self, wake_word: Union[MicroWakeWord, OpenWakeWord]) -> Optional[Any]:
+        """Broadcast a claim for this wake and wait out the window.
+
+        Returns the ArbitrationResult, or None when there is nothing to
+        settle (arbitration off, listener down, or no measurable level) —
+        in which case the wake is answered, exactly as without arbitration.
+        """
+        arbiter = getattr(self.state, "wake_arbiter", None)
+        if arbiter is None or not arbiter.running:
+            return None
+        wake_levels = getattr(self.state, "wake_levels", None)
+        if wake_levels is None:
+            return None
+        phrase = getattr(wake_word, "wake_word", None) or getattr(wake_word, "id", "") or ""
+        raw = wake_levels.wake_energy()
+        if raw is None:
+            _LOGGER.debug("Wake arbitration skipped: not enough recent audio")
+            return None
+        energy = round_energy(raw + self.state.preferences.wake_arbitration_offset_db)
+        result = arbiter.contend(phrase=phrase, energy=energy, window_s=self._arbitration_window())
+        if result.won:
+            window = self._arbitration_window()
+            threading.Thread(
+                target=self._watch_overtaken,
+                args=(arbiter, result, window),
+                daemon=True,
+                name="wake-arbitration-overtaken",
+            ).start()
+        return result
+
+    def _watch_overtaken(self, arbiter: Any, result: Any, window: float) -> None:
+        """After a win, stand down if a louder claim for the same wake
+        arrives after this window closed (a device that detected the wake
+        word later). Runs on a worker thread."""
+        louder = arbiter.overtaken(result, window)
+        if louder is None:
+            return
+        _LOGGER.info(
+            "Wake arbitration: %s claimed it louder (%s dB) after the window, standing down",
+            louder.from_addr,
+            louder.energy,
+        )
+        self._arbitration_stand_down = True
+        self._stand_down()
+
+    def _stand_down(self) -> None:
+        """End the turn that just started — same teardown as muting (which
+        is voice_assistant.stop behavior), without the mute sound. Stopping
+        the player fires any pending chime done_callback, which the
+        stand-down flag keeps from restarting streaming."""
+        _LOGGER.info("Wake arbitration: standing down")
+        self._is_streaming_audio = False
+        self._pipeline_active = False
+        self.state.tts_player.stop()
+        self.unduck()
+        self._emit(LVAEvent.IDLE)
+
     def _start_audio_streaming(self, wake_word_phrase: str) -> None:
         """Start streaming audio during wake sound detection."""
+        if self._arbitration_stand_down:
+            _LOGGER.debug("Skipping audio streaming: arbitration stand-down")
+            return
         _LOGGER.debug(
             "Starting audio streaming for: %s",
             wake_word_phrase,
@@ -1189,6 +1394,9 @@ class VoiceSatelliteProtocol(APIServer):
 
     def _on_wakeup_sound_finished(self, wake_word_phrase: str) -> None:
         """Callback invoked when the wakeup chime finishes; begin STT streaming."""
+        if self._arbitration_stand_down:
+            _LOGGER.debug("Skipping post-chime streaming: arbitration stand-down")
+            return
         _LOGGER.debug(
             "Wakeup sound finished, starting audio streaming for: %s",
             wake_word_phrase,
