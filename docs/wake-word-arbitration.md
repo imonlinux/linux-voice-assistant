@@ -115,9 +115,11 @@ wake chime that plays before listening anyway.
 ## Implementation notes (fork)
 
 - `linux_voice_assistant/wake_arbitration.py` — metric, transport,
-  arbiter, levels ring. Independent implementation of the documented
-  protocol facts; no code ported from any other project (the reference
-  implementation's license does not permit it).
+  arbiter, levels ring. The protocol design is [Kiosk
+  Satellite](https://github.com/jxlarrea/kiosk-satellite)'s, by
+  [Xavier Larrea](https://github.com/jxlarrea) — this module is an
+  independent implementation of the documented protocol facts, with no
+  code ported from it (its CC BY-NC-ND license does not permit that).
 - `satellite.py` — settles in `wakeup()` before the pipeline starts;
   `WakeLevelRing` is fed by the audio loop from the raw channel;
   stand-down teardown cancels a just-started turn.
