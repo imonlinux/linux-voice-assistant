@@ -437,3 +437,52 @@ Mechanics:
   controllers are not peripheral-API clients and need explicit opt-in wiring
   (`register_button_lock` + `button_lock_changed`) before the switch does
   anything for them.
+
+## 12. Sync: upstream 7c6fbaa..76c6b53 merged (2026-10-26)
+
+Branch `sync/upstream-2026-10`; 37 upstream commits (v1.1.16 line plus
+follow-ups) merged into `main` lineage. Outcome of the trial merge held:
+9 conflicted files, all placement collisions or clean unions; no
+architectural conflicts; all fork-only modules survive untouched.
+
+Decisions taken in this sync (supersede earlier drift-watch guidance):
+
+- **D8: take `f20952f` (peripheral button-lock switch) as inert.** The
+  earlier plan was to skip it and hand-strip ~200 lines from 5 core files
+  at every sync. Operator decision 2026-10-26: take it wholesale. It is
+  inert on fork hardware — `ButtonLockEntity` registers only via the
+  peripheral `register_button_lock` websocket command, which the fork's
+  in-daemon GPIO/XVF3800 button controllers never send; `config.json`
+  `button.enabled: false` remains the hard kill switch. Wiring it to the
+  in-daemon controllers stays a possible future add-on (~40-60 lines).
+- **D9: keep the fork current with upstream Docker/CI.** The drafted
+  docker-strip plan (removing Dockerfile, compose files, workflows) is
+  shelved. Operator decision 2026-10-26: carry upstream's Docker changes
+  going forward unless one actually breaks the fork. This sync's Docker,
+  compose, entrypoint, `.env.example`, and workflow changes came in
+  conflict-free and were kept as-is.
+
+Conflict resolutions of record (for future sync archaeology):
+
+- `satellite.py` — union in the button-start handler (fork alarm-stop +
+  upstream `_wake_word_phrase`/timer resets); upstream `_tts_finished`
+  signature + fork `_stop_thinking_sound()`.
+- `models.py` — fork preference fields block kept; upstream's
+  `Preferences.from_dict` classmethod adopted on top (the fork's
+  `_load_preferences` already covered the eaa2447 crash, so this is
+  parity, not a fix).
+- `entity.py` — reconstructed: fork's six new classes + upstream's
+  `ButtonLockEntity` inserted before the alias block; `__all__` updated.
+- `__main__.py` — kept fork import superset; dropped upstream's inline
+  preferences-loading block (`_load_preferences` covers it); kept both
+  `oww_global_threshold` and `button_controls_locked` ServerState args.
+- `player/libmpv.py` — union: fork `volume_override` support + upstream
+  eof-or-error completion and drain-delay; upstream's `_apply_volume`
+  debug label adopted (fixes the fork's copy-pasted "unduck() called").
+- `tests/unit/test_main.py`, `tests/unit/test_satellite.py` — keep-both
+  (fork wake-volume suites + upstream timer/eww/config suites).
+- `CHANGELOG.md` — fork v2.1.0/v2.0.0/v1.1.0 entries on top, upstream's
+  v1.1.16 release notes below, link refs merged.
+- `README.md` — fork Quick Start flow kept; upstream's Parameter
+  overview table, behavior-guide note, and Build Information section
+  added under Quick Start.

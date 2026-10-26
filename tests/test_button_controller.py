@@ -1,6 +1,5 @@
 """Tests for Button Controller integration and hardware button handling."""
 
-from queue import Queue
 from unittest.mock import MagicMock
 
 import pytest
@@ -51,7 +50,6 @@ class TestButtonControllerInitialization:
             esphome_version="test",
             event_bus=event_bus,
             loop=None,
-            audio_queue=Queue(),
             entities=[],
             music_player=MagicMock(),
             tts_player=MagicMock(),
@@ -68,6 +66,7 @@ class TestButtonControllerInitialization:
             button_double_press_sound="",
             button_triple_press_sound="",
             button_long_press_sound="",
+            pipeline_ended_sound="",
             preferences=prefs,
             preferences_path=None,
             download_dir=None,
@@ -124,7 +123,6 @@ class TestButtonControllerGPIOUnavailable:
             esphome_version="test",
             event_bus=event_bus,
             loop=None,
-            audio_queue=Queue(),
             entities=[],
             music_player=None,
             tts_player=None,
@@ -141,6 +139,7 @@ class TestButtonControllerGPIOUnavailable:
             button_double_press_sound="",
             button_triple_press_sound="",
             button_long_press_sound="",
+            pipeline_ended_sound="",
             preferences=prefs,
             preferences_path=None,
             download_dir=None,
@@ -194,7 +193,6 @@ class TestButtonControllerPressTiming:
             esphome_version="test",
             event_bus=event_bus,
             loop=None,
-            audio_queue=Queue(),
             entities=[],
             music_player=None,
             tts_player=None,
@@ -211,6 +209,7 @@ class TestButtonControllerPressTiming:
             button_double_press_sound="",
             button_triple_press_sound="",
             button_long_press_sound="",
+            pipeline_ended_sound="",
             preferences=prefs,
             preferences_path=None,
             download_dir=None,
@@ -288,7 +287,6 @@ class TestButtonControllerEventBusIntegration:
             esphome_version="test",
             event_bus=event_bus,
             loop=None,
-            audio_queue=Queue(),
             entities=[],
             music_player=MagicMock(),
             tts_player=MagicMock(),
@@ -305,6 +303,7 @@ class TestButtonControllerEventBusIntegration:
             button_double_press_sound="",
             button_triple_press_sound="",
             button_long_press_sound="",
+            pipeline_ended_sound="",
             preferences=prefs,
             preferences_path=None,
             download_dir=None,
@@ -366,7 +365,6 @@ class TestButtonControllerButtonLogic:
             esphome_version="test",
             event_bus=event_bus,
             loop=None,
-            audio_queue=Queue(),
             entities=[],
             music_player=MagicMock(),  # Has audio playing
             tts_player=MagicMock(),
@@ -383,6 +381,7 @@ class TestButtonControllerButtonLogic:
             button_double_press_sound="",
             button_triple_press_sound="",
             button_long_press_sound="",
+            pipeline_ended_sound="",
             preferences=prefs,
             preferences_path=None,
             download_dir=None,
@@ -447,7 +446,6 @@ class TestButtonControllerErrorHandling:
             esphome_version="test",
             event_bus=event_bus,
             loop=None,
-            audio_queue=Queue(),
             entities=[],
             music_player=None,
             tts_player=None,
@@ -464,6 +462,7 @@ class TestButtonControllerErrorHandling:
             button_double_press_sound="",
             button_triple_press_sound="",
             button_long_press_sound="",
+            pipeline_ended_sound="",
             preferences=prefs,
             preferences_path=None,
             download_dir=None,
