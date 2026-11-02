@@ -94,6 +94,14 @@ class Preferences:
     mic_noise_suppression: int = 0
     mic_volume: int = 100  # 1–100, default maximum
 
+    # Wake word arbitration. Enabled devices that hear the same wake word
+    # settle over UDP which one answers (the closest). Window is the
+    # settle window in ms (protocol allows 100-500); offset_db trims a
+    # device whose microphone hears the room differently (-30..+30).
+    wake_arbitration_enabled: bool = False
+    wake_arbitration_window_ms: int = 400
+    wake_arbitration_offset_db: float = 0.0
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Preferences":
         """
@@ -177,6 +185,19 @@ class ServerState:
     mic_gain_entity: "Optional[MicSettingEntity]" = None
     mic_noise_suppression_entity: "Optional[MicSettingEntity]" = None
     mic_volume_entity: "Optional[MicSettingEntity]" = None
+
+    # --- Wake word arbitration ---
+    # Ring of recent per-20ms dBFS levels from the raw primary mic channel
+    # (before software gain and WebRTC AGC/NS), fed by the audio loop; the
+    # energy metric at wake time reads this. None until the audio loop starts.
+    wake_levels: Optional[Any] = None  # wake_arbitration.WakeLevelRing
+    # Running arbiter, when the preference enables it (started in __main__
+    # and from the HA switch; None = arbitration off).
+    wake_arbiter: Optional[Any] = None  # wake_arbitration.WakeArbiter
+    wake_arbitration_entity: "Optional[Any]" = None  # WakeArbitrationSwitchEntity
+    wake_arbitration_window_entity: "Optional[Any]" = None  # WakeArbitrationWindowNumberEntity
+    wake_arbitration_offset_entity: "Optional[Any]" = None  # WakeArbitrationOffsetNumberEntity
+
     wake_words_changed: bool = False
     refractory_seconds: float = 2.0
     thinking_sound_enabled: bool = False

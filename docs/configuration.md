@@ -125,6 +125,20 @@ The defaults are read directly from each model's `.json` manifest file (the `pro
 - Start from the model's default and make small adjustments — a change of `0.05–0.10` is usually enough to notice a difference
 - Far-field microphones with noise cancellation (e.g. ReSpeaker, Satellite1) generally work well at the default values; basic USB microphones may need a lower threshold
 
+### Wake Word Arbitration
+
+When several satellites share a room, they all hear the same wake word and each one starts a pipeline. Wake word arbitration lets the devices settle over the network which one answers: each device that detects the wake word broadcasts a claim carrying how loud it heard the word over its own noise floor, holds for a settle window, and only answers when no rival for the same phrase heard it louder. The closest device wins; a device that loses goes back to listening silently.
+
+| Entity | Description | Default |
+|--------|-------------|---------|
+| **Wake Arbitration** | Switch that enables/disables arbitration on this device | Off |
+| **Arbitration Window** | Settle window in ms (100-500) | 400 ms |
+| **Arbitration Offset** | Per-device trim in dB (-30 to +30) | 0 dB |
+
+Devices on the same network segment discover each other automatically (UDP port 2330), including satellites running other compatible firmware. The energy metric is measured on the raw microphone signal before software gain and noise suppression, so devices with different microphones compare fairly; use the offset to trim a device that consistently hears the room louder or quieter than its neighbours.
+
+If no rival claims are heard, the device answers immediately — arbitration off is the same as arbitration on with no peers, so enabling it never makes a device stop answering. See [wake-word-arbitration.md](./wake-word-arbitration.md) for the wire protocol and tuning details.
+
 ## Support
 
 If a dashboard control doesn't behave as expected, enable `--debug` (or `ENABLE_DEBUG=1`) and check the logs — every change made from the Home Assistant device page is logged when it's received and persisted.

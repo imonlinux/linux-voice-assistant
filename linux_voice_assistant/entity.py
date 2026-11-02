@@ -869,6 +869,188 @@ class ButtonLockEntity(ESPHomeEntity):
             yield SwitchStateResponse(key=self.key, state=self._switch_state)
 
 
+class WakeArbitrationSwitchEntity(ESPHomeEntity):
+    """ESPHome switch for wake word arbitration.
+
+    When on, this device joins the UDP settle with the other satellites
+    that heard the same wake word and only answers when none heard it
+    louder. Toggling starts/stops the arbiter on the ServerState.
+    """
+
+    def __init__(
+        self,
+        server: APIServer,
+        key: int,
+        name: str,
+        object_id: str,
+        get_enabled: Callable[[], bool],
+        set_enabled: Callable[[bool], None],
+    ) -> None:
+        ESPHomeEntity.__init__(self, server)
+
+        self.key = key
+        self.name = name
+        self.object_id = object_id
+        self._get_enabled = get_enabled
+        self._set_enabled = set_enabled
+        self._switch_state = self._get_enabled()
+
+    def update_get_enabled(self, get_enabled: Callable[[], bool]) -> None:
+        self._get_enabled = get_enabled
+
+    def update_set_enabled(self, set_enabled: Callable[[bool], None]) -> None:
+        self._set_enabled = set_enabled
+
+    def sync_with_state(self) -> None:
+        self._switch_state = self._get_enabled()
+
+    def handle_message(self, msg: message.Message) -> Iterable[message.Message]:
+        if isinstance(msg, SwitchCommandRequest) and (msg.key == self.key):
+            new_state = bool(msg.state)
+            self._switch_state = new_state
+            self._set_enabled(new_state)
+            yield SwitchStateResponse(key=self.key, state=self._switch_state)
+        elif isinstance(msg, ListEntitiesRequest):
+            yield ListEntitiesSwitchResponse(
+                object_id=self.object_id,
+                key=self.key,
+                name=self.name,
+                entity_category=EntityCategory.CONFIG,
+                icon="mdi:access-point",
+            )
+        elif isinstance(msg, SubscribeHomeAssistantStatesRequest):
+            self.sync_with_state()
+            yield SwitchStateResponse(key=self.key, state=self._switch_state)
+
+
+class WakeArbitrationWindowNumberEntity(ESPHomeEntity):
+    """
+    ESPHome number for the wake arbitration settle window in ms.
+
+    :param get_value: Callable returning the current window in ms.
+    :param set_value: Callable persisting a new window in ms.
+    """
+
+    def __init__(
+        self,
+        server: APIServer,
+        key: int,
+        name: str,
+        object_id: str,
+        get_value: Callable[[], float],
+        set_value: Callable[[float], None],
+    ) -> None:
+        ESPHomeEntity.__init__(self, server)
+
+        self.key = key
+        self.name = name
+        self.object_id = object_id
+        self._get_value = get_value
+        self._set_value = set_value
+        self.min_value = 100.0
+        self.max_value = 500.0
+        self.step = 10.0
+        self.icon = "mdi:timer-outline"
+        self.unit_of_measurement = "ms"
+        self._state = self._get_value()
+
+    def update_get_value(self, get_value: Callable[[], float]) -> None:
+        self._get_value = get_value
+
+    def update_set_value(self, set_value: Callable[[float], None]) -> None:
+        self._set_value = set_value
+
+    def sync_with_state(self) -> None:
+        self._state = self._get_value()
+
+    def handle_message(self, msg: message.Message) -> Iterable[message.Message]:
+        if isinstance(msg, NumberCommandRequest) and (msg.key == self.key):
+            self._state = max(self.min_value, min(self.max_value, float(msg.state)))
+            self._set_value(self._state)
+            yield NumberStateResponse(key=self.key, state=self._state, missing_state=False)
+        elif isinstance(msg, ListEntitiesRequest):
+            yield ListEntitiesNumberResponse(
+                object_id=self.object_id,
+                key=self.key,
+                name=self.name,
+                icon=self.icon,
+                entity_category=EntityCategory.CONFIG,
+                min_value=self.min_value,
+                max_value=self.max_value,
+                step=self.step,
+                unit_of_measurement=self.unit_of_measurement,
+            )
+        elif isinstance(msg, SubscribeHomeAssistantStatesRequest):
+            self.sync_with_state()
+            yield NumberStateResponse(key=self.key, state=self._state, missing_state=False)
+
+
+class WakeArbitrationOffsetNumberEntity(ESPHomeEntity):
+    """
+    ESPHome number trimming this device's arbitration energy in dB.
+
+    Devices whose microphone hears the room louder or quieter than the
+    fleet average get a negative or positive offset so mixed fleets
+    compare fairly.
+
+    :param get_value: Callable returning the current offset in dB.
+    :param set_value: Callable persisting a new offset in dB.
+    """
+
+    def __init__(
+        self,
+        server: APIServer,
+        key: int,
+        name: str,
+        object_id: str,
+        get_value: Callable[[], float],
+        set_value: Callable[[float], None],
+    ) -> None:
+        ESPHomeEntity.__init__(self, server)
+
+        self.key = key
+        self.name = name
+        self.object_id = object_id
+        self._get_value = get_value
+        self._set_value = set_value
+        self.min_value = -30.0
+        self.max_value = 30.0
+        self.step = 1.0
+        self.icon = "mdi:tune"
+        self.unit_of_measurement = "dB"
+        self._state = self._get_value()
+
+    def update_get_value(self, get_value: Callable[[], float]) -> None:
+        self._get_value = get_value
+
+    def update_set_value(self, set_value: Callable[[float], None]) -> None:
+        self._set_value = set_value
+
+    def sync_with_state(self) -> None:
+        self._state = self._get_value()
+
+    def handle_message(self, msg: message.Message) -> Iterable[message.Message]:
+        if isinstance(msg, NumberCommandRequest) and (msg.key == self.key):
+            self._state = max(self.min_value, min(self.max_value, float(msg.state)))
+            self._set_value(self._state)
+            yield NumberStateResponse(key=self.key, state=self._state, missing_state=False)
+        elif isinstance(msg, ListEntitiesRequest):
+            yield ListEntitiesNumberResponse(
+                object_id=self.object_id,
+                key=self.key,
+                name=self.name,
+                icon=self.icon,
+                entity_category=EntityCategory.CONFIG,
+                min_value=self.min_value,
+                max_value=self.max_value,
+                step=self.step,
+                unit_of_measurement=self.unit_of_measurement,
+            )
+        elif isinstance(msg, SubscribeHomeAssistantStatesRequest):
+            self.sync_with_state()
+            yield NumberStateResponse(key=self.key, state=self._state, missing_state=False)
+
+
 # Backward compatibility export aliases
 __all__ = [
     "ESPHomeEntity",
@@ -878,6 +1060,9 @@ __all__ = [
     "LEDLightEntity",
     "ButtonEventSensorEntity",
     "ButtonLockEntity",
+    "WakeArbitrationSwitchEntity",
+    "WakeArbitrationWindowNumberEntity",
+    "WakeArbitrationOffsetNumberEntity",
     "WakeWord1SensitivityNumberEntity",
     "WakeWord2SensitivityNumberEntity",
     "StopWordSensitivityNumberEntity",

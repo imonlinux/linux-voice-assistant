@@ -28,6 +28,7 @@ from .util import (
     get_version,
     resolve_mac_address,
 )
+from .wake_arbitration import WakeArbiter, WakeLevelRing
 from .wake_word import find_available_wake_words, load_stop_model, load_wake_models
 from .webrtc import WebRTCProcessor
 from .zeroconf import HomeAssistantZeroconf
@@ -530,6 +531,29 @@ async def main() -> None:
         state.peripheral_api = peripheral_api
 
     # ------------------------------------------------------------------
+    # Wake word arbitration
+    # ------------------------------------------------------------------
+    # The levels ring is fed from the audio thread (raw primary channel,
+    # before gain/AGC/NS) and is cheap, so it always runs; the arbiter
+    # itself only listens on UDP when the preference (or the HA switch)
+    # turns it on.
+    state.wake_levels = WakeLevelRing()
+    if state.preferences.wake_arbitration_enabled:
+        arbiter = WakeArbiter()
+        arbiter.start()
+        if arbiter.running:
+            state.wake_arbiter = arbiter
+            _LOGGER.info(
+                "Wake arbitration enabled at boot (window %d ms, offset %+.1f dB)",
+                max(100, min(500, state.preferences.wake_arbitration_window_ms)),
+                state.preferences.wake_arbitration_offset_db,
+            )
+        else:
+            _LOGGER.warning("Wake arbitration preference is on, but the UDP listener failed to start")
+    else:
+        _LOGGER.debug("Wake arbitration disabled")
+
+    # ------------------------------------------------------------------
     # ESPHome TCP server (with retry on EADDRINUSE)
     # ------------------------------------------------------------------
     loop = asyncio.get_running_loop()
@@ -636,6 +660,9 @@ async def main() -> None:
         process_audio_thread.join()
         if peripheral_api is not None:
             await peripheral_api.stop()
+        # Stop the wake arbitration listener
+        if state.wake_arbiter is not None:
+            state.wake_arbiter.stop()
 
     _LOGGER.debug("Server stopped")
 
@@ -713,6 +740,13 @@ def process_audio(state: ServerState, mic, block_size: int):
                 # Shape: (block_size, n_channels) for stereo, (block_size, 1) for mono.
                 raw = mic_in.record(block_size)  # float32, range [-1, 1]
                 mic_vol_scalar = max(0.1, min(1.0, state.mic_volume / 100.0))
+
+                # Wake arbitration reads the raw primary channel before
+                # software gain and WebRTC AGC/NS — the suppressor silences
+                # the noise floor the energy metric is measured against.
+                if state.wake_levels is not None:
+                    col0 = raw[:, 0] if n_channels > 1 else raw.reshape(-1)
+                    state.wake_levels.feed(col0)
 
                 # Build per-channel byte arrays.  Channel 0 is the primary
                 # microphone; channel 1 (when present) is the reference/speaker

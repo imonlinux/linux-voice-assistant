@@ -62,6 +62,7 @@ Details:
 - **Starting by button.** A peripheral button can start listening without a wake word. Instead of the wake sound, the start-listening sound (`--start-listening-sound`) plays; everything else is identical. This also silences a ringing timer.
 - **Errors.** If the pipeline reports an error, peripherals receive a `pipeline_error` event. See [peripheral_api.md](peripheral_api.md).
 - **Two wake words.** Home Assistant can activate up to two wake words at once. Each has its own sensitivity setting (*Wake Word 1/2 Sensitivity*).
+- **Wake word arbitration (opt-in).** When several satellites are in the same room, all of them hear the wake word and each starts a pipeline. With the *Wake Arbitration* switch on, the devices settle over the network which one answers: each device that detected the wake word reports how loud it heard it (relative to its own noise floor, measured before gain and noise suppression), waits out a settle window (*Arbitration Window*, default 400 ms), and only answers when none of its peers heard the same phrase louder. The losers stay silent and return to listening. If a device wins but a louder claim arrives shortly after the window, it stands down before speech is captured. Devices that hear no rivals answer immediately, so arbitration never prevents an answer; with the switch off (default) nothing changes. Muted devices never take part. See [wake-word-arbitration.md](wake-word-arbitration.md).
 
 ---
 
