@@ -751,17 +751,16 @@ If you intend to switch from PA or PW to ALSA, you must first stop and disable t
 
 ###PulseAudio
 
+These are user-mode services: run `systemctl --user` as your regular user, never with `sudo` (`sudo systemctl --user` targets root's session, not yours).
+
 ```bash
-sudo systemctl --user stop pulseaudio.service
+systemctl --user stop pulseaudio.service
+systemctl --user disable pulseaudio.service
 ```
-```bash
-sudo systemctl --user disable pulseaudio.service
-```
+
 ###PipeWire
 
 ```bash
-sudo systemctl --user stop pipewire.service
-```
-```bash
-sudo systemctl --user disable pipewire.service
+systemctl --user stop pipewire.service
+systemctl --user disable pipewire.service
 ```
