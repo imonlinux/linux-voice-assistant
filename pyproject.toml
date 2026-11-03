@@ -43,6 +43,13 @@ dependencies = [
     "gpiozero",
     "spidev",
     "pyusb",
+    # Fork: Blinka 10.x runtime platform check for Raspberry Pi (#86).
+    # adafruit-circuitpython-dotstar pulls in Adafruit-Blinka, whose
+    # platform_dependencies check wants these declared; without them every
+    # interactive run prompts to install and daemon runs may fail.
+    "gpiod>=2.2.2,<3",
+    "Adafruit-Blinka-Raspberry-Pi-PWM>=1.0.2",
+    "rpi_ws281x>=4.0.0",
 ]
 dynamic = ["version"]
 
